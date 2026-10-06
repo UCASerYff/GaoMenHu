@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>搞门户</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><div class="noise"></div>
+  <header>
+    <div class="brand"><img src="Mark.png" alt=""><div><strong>搞门户</strong><span>网站、账号，一点就到。</span></div></div>
+    <div class="header-actions">
+      <button class="icon-button" id="vaultButton" aria-label="账号库" title="账号库"></button>
+      <button class="icon-button" id="fullButton" aria-label="切换全屏" title="切换全屏"></button>
+      <button class="icon-button" id="settingsButton" aria-label="设置" title="设置"></button>
+      <button class="add-button" id="addButton"><span>＋</span> 添加网站</button>
+    </div>
+  </header>
+  <main>
+    <div class="intro"><div><span class="eyebrow">YOUR LITTLE CORNER OF THE WEB</span><h1>常去的地方，都在这里。</h1></div></div>
+    <div class="launcher-tools"><div class="search-wrap"><span id="searchSymbol"></span><input id="search" type="search" autocomplete="off" placeholder="搜索名称、拼音、简称或网址" aria-label="搜索网站"><kbd>⌘ F</kbd></div><div class="toolbar-actions"><button class="tool-button" id="undoButton" title="撤销上次整理（⌘ Z）" disabled>↶ 撤销</button><button class="tool-button" id="workspacesButton">工作场景</button><button class="tool-button" id="manageButton">整理</button></div></div>
+    <div class="grid-caption"><span id="caption">我的网站</span><span id="count"></span></div>
+    <section class="launch-area" id="launchArea" aria-label="网站启动台"><div class="grid" id="grid"></div><div class="empty" id="empty" hidden></div><div class="edge-hint edge-left" id="edgeLeft" aria-hidden="true">‹</div><div class="edge-hint edge-right" id="edgeRight" aria-hidden="true">›</div></section>
+    <nav class="pagination" id="pagination" aria-label="启动台分页">
+      <button class="page-arrow" id="previousPage" type="button" aria-label="上一页" title="上一页（Page Up）"><span aria-hidden="true">‹</span> 上一页</button>
+      <div class="page-dots" id="pageDots"></div>
+      <span class="page-number" id="pageNumber" role="status" aria-live="polite" aria-atomic="true"></span>
+      <button class="page-arrow" id="nextPage" type="button" aria-label="下一页" title="下一页（Page Down）">下一页 <span aria-hidden="true">›</span></button>
+    </nav>
+    <div class="organize-hint"><span id="dragSymbol"></span>拖动排序或组合文件夹<span class="paging-hint" id="pagingHint">· 双指左右滑动、← → 或 Page Up / Down 翻页</span></div>
+  </main>
+  <footer><span class="footer-brand"><span class="status-dot"></span>属于你的上网入口 <span class="version" id="version"></span></span><button id="lockButton"></button><span class="shortcut">⌃ ⌥ Space 随时唤起</span></footer>
+  <div id="folderOverlay" class="overlay folder-overlay" hidden>
+    <section class="folder-panel" role="dialog" aria-modal="true" aria-labelledby="folderTitle">
+      <div class="folder-header"><div><span class="eyebrow">FOLDER</span><button class="folder-title" id="folderTitle"></button></div><div class="setting-actions"><button class="soft-button" id="folderManage">整理</button><button class="icon-button close" id="folderClose" aria-label="关闭文件夹">×</button></div></div>
+      <div class="grid folder-grid" id="folderGrid"></div>
+      <div class="folder-out" id="folderOut">拖到这里，移回首页 <span>↗</span></div>
+    </section>
+  </div>
+  <div id="selectionBar" class="selection-bar" hidden><strong id="selectionCount">已选择 0 个</strong><button class="soft-button" id="selectPageButton">全选当前页</button><button class="text-button" id="clearSelectionButton">清空</button><span class="selection-divider"></span><button class="soft-button" id="batchMoveButton">移入文件夹</button><button class="soft-button" id="batchBrowserButton">默认浏览器</button><button class="soft-button danger" id="batchRemoveButton">移除</button><button class="primary-button" id="manageDone">完成</button></div>
+  <div id="dialogOverlay" class="overlay dialog-overlay" hidden><section class="dialog" id="dialog" role="dialog" aria-modal="true"></section></div>
+  <div id="cropOverlay" class="overlay crop-overlay" hidden><section class="dialog small" role="dialog" aria-modal="true" aria-labelledby="cropTitle"><div class="dialog-head"><div><span class="eyebrow">ICON</span><h2 id="cropTitle">调整图标</h2><p class="description">拖动图片调整位置，缩放到合适大小。</p></div><button class="icon-button close" id="cropClose" aria-label="取消裁剪">×</button></div><div class="crop-stage"><canvas id="cropCanvas" width="512" height="512" aria-label="图标裁剪预览"></canvas></div><label class="crop-zoom">缩放 <input id="cropZoom" type="range" min="0.5" max="3" step="0.01" value="1" aria-label="图标缩放"><output id="cropZoomValue">100%</output></label><div class="dialog-actions"><button class="soft-button" id="cropReset">居中适应</button><button class="soft-button" id="cropCancel">取消</button><button class="primary-button" id="cropSave">使用图标</button></div></section></div>
+  <div id="contextMenu" class="context-menu" hidden></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+  <script src="features.js"></script>
+</body>
+</html>

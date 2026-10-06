@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>搞门户助手</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header><img src="icon128.png" alt=""><div><strong>搞门户助手</strong><span>连接你的上网入口</span></div></header>
+<div class="connection"><div id="status" role="status">连接中…</div><button id="reconnect" class="secondary">重新连接</button></div>
+<section><h2>收藏当前网页</h2><label>保存到<select id="folder"><option value="">首页</option></select></label><button id="bookmark" disabled>收藏到搞门户</button><div id="bookmarkResult" class="result" role="status"></div></section>
+<section><label>当前浏览器个人资料名称<input id="label" maxlength="80" placeholder="例如：工作、个人"></label><button id="save" class="secondary">保存名称</button></section>
+<p>从搞门户启动网站后，为当前标签页填入所选账号。请自行完成登录和二次验证。</p>
+<script src="popup.js"></script></body></html>

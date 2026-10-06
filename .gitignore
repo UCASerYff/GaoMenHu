@@ -1,0 +1,68 @@
+# Local instructions and OS/editor metadata
+AGENTS.md
+.DS_Store
+.AppleDouble/
+._*
+.vscode/
+.idea/
+*.xcuserstate
+xcuserdata/
+
+# Generated builds, packages and private verification reports
+Release/
+.build/
+build/
+dist/
+*.app/
+*.dmg
+*.zip
+*.sha256
+*.dSYM/
+*.log
+Assets/AppIcon.icns
+__pycache__/
+*.pyc
+
+# Credentials and signing private material
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Personal libraries, browser profiles and backups
+library.json
+accounts.json
+preferences.plist
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.keychain*
+Cookies
+Bookmarks
+Login Data
+Local State
+Preferences
+Secure Preferences
+User Data/
+Profiles/
+Snapshots/
+Backups/
+AutoBackups/
+用户数据备份/
+验证记录/
+
+# Private attachments do not belong in this project
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.csv
+*.eml
+*.mbox
