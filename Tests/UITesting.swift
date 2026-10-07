@@ -106,6 +106,33 @@ extension AppDelegate {
             floating.setExpanded(false); floating.setDock(.right); floating.setAutoHide(false)
             floatingChecks["autoHideCanBeDisabled"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 140, height: 48)
             floating.setAutoHide(true)
+            func findView(_ id: String, in view: NSView) -> NSView? {
+                if view.identifier?.rawValue == id { return view }
+                return view.subviews.compactMap { findView(id, in: $0) }.first
+            }
+            if let content = floating.panel.contentView,
+               let closeButton = findView("GaoMenHu.Floating.CloseToEntry", in: content) as? NSButton {
+                for (edge, autoHide) in [(FloatingLauncherEdge.right, true), (.left, true), (.none, true), (.right, false)] {
+                    floating.setDock(edge); floating.setAutoHide(autoHide)
+                    floating.setExpanded(true); floating.setPinned(true); floating.search("blbl")
+                    closeButton.performClick(nil)
+                    let narrow = edge != .none && autoHide
+                    floatingChecks["closeKeepsEntry-\(edge.rawValue)-\(autoHide)"] = floating.isVisible && !floating.expanded &&
+                        floating.edgeHidden == narrow && !floating.pinned && floating.query.isEmpty &&
+                        floating.dockEdge == edge && floating.autoHideEnabled == autoHide
+                }
+                floating.setDock(.right); floating.setAutoHide(true)
+                floating.setExpanded(true); closeButton.performClick(nil)
+                let point = NSPoint(x: floating.panel.frame.midX, y: floating.panel.frame.midY)
+                floating.processPointer(at: point, now: clock + 80)
+                floating.processPointer(at: point, now: clock + 80.5)
+                floatingChecks["closeAllowsHoverRevealWithoutReenable"] = floating.isVisible && floating.expanded
+                closeButton.performClick(nil)
+                let handle = findView("GaoMenHu.Floating.EdgeHandle", in: content)
+                let clicked = handle?.accessibilityPerformPress() == true
+                floatingChecks["closeAllowsClickRevealWithoutReenable"] = clicked && floating.isVisible && floating.expanded
+                floating.setExpanded(false)
+            } else { floatingChecks["closeButtonAvailable"] = false }
             window.orderOut(nil)
             floatingChecks["independentOfMainWindow"] = floating.panel.isVisible && !window.isVisible
             floating.setVisible(false)

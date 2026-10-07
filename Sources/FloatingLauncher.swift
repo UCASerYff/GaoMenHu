@@ -186,6 +186,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         surface.layer?.masksToBounds = true
         panel.contentView = container
         container.addSubview(surface); container.addSubview(edgeHandle)
+        edgeHandle.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.EdgeHandle")
         container.pointerEntered = { [weak self] in self?.outsideStartedAt = nil }
         container.pointerExited = { [weak self] in self?.hoverStartedAt = nil }
 
@@ -208,7 +209,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             else if !self.expanded { self.setExpanded(true) }
         }
         header.collapse = { [weak self] in self?.setExpanded(false) }
-        header.close = { [weak self] in self?.setVisible(false) }
+        header.close = { [weak self] in self?.setExpanded(false) }
         header.pinned = { [weak self] in self?.pinned ?? false }
         header.togglePin = { [weak self] in self?.setPinned(!(self?.pinned ?? false)) }
         surface.addSubview(header)
@@ -528,7 +529,7 @@ private final class FloatingLauncherHeader: NSView {
         for (button, image, label, action) in [
             (pinButton, "pin", "固定悬浮窗", #selector(pinTapped)),
             (collapseButton, "minus", "收起悬浮窗", #selector(collapseTapped)),
-            (closeButton, "xmark", "隐藏悬浮窗", #selector(closeTapped))
+            (closeButton, "xmark", "隐藏到唤起入口", #selector(closeTapped))
         ] {
             button.image = NSImage(systemSymbolName: image, accessibilityDescription: label)
             button.isBordered = false
@@ -538,6 +539,7 @@ private final class FloatingLauncherHeader: NSView {
             addSubview(button)
         }
         setAccessibilityLabel("搞门户悬浮窗入口；拖动调整位置，点击展开")
+        closeButton.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.CloseToEntry")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
