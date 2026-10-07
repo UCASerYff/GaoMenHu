@@ -4,10 +4,10 @@ import Foundation
 import Carbon
 import UniformTypeIdentifiers
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate, NSMenuItemValidation {
     var window: NSWindow!
     var web: WKWebView!
-    var library: Library = .empty()
+    var library: Library = .empty() { didSet { floatingLauncher?.refresh() } }
     var store: LibraryStore!
     var vault: Vault!
     var server: BridgeServer?
@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var timer: Timer?
     var settingsWindow: NSWindow?
     var settingsModel: PortalSettingsModel?
+    var floatingLauncher: FloatingLauncherController?
     var testMode = CommandLine.arguments.contains("--ui-test")
     var lastInteraction = Date()
     var lastClientSignature = ""
@@ -45,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         catch { library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)"; store = LibraryStore(persistent: false) }
         applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
+        floatingLauncher = FloatingLauncherController(app: self)
+        floatingLauncher?.start()
         if !testMode {
             do {
                 try registerNativeHosts()
@@ -130,6 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         view.addItem(withTitle: "添加网站", action: #selector(addSite), keyEquivalent: "n")
         let full = view.addItem(withTitle: "切换全屏", action: #selector(fullscreen), keyEquivalent: "f"); full.keyEquivalentModifierMask = [.command, .control]
         let sidebar = view.addItem(withTitle: "显示或隐藏侧栏", action: #selector(toggleSidebar), keyEquivalent: "s"); sidebar.keyEquivalentModifierMask = [.command, .control]
+        let floating = view.addItem(withTitle: "显示或隐藏悬浮窗", action: #selector(toggleFloatingLauncher), keyEquivalent: "p")
+        floating.keyEquivalentModifierMask = [.command, .control]; floating.target = self
         let dataRoot = NSMenuItem(); bar.addItem(dataRoot); let data = NSMenu(title: "数据"); dataRoot.submenu = data
         data.addItem(withTitle: "导出完整资料…", action: #selector(exportFullBackup), keyEquivalent: "")
         data.addItem(withTitle: "从完整资料恢复…", action: #selector(restoreFullBackup), keyEquivalent: "")
@@ -144,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         if let image = NSImage(systemSymbolName: "door.left.hand.open", accessibilityDescription: "搞门户") { image.isTemplate = true; statusItem.button?.image = image }
         let menu = NSMenu()
         menu.addItem(withTitle: "打开搞门户  ⌃⌥Space", action: #selector(showWindow), keyEquivalent: "")
+        let floating = menu.addItem(withTitle: "显示或隐藏悬浮窗", action: #selector(toggleFloatingLauncher), keyEquivalent: ""); floating.target = self
         menu.addItem(withTitle: "锁定账号库", action: #selector(lockVault), keyEquivalent: "")
         menu.addItem(.separator()); menu.addItem(withTitle: "退出搞门户", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         statusItem.menu = menu
@@ -165,9 +171,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @objc func search() { showWindow(); emit("search", [:]) }
     @objc func addSite() { showWindow(); emit("addSite", [:]) }
     @objc func fullscreen() { window.toggleFullScreen(nil) }
+    @objc func toggleFloatingLauncher() { floatingLauncher?.toggle(); settingsModel?.refresh() }
+    func setFloatingLauncherVisible(_ visible: Bool) { floatingLauncher?.setVisible(visible); settingsModel?.refresh() }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleFloatingLauncher) { menuItem.state = floatingLauncher?.isVisible == true ? .on : .off }
+        return true
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); server?.stop(); if let hotkey { UnregisterEventHotKey(hotkey) } }
+    func applicationWillTerminate(_ notification: Notification) { floatingLauncher?.stop(); timer?.invalidate(); server?.stop(); if let hotkey { UnregisterEventHotKey(hotkey) } }
 
     func installedBrowsers() -> [Browser] { Browser.catalog.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil } }
     func activeClients() -> [BrowserClient] { clients.values.filter { Date().timeIntervalSince($0.lastSeen) < 9 }.sorted { $0.label < $1.label } }
@@ -181,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 "extensionPath": resources.appendingPathComponent("BrowserExtension").path]
     }
     func emit(_ event: String, _ payload: [String: Any]) {
+        if event == "toast", let message = payload["message"] as? String { floatingLauncher?.showStatus(message) }
         guard web != nil, let data = try? JSONSerialization.data(withJSONObject: ["event": event, "payload": payload]), let text = String(data: data, encoding: .utf8) else { return }
         web.evaluateJavaScript("window.nativeEvent && window.nativeEvent(\(text));", completionHandler: nil)
     }
@@ -358,14 +371,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
-    func launch(_ data: [String: Any], responseID: String) {
-        guard let siteID = data["siteID"] as? String, let site = library.sites.first(where: { $0.id == siteID }) else { reply(responseID, ["ok": false, "error": "网站不存在。"]); return }
+    func launchFromFloating(siteID: String, browserID: String?, completion: @escaping (String?) -> Void) {
+        lastInteraction = Date()
+        guard visibleSiteIDs(library.tiles).contains(siteID) else { completion("这个网站已从启动台移除。"); return }
+        var data: [String: Any] = ["siteID": siteID]
+        if let browserID { data["browser"] = browserID }
+        launch(data, responseID: nil) { value in
+            completion(value["ok"] as? Bool == true ? nil : (value["error"] as? String ?? "网站打开失败。"))
+        }
+    }
+
+    func launch(_ data: [String: Any], responseID: String?, completion: (([String: Any]) -> Void)? = nil) {
+        let respond: ([String: Any]) -> Void = { value in
+            if let completion { completion(value) }
+            else if let responseID { self.reply(responseID, value) }
+        }
+        guard let siteID = data["siteID"] as? String, let site = library.sites.first(where: { $0.id == siteID }) else { respond(["ok": false, "error": "网站不存在。"]); return }
         let browserID = data["browser"] as? String ?? site.defaultBrowser
         do { try validateLaunch(site, browserID: browserID) }
-        catch { reply(responseID, ["ok": false, "error": error.localizedDescription]); return }
-        if testMode { reply(responseID, ["ok": true, "message": "测试启动已验证。"]); return }
+        catch { respond(["ok": false, "error": error.localizedDescription]); return }
+        if testMode { respond(["ok": true, "message": "测试启动已验证。"]); return }
         guard let browser = Browser.catalog.first(where: { $0.id == browserID }),
-              let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID), let url = validWebURL(site.url) else { return }
+              let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID), let url = validWebURL(site.url) else { respond(["ok": false, "error": "浏览器未安装或网址无效。"]); return }
         let accountID = data["accountID"] as? String ?? site.defaultAccount
         let account = site.accounts.first(where: { $0.id == accountID })
         let perform = {
@@ -373,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let selectedProfile = site.profiles[browserID].flatMap { $0.isEmpty ? nil : $0 }
             // Recheck after authentication: connected profiles may have changed while the prompt was open.
             do { try self.validateLaunch(site, browserID: browserID) }
-            catch { self.reply(responseID, ["ok": false, "error": error.localizedDescription]); return }
+            catch { respond(["ok": false, "error": error.localizedDescription]); return }
             let needsFill = account?.hasPassword == true
             let profile = selectedProfile ?? available.first?.id
             let requestID = UUID().uuidString
@@ -387,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                         self.emit("toast", ["message": "浏览器未能启动，请重新打开浏览器后重试。"])
                     } }
                 }
-                self.reply(responseID, ["ok": true, "message": available.isEmpty ? "正在连接浏览器助手…" : "正在用 \(browser.name) 打开 \(site.name)…"])
+                respond(["ok": true, "message": available.isEmpty ? "正在连接浏览器助手…" : "正在用 \(browser.name) 打开 \(site.name)…"])
                 DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                     guard let request = self.launches[requestID], request.claimedProfile == nil else { return }
                     self.launches.removeValue(forKey: requestID)
@@ -405,11 +432,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                     DispatchQueue.main.async { self.emit("toast", ["message": error == nil ? "已交给 \(browser.name) 打开 \(site.name)。" : "网页打开失败，请检查浏览器后重试。"]) }
                 }
-                self.reply(responseID, ["ok": true, "message": "正在用 \(browser.name) 打开…"])
+                respond(["ok": true, "message": "正在用 \(browser.name) 打开…"])
             }
         }
         if account?.hasPassword == true {
-            vault.authenticate("为 \(site.name) 填入你选择的账号") { ok, error in if ok { perform() } else { self.reply(responseID, ["ok": false, "error": error ?? "已取消解锁。"] ) } }
+            vault.authenticate("为 \(site.name) 填入你选择的账号") { ok, error in if ok { perform() } else { respond(["ok": false, "error": error ?? "已取消解锁。"] ) } }
         } else { perform() }
     }
 

@@ -52,6 +52,15 @@ struct PortalSettingsView: View {
                     Text("在浏览器扩展管理页开启开发者模式，加载助手文件夹。更新后可在该页面重新加载助手。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+                Section("悬浮窗") {
+                    Toggle("显示悬浮窗", isOn: Binding(get: { app.floatingLauncher?.isVisible ?? false }, set: { app.setFloatingLauncherVisible($0); model.refresh() }))
+                    HStack {
+                        Button("重置悬浮窗位置") { app.floatingLauncher?.resetPosition(); app.setFloatingLauncherVisible(true); model.refresh() }
+                        Text("⌃⌘P 显示或隐藏").foregroundStyle(.secondary)
+                    }
+                    Text("拖动顶部可移动，靠近屏幕左右边缘会吸附。展开后快速打开前 8 个网站，或搜索整个启动台；右键选择允许的浏览器。窗口位置与开关仅保存在本机。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 Section("账号库") {
                     HStack {
                         Text(app.vault.unlocked ? "已解锁" : "已锁定")

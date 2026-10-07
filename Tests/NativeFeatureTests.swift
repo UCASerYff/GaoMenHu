@@ -82,6 +82,18 @@ extension AppDelegate {
             _ = request(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "opened"])
             check("lateOpenedKeepsFilledFeedback", feedback == launchFeedback[oldID])
             check("launchStatusRejectsWrongProfile", handleBrowser(base.merging(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "failed", "profileId": UUID().uuidString]) { _, new in new })["ok"] as? Bool == false)
+            clients = clients.filter { $0.key == profile }
+            var floatingError: String? = "No callback"
+            launchFromFloating(siteID: "seed-0", browserID: nil) { floatingError = $0 }
+            check("floatingLaunchReusesDefaultBrowser", floatingError == nil)
+            launchFromFloating(siteID: "seed-0", browserID: "edge") { floatingError = $0 }
+            check("floatingLaunchRejectsUnallowedBrowser", floatingError?.contains("允许列表") == true)
+            library.sites[0].profiles["chrome"] = UUID().uuidString
+            launchFromFloating(siteID: "seed-0", browserID: nil) { floatingError = $0 }
+            check("floatingLaunchRequiresSelectedProfile", floatingError?.contains("尚未连接") == true)
+            library.tiles = removeFromTiles("seed-0", library.tiles)
+            launchFromFloating(siteID: "seed-0", browserID: nil) { floatingError = $0 }
+            check("floatingLaunchRejectsRemovedEntry", floatingError?.contains("移除") == true)
         } catch { checks["setupOrUnexpectedFailure"] = false; print("Native feature test error: \(error.localizedDescription)") }
         return checks
     }

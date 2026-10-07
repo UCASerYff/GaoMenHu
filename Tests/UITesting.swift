@@ -31,6 +31,34 @@ extension AppDelegate {
             settingsWindow?.orderOut(nil)
         } catch { settingsChecks["setup"] = false }
         library = savedLibrary; applyAppearance(); window.makeKeyAndOrderFront(nil)
+        var floatingChecks: [String: Bool] = [:]
+        if let floating = floatingLauncher {
+            floating.setVisible(true)
+            floatingChecks["visibleWhenEnabled"] = floating.isVisible && floating.panel.isVisible
+            floatingChecks["nonactivatingNativePanel"] = floating.panel.styleMask.contains(.nonactivatingPanel) && !floating.panel.canBecomeMain
+            floatingChecks["allSpacesAvailable"] = floating.panel.collectionBehavior.contains(.canJoinAllSpaces)
+            floating.setExpanded(true)
+            floatingChecks["expandedPanelSize"] = floating.expanded && floating.panel.frame.width >= 300 && floating.panel.frame.height >= 400
+            floating.search("blbl")
+            floatingChecks["nativeSearchAcceptsPinyin"] = floating.visibleSiteIDs == ["seed-4"]
+            floating.search("gaomenhu-no-result-fixture")
+            floatingChecks["nativeEmptySearchResult"] = floating.visibleSiteIDs.isEmpty
+            floating.search("")
+            floating.setExpanded(false)
+            floatingChecks["collapsedPanelSize"] = !floating.expanded && floating.panel.frame.height == 48
+            floatingChecks["collapseClearsQuery"] = floating.query.isEmpty
+            window.orderOut(nil)
+            floatingChecks["independentOfMainWindow"] = floating.panel.isVisible && !window.isVisible
+            floating.setVisible(false)
+            floatingChecks["hiddenWhenDisabled"] = !floating.isVisible && !floating.panel.isVisible
+            floating.setVisible(true); floating.resetPosition(); floating.setExpanded(true)
+            floatingChecks["restoredWithinDisplay"] = NSScreen.screens.contains { $0.visibleFrame.contains(floating.panel.frame) }
+            floating.showStatus("点击网站打开，右键选择浏览器")
+            floating.capturePreview(to: URL(fileURLWithPath: "/private/tmp/mendao-floating-test.png"))
+            floatingChecks["previewRendered"] = FileManager.default.fileExists(atPath: "/private/tmp/mendao-floating-test.png")
+            floating.setExpanded(false)
+        } else { floatingChecks["controllerCreated"] = false }
+        window.makeKeyAndOrderFront(nil)
         var browserChecks: [String: Bool] = [:]
         let profile = UUID().uuidString
         let account = Account(id: UUID().uuidString, label: "Test", username: "test@example.test", loginHosts: ["auth.example.test"], hasPassword: true)
@@ -67,7 +95,7 @@ extension AppDelegate {
             print("UI test script missing"); NSApp.terminate(nil); return
         }
         web.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { result in
-            var report: [String: Any] = ["authorization": browserChecks, "nativeFeatures": featureChecks, "nativeSettings": settingsChecks]
+            var report: [String: Any] = ["authorization": browserChecks, "nativeFeatures": featureChecks, "nativeSettings": settingsChecks, "nativeFloating": floatingChecks]
             switch result {
             case .success(let value): report["ui"] = value
             case .failure(let error): report["uiError"] = String(describing: (error as NSError).userInfo)

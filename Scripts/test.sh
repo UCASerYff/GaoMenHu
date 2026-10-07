@@ -16,6 +16,9 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sourc
 swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
   "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Tests/LibraryOperationsTests.swift" -o "$TEST_DIR/library"
 "$TEST_DIR/library"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
+  "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Tests/FloatingLauncherLogicTests.swift" -o "$TEST_DIR/floating"
+"$TEST_DIR/floating"
 swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/IconLoader.swift" \
   "$PROJECT_DIR/Tests/Icons.swift" -framework AppKit -framework ImageIO -o "$TEST_DIR/icons"
 "$TEST_DIR/icons"
