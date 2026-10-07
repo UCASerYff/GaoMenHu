@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "搞门户助手",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "从浏览器收藏网页到搞门户，并为从搞门户启动的网站填入所选账号。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5l4zEjb1z/a7TzkmkteiNZTMyyFtB/OpE+/1jAMqX4yXKZAy8riJBvlYQLa2/9b7F8ByOM8a0/oSG/QwHpiVz98DI3YJqfcLw2qPa+QTMqKuH02Zcm05o01I1Z3/oVhyqE6mjNUmHTyH/bzU476qhHpVw3oMn3QwpY1f27kCcaEzCkQhIAbja4AbUb2zKeOkTrC4eoMVPUaaNj1Szl040lEmfWxfWVwpcYVh0sXH0f2PBE4nYYAhkuiH7mBIHDp7/rQwH/c/HBAXy33PuXpMy4QUPOrI8sisKVG2amjuMTYkClw6QOhZ7qj6VmEIv5xNM5RmvmHHlWgAy/UC3fz6nQIDAQAB",
   "permissions": [

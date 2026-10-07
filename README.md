@@ -1,4 +1,4 @@
-# 搞门户 V1.11
+# 搞门户 V1.12
 
 macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排序、组合文件夹，并为每个网站指定浏览器和登录账号。
 
@@ -6,7 +6,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 
 ## 下载与安装
 
-从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.11.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
+从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.12.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
 
 1. 支持 macOS 13 或更高版本、Apple Silicon；当前未提供 Intel 版本。
 2. 打开 DMG，把 `搞门户.app` 拖入“应用程序”文件夹，然后启动。
@@ -16,7 +16,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 校验下载文件：
 
 ```sh
-shasum -a 256 -c GaoMenHu-1.11.dmg.sha256
+shasum -a 256 -c GaoMenHu-1.12.dmg.sha256
 ```
 
 ## 功能
@@ -85,7 +85,9 @@ shasum -a 256 -c GaoMenHu-1.11.dmg.sha256
 
 ## 版本
 
-版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.11。
+版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.12。
+
+V1.12：进一步压缩悬浮窗顶部留白，搜索框距顶部由 34 pt 减至 12 pt，保留顶部拖动区。整体高度减少 22 pt，列表和底部间距保持紧凑；保留 V1.11 的边界判断与快速收起逻辑。升级沿用原资料和使用统计。
 
 V1.11：悬浮窗按实际窗口边界判定，移出约 0.15 秒收起，点击其他位置立即收起。移除展开保留时间和普通搜索宽限，拖动、右键菜单、中文组词与登录验证仍受到保护；收起后先移出入口再悬停，避免反复展开。高度随网站数量调整，最多显示 8 行，更多搜索结果滚动查看，压缩底部留白。沿用网站、账号、位置与使用记录。
 

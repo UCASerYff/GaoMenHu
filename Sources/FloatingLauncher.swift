@@ -271,12 +271,12 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         edgeHandle.edge = dockEdge
         edgeHandle.isHidden = !edgeHidden; surface.isHidden = edgeHidden
         edgeHandle.needsDisplay = true
-        header.frame = NSRect(x: 0, y: height - 24, width: width, height: 24)
+        header.frame = NSRect(x: 0, y: height - 12, width: width, height: 12)
         header.update()
         [searchField, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
         if expanded {
-            searchField.frame = NSRect(x: 16, y: height - 64, width: width - 32, height: 30)
-            scroll.frame = NSRect(x: 12, y: 40, width: max(0, width - 24), height: max(0, height - 114))
+            searchField.frame = NSRect(x: 16, y: height - 42, width: width - 32, height: 30)
+            scroll.frame = NSRect(x: 12, y: 40, width: max(0, width - 24), height: max(0, height - 92))
             footer.frame = NSRect(x: 18, y: 12, width: width - 134, height: 16)
             openMain.frame = NSRect(x: width - 100, y: 8, width: 84, height: 24)
             rebuildRows()

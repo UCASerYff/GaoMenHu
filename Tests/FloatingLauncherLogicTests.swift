@@ -236,8 +236,8 @@ import CoreGraphics
         }
 
         let compactSizes: [(count: Int, height: CGFloat)] = [
-            (0, 178), (1, 160), (6, 390), (8, 482), (9, 482),
-            (-1, 178), (Int.min, 178), (Int.max, 482)
+            (0, 156), (1, 138), (6, 368), (8, 460), (9, 460),
+            (-1, 156), (Int.min, 156), (Int.max, 460)
         ]
         for fixture in compactSizes {
             check("compact size for \(fixture.count) sites", FloatingLauncherGeometry.expandedSize(siteCount: fixture.count) == CGSize(width: 364, height: fixture.height))
@@ -246,7 +246,7 @@ import CoreGraphics
         check("adding a seventh row increases only one row height", FloatingLauncherGeometry.expandedSize(siteCount: 7).height - sixRows.height == 46)
         check("eight row viewport is shorter than old fixed window", FloatingLauncherGeometry.expandedSize(siteCount: 8).height < expandedSize.height)
 
-        let geometryFixtures: [(count: Int, height: CGFloat)] = [(0, 178), (1, 160), (6, 390), (8, 482), (Int.max, 482)]
+        let geometryFixtures: [(count: Int, height: CGFloat)] = [(0, 156), (1, 138), (6, 368), (8, 460), (Int.max, 460)]
         for edge in [FloatingLauncherEdge.left, .right, .none] {
             let anchorX = edge == .right ? leftScreen.maxX - collapsedSize.width : edge == .left ? leftScreen.minX : -900
             let compactAnchor = CGRect(x: anchorX, y: 750, width: collapsedSize.width, height: collapsedSize.height)
@@ -261,7 +261,7 @@ import CoreGraphics
                 check("compact \(edge.rawValue) frame for \(fixture.count) sites stays above screen bottom", bottomCompact.minY == leftScreen.minY && bottomCompact.size == dynamicSize && leftScreen.contains(bottomCompact))
 
                 let smallCompact = FloatingLauncherGeometry.resizedFrame(compactAnchor, size: dynamicSize, in: tiny, edge: edge)
-                check("compact \(edge.rawValue) frame for \(fixture.count) sites fits a screen smaller than the content", smallCompact == tiny)
+                check("compact \(edge.rawValue) frame for \(fixture.count) sites fits a smaller screen without growing", tiny.contains(smallCompact) && smallCompact.size == CGSize(width: min(dynamicSize.width, tiny.width), height: min(dynamicSize.height, tiny.height)))
             }
         }
         print("Floating launcher logic: \(count) checks passed")

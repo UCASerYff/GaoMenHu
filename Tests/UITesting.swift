@@ -74,14 +74,14 @@ extension AppDelegate {
                     view is NSButton || view.subviews.contains { hasButton(in: $0) }
                 }
                 floatingChecks["floatingHeaderHasNoButtons"] = header.map { !hasButton(in: $0) } ?? false
-                floatingChecks["floatingHeaderIsShortDragArea"] = header?.frame.height == 24
+                floatingChecks["floatingHeaderIsShortDragArea"] = header?.frame.height == 12
             } else { floatingChecks["floatingHasNoProductTitleOrVersion"] = false }
             launchHistory = originalHistory; floating.refresh()
             floating.search("blbl")
             floatingChecks["nativeSearchAcceptsPinyin"] = floating.visibleSiteIDs == ["seed-4"]
             floating.search("gaomenhu-no-result-fixture")
             floatingChecks["nativeEmptySearchResult"] = floating.visibleSiteIDs.isEmpty
-            floatingChecks["emptySearchUsesCompactHeight"] = floating.panel.frame.size == NSSize(width: 364, height: 178)
+            floatingChecks["emptySearchUsesCompactHeight"] = floating.panel.frame.size == NSSize(width: 364, height: 156)
             if let content = floating.panel.contentView {
                 func findEmptyLabel(_ view: NSView) -> NSTextField? {
                     if let label = view as? NSTextField, label.stringValue.contains("没有匹配的网站") { return label }
@@ -110,7 +110,7 @@ extension AppDelegate {
             }
             floating.search("https")
             floatingChecks["manySearchResultsKeepCompactHeight"] = floating.visibleSiteIDs.count == 11 &&
-                floating.panel.frame.size == NSSize(width: 364, height: 482)
+                floating.panel.frame.size == NSSize(width: 364, height: 460)
             if let content = floating.panel.contentView {
                 func findListScroll(_ view: NSView) -> NSScrollView? {
                     if let list = view as? NSScrollView { return list }
@@ -122,7 +122,7 @@ extension AppDelegate {
             } else { floatingChecks["manySearchResultsRemainScrollable"] = false }
             library = heightLibrary; floating.search("")
             floatingChecks["refreshRestoresHeightWithoutReopening"] = floating.expanded &&
-                floating.panel.frame.size == NSSize(width: 364, height: 390)
+                floating.panel.frame.size == NSSize(width: 364, height: 368)
             floating.setExpanded(false)
             floatingChecks["collapsedPanelSize"] = !floating.expanded && floating.edgeHidden && floating.panel.frame.size == NSSize(width: 20, height: 104)
             floatingChecks["collapseClearsQuery"] = floating.query.isEmpty

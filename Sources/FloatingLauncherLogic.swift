@@ -148,7 +148,7 @@ enum FloatingLauncherGeometry {
     static func expandedSize(siteCount: Int) -> CGSize {
         let visibleRows = min(max(siteCount, 0), 8)
         let listHeight: CGFloat = visibleRows == 0 ? 64 : CGFloat(visibleRows) * 46
-        return CGSize(width: 364, height: 114 + listHeight)
+        return CGSize(width: 364, height: 92 + listHeight)
     }
 
     static func constrain(frame: CGRect, to screen: CGRect) -> CGRect {
