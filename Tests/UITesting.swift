@@ -34,10 +34,15 @@ extension AppDelegate {
         var floatingChecks: [String: Bool] = [:]
         if let floating = floatingLauncher {
             floating.setVisible(true)
-            floating.setAutoHide(true); floating.setDock(.right)
+            floating.setDock(.right)
             floatingChecks["visibleWhenEnabled"] = floating.isVisible && floating.panel.isVisible
             floatingChecks["nonactivatingNativePanel"] = floating.panel.styleMask.contains(.nonactivatingPanel) && !floating.panel.canBecomeMain
             floatingChecks["allSpacesAvailable"] = floating.panel.collectionBehavior.contains(.canJoinAllSpaces)
+            floatingChecks["startsAsNarrowVerticalEntry"] = floating.edgeHidden && floating.panel.frame.size == NSSize(width: 20, height: 104)
+            func findView(_ id: String, in view: NSView) -> NSView? {
+                if view.identifier?.rawValue == id { return view }
+                return view.subviews.compactMap { findView(id, in: $0) }.first
+            }
             floating.setExpanded(true)
             floatingChecks["expandedPanelSize"] = floating.expanded && floating.panel.frame.width >= 300 && floating.panel.frame.height >= 400
             let originalHistory = launchHistory
@@ -62,8 +67,13 @@ extension AppDelegate {
                 func hasImageView(in view: NSView) -> Bool {
                     view is NSImageView || view.subviews.contains { hasImageView(in: $0) }
                 }
-                let header = content.subviews.flatMap(\.subviews).first { $0.accessibilityLabel() == "搞门户悬浮窗入口；拖动调整位置，点击展开" }
+                let header = findView("GaoMenHu.Floating.DragArea", in: content)
                 floatingChecks["floatingHeaderHasNoAppIcon"] = header.map { !hasImageView(in: $0) } ?? false
+                func hasButton(in view: NSView) -> Bool {
+                    view is NSButton || view.subviews.contains { hasButton(in: $0) }
+                }
+                floatingChecks["floatingHeaderHasNoButtons"] = header.map { !hasButton(in: $0) } ?? false
+                floatingChecks["floatingHeaderIsShortDragArea"] = header?.frame.height == 24
             } else { floatingChecks["floatingHasNoProductTitleOrVersion"] = false }
             launchHistory = originalHistory; floating.refresh()
             floating.search("blbl")
@@ -87,16 +97,16 @@ extension AppDelegate {
             floating.processPointer(at: outside, now: clock + 1.3)
             floatingChecks["revealGraceProtectsPointerTravel"] = floating.expanded
             floating.processPointer(at: outside, now: clock + 1.6)
+            floating.processPointer(at: outside, now: clock + 1.9)
+            floatingChecks["pointerExitDelayPreventsFlicker"] = floating.expanded
             floating.processPointer(at: outside, now: clock + 2.2)
             floatingChecks["pointerExitReturnsToHandle"] = floating.edgeHidden && !floating.expanded
             floatingChecks["modeChangesKeepAnchor"] = floating.panel.frame == handleFrame
-            floating.setExpanded(true); floating.setPinned(true)
-            floating.processPointer(at: outside, now: clock + 10)
-            floating.processPointer(at: outside, now: clock + 11)
-            floatingChecks["pinnedPanelDoesNotAutoHide"] = floating.expanded && floating.pinned
-            floating.setExpanded(false)
-            floatingChecks["explicitCollapseClearsPin"] = !floating.pinned && floating.edgeHidden
             floating.setExpanded(true)
+            let insidePanel = NSPoint(x: floating.panel.frame.midX, y: floating.panel.frame.midY)
+            floating.processPointer(at: insidePanel, now: clock + 10)
+            floating.processPointer(at: insidePanel, now: clock + 11)
+            floatingChecks["pointerInsideKeepsPanelOpen"] = floating.expanded
             floating.processPointer(at: outside, now: clock + 20, mouseDown: true)
             floating.processPointer(at: outside, now: clock + 21, mouseDown: true)
             floatingChecks["pressedMouseProtectsPanel"] = floating.expanded
@@ -109,6 +119,22 @@ extension AppDelegate {
             floating.processPointer(at: outside, now: clock + 32)
             floating.processPointer(at: outside, now: clock + 33)
             floatingChecks["menuCloseRestoresAutoHide"] = floating.edgeHidden
+            if let content = floating.panel.contentView,
+               let dragArea = findView("GaoMenHu.Floating.DragArea", in: content),
+               let down = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                              windowNumber: floating.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1),
+               let up = NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+                                            windowNumber: floating.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0) {
+                floating.setExpanded(true)
+                dragArea.mouseDown(with: down)
+                floating.processPointer(at: outside, now: clock + 35)
+                floating.processPointer(at: outside, now: clock + 36)
+                floatingChecks["dragAreaPressProtectsPanel"] = floating.expanded
+                dragArea.mouseUp(with: up)
+                floating.processPointer(at: outside, now: clock + 37)
+                floating.processPointer(at: outside, now: clock + 38)
+                floatingChecks["dragAreaReleaseRestoresAutoHide"] = floating.edgeHidden
+            } else { floatingChecks["dragAreaPressProtectsPanel"] = false }
             floating.setExpanded(true)
             func findSearch(_ view: NSView) -> NSSearchField? {
                 if let field = view as? NSSearchField { return field }
@@ -116,49 +142,97 @@ extension AppDelegate {
             }
             if let content = floating.panel.contentView, let field = findSearch(content) {
                 floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                floating.search("blbl"); floating.noteSearchInteraction(now: clock + 40)
                 floating.processPointer(at: outside, now: clock + 40)
                 floating.processPointer(at: outside, now: clock + 41)
-                floatingChecks["searchEditingProtectsPanel"] = floating.expanded && floating.panel.firstResponder is NSTextView
-                floating.panel.makeFirstResponder(nil)
-            } else { floatingChecks["searchEditingProtectsPanel"] = false }
-            floating.setExpanded(false); floating.setDock(.left)
-            floatingChecks["leftDockHasNarrowHandle"] = floating.edgeHidden && NSScreen.screens.contains { $0.visibleFrame.minX == floating.panel.frame.minX && $0.visibleFrame.contains(floating.panel.frame) }
-            floating.setDock(.none)
-            floatingChecks["freePositionUsesCompactEntry"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 48, height: 48)
-            floating.setExpanded(true)
-            floating.processPointer(at: outside, now: clock + 50)
-            floating.processPointer(at: outside, now: clock + 51)
-            floatingChecks["freePositionDoesNotAutoHide"] = floating.expanded
-            floating.setExpanded(false); floating.setDock(.right); floating.setAutoHide(false)
-            floatingChecks["autoHideCanBeDisabled"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 48, height: 48)
-            floating.setAutoHide(true)
-            func findView(_ id: String, in view: NSView) -> NSView? {
-                if view.identifier?.rawValue == id { return view }
-                return view.subviews.compactMap { findView(id, in: $0) }.first
-            }
+                floating.processPointer(at: outside, now: clock + 44.9)
+                floatingChecks["recentSearchInputProtectsPanel"] = floating.expanded && floating.panel.firstResponder is NSTextView
+                floating.processPointer(at: outside, now: clock + 45.1)
+                floating.processPointer(at: outside, now: clock + 45.4)
+                floatingChecks["expiredSearchInputStillUsesExitDelay"] = floating.expanded
+                floating.processPointer(at: outside, now: clock + 45.7)
+                floatingChecks["expiredSearchFocusAllowsAutoHide"] = floating.edgeHidden && !floating.expanded && floating.isVisible
+                floatingChecks["autoHideClearsSearchAndFocus"] = floating.query.isEmpty && !(floating.panel.firstResponder is NSTextView)
+                floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                floating.search("blbl"); floating.noteSearchInteraction(now: clock + 50)
+                window.makeKeyAndOrderFront(nil)
+                floating.processPointer(at: outside, now: clock + 50.1)
+                floating.processPointer(at: outside, now: clock + 50.7)
+                floatingChecks["searchLosesKeyFocusAllowsAutoHide"] = floating.edgeHidden && !floating.expanded
+            } else { floatingChecks["recentSearchInputProtectsPanel"] = false }
             if let content = floating.panel.contentView,
-               let closeButton = findView("GaoMenHu.Floating.CloseToEntry", in: content) as? NSButton {
-                for (edge, autoHide) in [(FloatingLauncherEdge.right, true), (.left, true), (.none, true), (.right, false)] {
-                    floating.setDock(edge); floating.setAutoHide(autoHide)
-                    floating.setExpanded(true); floating.setPinned(true); floating.search("blbl")
-                    closeButton.performClick(nil)
-                    let narrow = edge != .none && autoHide
-                    floatingChecks["closeKeepsEntry-\(edge.rawValue)-\(autoHide)"] = floating.isVisible && !floating.expanded &&
-                        floating.edgeHidden == narrow && !floating.pinned && floating.query.isEmpty &&
-                        floating.dockEdge == edge && floating.autoHideEnabled == autoHide
+               let handle = findView("GaoMenHu.Floating.EdgeHandle", in: content) {
+                for (index, edge) in [FloatingLauncherEdge.left, .right, .none].enumerated() {
+                    let start = clock + 60 + Double(index) * 10
+                    floating.setExpanded(false); floating.setDock(edge)
+                    let frame = floating.panel.frame
+                    let point = NSPoint(x: frame.midX, y: frame.midY)
+                    floatingChecks["uniformVerticalEntry-\(edge.rawValue)"] = floating.isVisible && floating.edgeHidden &&
+                        !floating.expanded && frame.size == NSSize(width: 20, height: 104) && floating.dockEdge == edge
+                    floatingChecks["entryWithinDisplay-\(edge.rawValue)"] = NSScreen.screens.contains { $0.visibleFrame.contains(frame) }
+                    if edge != .none {
+                        floatingChecks["entryTouchesRequestedEdge-\(edge.rawValue)"] = NSScreen.screens.contains {
+                            $0.visibleFrame.contains(frame) && (edge == .left ? frame.minX == $0.visibleFrame.minX : frame.maxX == $0.visibleFrame.maxX)
+                        }
+                    }
+                    floating.processPointer(at: point, now: start)
+                    floating.processPointer(at: point, now: start + 0.5)
+                    floatingChecks["hoverRevealsWithoutReenable-\(edge.rawValue)"] = floating.expanded && floating.isVisible
+                    floating.search("blbl")
+                    floating.processPointer(at: outside, now: start + 2)
+                    floating.processPointer(at: outside, now: start + 2.6)
+                    floatingChecks["exitPreservesEntry-\(edge.rawValue)"] = floating.isVisible && !floating.expanded &&
+                        floating.edgeHidden && floating.query.isEmpty && floating.panel.frame == frame && floating.dockEdge == edge
+                    let clicked = handle.accessibilityPerformPress()
+                    floatingChecks["clickRevealsWithoutReenable-\(edge.rawValue)"] = clicked && floating.isVisible && floating.expanded
+                    floating.setExpanded(false)
                 }
-                floating.setDock(.right); floating.setAutoHide(true)
-                floating.setExpanded(true); closeButton.performClick(nil)
-                let point = NSPoint(x: floating.panel.frame.midX, y: floating.panel.frame.midY)
-                floating.processPointer(at: point, now: clock + 80)
-                floating.processPointer(at: point, now: clock + 80.5)
-                floatingChecks["closeAllowsHoverRevealWithoutReenable"] = floating.isVisible && floating.expanded
-                closeButton.performClick(nil)
-                let handle = findView("GaoMenHu.Floating.EdgeHandle", in: content)
-                let clicked = handle?.accessibilityPerformPress() == true
-                floatingChecks["closeAllowsClickRevealWithoutReenable"] = clicked && floating.isVisible && floating.expanded
-                floating.setExpanded(false)
-            } else { floatingChecks["closeButtonAvailable"] = false }
+            } else { floatingChecks["entryHandleAvailable"] = false }
+            let migrationSuite = "cn.mendao.tests.floating-migration." + UUID().uuidString
+            if let preferences = UserDefaults(suiteName: migrationSuite), let screen = NSScreen.main ?? NSScreen.screens.first {
+                defer { preferences.removePersistentDomain(forName: migrationSuite) }
+                let visible = screen.visibleFrame
+                let savedX = visible.minX + min(200, max(0, visible.width - 20))
+                let savedTop = visible.maxY - min(160, max(0, visible.height - 104))
+                preferences.set(false, forKey: "GaoMenHu.Floating.AutoHide")
+                preferences.set("free", forKey: "GaoMenHu.Floating.Dock")
+                preferences.set(true, forKey: "GaoMenHu.Floating.Enabled")
+                preferences.set(Double(savedX), forKey: "GaoMenHu.Floating.X")
+                preferences.set(Double(savedTop), forKey: "GaoMenHu.Floating.Top")
+                let migrated = FloatingLauncherController(app: self, testPreferences: preferences)
+                migrated.start()
+                let migratedFrame = migrated.panel.frame
+                floatingChecks["legacyAutoHideOverrideRemoved"] = preferences.object(forKey: "GaoMenHu.Floating.AutoHide") == nil
+                floatingChecks["legacyFreeModeMigratesToVerticalEntry"] = migrated.isVisible && migrated.edgeHidden &&
+                    !migrated.expanded && migrated.dockEdge == .none && migratedFrame.size == NSSize(width: 20, height: 104)
+                floatingChecks["legacyFreePositionPreserved"] = migratedFrame.minX == savedX && migratedFrame.maxY == savedTop &&
+                    preferences.double(forKey: "GaoMenHu.Floating.X") == Double(savedX) &&
+                    preferences.double(forKey: "GaoMenHu.Floating.Top") == Double(savedTop)
+                let point = NSPoint(x: migratedFrame.midX, y: migratedFrame.midY)
+                migrated.processPointer(at: point, now: clock + 100)
+                migrated.processPointer(at: point, now: clock + 100.5)
+                floatingChecks["migratedEntryAllowsHoverReveal"] = migrated.isVisible && migrated.expanded
+                migrated.processPointer(at: outside, now: clock + 102)
+                migrated.processPointer(at: outside, now: clock + 102.6)
+                floatingChecks["migratedFreeModeAutoHidesWithoutOverride"] = migrated.isVisible && migrated.edgeHidden &&
+                    !migrated.expanded && migrated.panel.frame == migratedFrame
+                let clicked = migrated.panel.contentView.flatMap { findView("GaoMenHu.Floating.EdgeHandle", in: $0) }?.accessibilityPerformPress() == true
+                floatingChecks["migratedEntryAllowsClickReveal"] = clicked && migrated.expanded && migrated.isVisible
+                migrated.stop()
+                preferences.set(false, forKey: "GaoMenHu.Floating.Enabled")
+                preferences.set(false, forKey: "GaoMenHu.Floating.AutoHide")
+                let disabled = FloatingLauncherController(app: self, testPreferences: preferences)
+                disabled.start()
+                disabled.processPointer(at: point, now: clock + 110)
+                disabled.processPointer(at: point, now: clock + 111)
+                floatingChecks["legacyDisabledPreferenceRespected"] = !disabled.isVisible && !disabled.expanded &&
+                    preferences.object(forKey: "GaoMenHu.Floating.Enabled") as? Bool == false
+                floatingChecks["disabledMigrationRemovesOnlyAutoHideOverride"] =
+                    preferences.object(forKey: "GaoMenHu.Floating.AutoHide") == nil && disabled.dockEdge == .none &&
+                    preferences.double(forKey: "GaoMenHu.Floating.X") == Double(savedX) &&
+                    preferences.double(forKey: "GaoMenHu.Floating.Top") == Double(savedTop)
+                disabled.stop()
+            } else { floatingChecks["migrationFixtureCreated"] = false }
             window.orderOut(nil)
             floatingChecks["independentOfMainWindow"] = floating.panel.isVisible && !window.isVisible
             floating.setVisible(false)

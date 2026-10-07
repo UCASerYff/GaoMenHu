@@ -5,7 +5,7 @@ import QuartzCore
 /// remain separate from the library, so showing it never rewrites user data.
 final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuDelegate {
     static let expandedSize = NSSize(width: 364, height: 526)
-    static let collapsedSize = NSSize(width: 48, height: 48)
+    static let collapsedSize = NSSize(width: 20, height: 104)
     private unowned let app: AppDelegate
     private let preferences: UserDefaults?
     let panel: FloatingLauncherPanel
@@ -25,7 +25,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var dragOffset: NSPoint?
     private var dock = "right"
     private var launching = false
-    private var anchorFrame = NSRect(x: 0, y: 0, width: 48, height: 48)
+    private var anchorFrame = NSRect(x: 0, y: 0, width: 20, height: 104)
     private var hoverStartedAt: TimeInterval?
     private var outsideStartedAt: TimeInterval?
     private var holdUntil: TimeInterval = 0
@@ -34,21 +34,20 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var status = "点击网站打开，右键选择浏览器"
     private(set) var expanded = false
     private(set) var edgeHidden = false
-    private(set) var pinned = false
-    private(set) var autoHideEnabled = true
+    private var searchHoldUntil: TimeInterval = 0
     var dockEdge: FloatingLauncherEdge { FloatingLauncherEdge(rawValue: dock) ?? .none }
     var isVisible: Bool { panel.isVisible }
     var visibleSiteIDs: [String] { currentRows.map(\.id) }
     var query: String { searchField.stringValue }
 
-    init(app: AppDelegate) {
+    init(app: AppDelegate, testPreferences: UserDefaults? = nil) {
         self.app = app
-        preferences = app.testMode ? nil : UserDefaults.standard
+        preferences = app.testMode ? testPreferences : UserDefaults.standard
         panel = FloatingLauncherPanel(contentRect: NSRect(origin: .zero, size: Self.collapsedSize),
                                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         if let value = preferences?.object(forKey: "GaoMenHu.Floating.Enabled") as? Bool { enabled = value }
-        if let value = preferences?.object(forKey: "GaoMenHu.Floating.AutoHide") as? Bool { autoHideEnabled = value }
+        preferences?.removeObject(forKey: "GaoMenHu.Floating.AutoHide")
         dock = preferences?.string(forKey: "GaoMenHu.Floating.Dock") ?? "right"
         configure()
     }
@@ -96,6 +95,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             refresh()
             panel.orderFrontRegardless()
         } else {
+            setExpanded(false)
             panel.makeFirstResponder(nil)
             panel.orderOut(nil)
         }
@@ -116,7 +116,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         hoverStartedAt = nil; outsideStartedAt = nil
         holdUntil = ProcessInfo.processInfo.systemUptime + 1
         if !value {
-            pinned = false
+            searchHoldUntil = 0
             panel.makeFirstResponder(nil)
             searchField.stringValue = ""
         }
@@ -149,7 +149,10 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         if let data = bitmap.representation(using: .png, properties: [:]) { try? data.write(to: url, options: .atomic) }
     }
 
-    func controlTextDidChange(_ notification: Notification) { refresh() }
+    func noteSearchInteraction(now: TimeInterval = ProcessInfo.processInfo.systemUptime) { searchHoldUntil = now + 5 }
+
+    func controlTextDidBeginEditing(_ notification: Notification) { noteSearchInteraction() }
+    func controlTextDidChange(_ notification: Notification) { noteSearchInteraction(); refresh() }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
@@ -186,7 +189,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         container.pointerEntered = { [weak self] in self?.outsideStartedAt = nil }
         container.pointerExited = { [weak self] in self?.hoverStartedAt = nil }
 
-        header.expanded = { [weak self] in self?.expanded ?? false }
+        header.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.DragArea")
         header.beginDrag = { [weak self] point in
             guard let self else { return }
             self.dragOffset = NSPoint(x: point.x - self.panel.frame.minX, y: point.y - self.panel.frame.minY)
@@ -204,10 +207,6 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             if moved { self.finishDrag() }
             else if !self.expanded { self.setExpanded(true) }
         }
-        header.collapse = { [weak self] in self?.setExpanded(false) }
-        header.close = { [weak self] in self?.setExpanded(false) }
-        header.pinned = { [weak self] in self?.pinned ?? false }
-        header.togglePin = { [weak self] in self?.setPinned(!(self?.pinned ?? false)) }
         surface.addSubview(header)
         edgeHandle.beginDrag = header.beginDrag; edgeHandle.drag = header.drag; edgeHandle.endDrag = header.endDrag
 
@@ -252,12 +251,12 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         edgeHandle.edge = dockEdge
         edgeHandle.isHidden = !edgeHidden; surface.isHidden = edgeHidden
         edgeHandle.needsDisplay = true
-        header.frame = NSRect(x: 0, y: height - 48, width: width, height: 48)
+        header.frame = NSRect(x: 0, y: height - 24, width: width, height: 24)
         header.update()
         [searchField, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
         if expanded {
-            searchField.frame = NSRect(x: 16, y: height - 88, width: width - 32, height: 30)
-            scroll.frame = NSRect(x: 12, y: 46, width: max(0, width - 24), height: max(0, height - 144))
+            searchField.frame = NSRect(x: 16, y: height - 64, width: width - 32, height: 30)
+            scroll.frame = NSRect(x: 12, y: 46, width: max(0, width - 24), height: max(0, height - 120))
             footer.frame = NSRect(x: 18, y: 16, width: width - 134, height: 16)
             openMain.frame = NSRect(x: width - 100, y: 12, width: 84, height: 24)
             rebuildRows()
@@ -324,7 +323,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             self.launching = false
             self.status = error ?? "正在用指定浏览器打开…"
             self.rebuildRows(); self.refresh()
-            if error == nil && !self.pinned { self.setExpanded(false) }
+            if error == nil { self.setExpanded(false) }
         }
     }
 
@@ -353,10 +352,10 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private func renderFrame() {
         let screen = FloatingLauncherGeometry.screen(for: anchorFrame, among: NSScreen.screens.map(\.visibleFrame))
             ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
-        edgeHidden = !expanded && autoHideEnabled && dockEdge != .none
+        edgeHidden = !expanded
         let frame: NSRect
         if edgeHidden { frame = FloatingLauncherGeometry.hiddenFrame(anchor: anchorFrame, edge: dockEdge, in: screen) }
-        else { frame = FloatingLauncherGeometry.resizedFrame(anchorFrame, size: expanded ? Self.expandedSize : Self.collapsedSize,
+        else { frame = FloatingLauncherGeometry.resizedFrame(anchorFrame, size: Self.expandedSize,
                                                             in: screen, edge: dockEdge) }
         panel.hasShadow = !edgeHidden
         panel.setFrame(frame, display: true)
@@ -383,20 +382,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         preferences?.set(dock, forKey: "GaoMenHu.Floating.Dock")
     }
 
-    func setAutoHide(_ value: Bool) {
-        autoHideEnabled = value; preferences?.set(value, forKey: "GaoMenHu.Floating.AutoHide")
-        hoverStartedAt = nil; outsideStartedAt = nil; hoverArmed = true
-        renderFrame(); app.settingsModel?.refresh()
-    }
-
     func setDock(_ edge: FloatingLauncherEdge) {
         dock = edge == .none ? "free" : edge.rawValue
         normalizeAnchor(); renderFrame(); savePosition(); app.settingsModel?.refresh()
-    }
-
-    func setPinned(_ value: Bool) {
-        pinned = value; outsideStartedAt = nil; header.update()
-        if value { setExpanded(true) }
     }
 
     func menuWillOpen(_ menu: NSMenu) { menuDepth += 1; outsideStartedAt = nil }
@@ -418,9 +406,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             if now - (hoverStartedAt ?? now) >= 0.45 { setExpanded(true); holdUntil = now + 1 }
             return
         }
-        guard expanded, autoHideEnabled, dockEdge != .none else { outsideStartedAt = nil; return }
-        let editingSearch = panel.isKeyWindow && panel.firstResponder is NSTextView
-        guard !pinned, !launching, menuDepth == 0, !mouseDown, !editingSearch, now >= holdUntil else {
+        guard expanded else { outsideStartedAt = nil; return }
+        let editingSearch = panel.isKeyWindow && panel.firstResponder is NSTextView && now < searchHoldUntil
+        guard !launching, menuDepth == 0, !mouseDown, !editingSearch, now >= holdUntil else {
             outsideStartedAt = nil; return
         }
         if panel.frame.insetBy(dx: -18, dy: -18).contains(point) { outsideStartedAt = nil; return }
@@ -460,7 +448,12 @@ private final class FloatingLauncherEdgeHandle: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.controlAccentColor.withAlphaComponent(0.65).setFill()
         let width = min(6, bounds.width), height = min(88, max(0, bounds.height - 8))
-        let x = edge == .left ? min(2, max(0, bounds.width - width)) : max(0, bounds.width - width - 2)
+        let x: CGFloat
+        switch edge {
+        case .left: x = min(2, max(0, bounds.width - width))
+        case .right: x = max(0, bounds.width - width - 2)
+        case .none: x = max(0, (bounds.width - width) / 2)
+        }
         NSBezierPath(roundedRect: NSRect(x: x, y: (bounds.height - height) / 2, width: width, height: height),
                      xRadius: 3, yRadius: 3).fill()
     }
@@ -494,65 +487,23 @@ private final class FloatingLauncherSearchField: NSSearchField {
 }
 
 private final class FloatingLauncherHeader: NSView {
-    var expanded: (() -> Bool)?
-    var pinned: (() -> Bool)?
-    var togglePin: (() -> Void)?
     var beginDrag: ((NSPoint) -> Void)?
     var drag: ((NSPoint) -> Void)?
     var endDrag: ((Bool) -> Void)?
-    var collapse: (() -> Void)?
-    var close: (() -> Void)?
-    private let collapseButton = NSButton()
-    private let closeButton = NSButton()
-    private let pinButton = NSButton()
     private var startingPoint = NSPoint.zero
     private var moved = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        for (button, image, label, action) in [
-            (pinButton, "pin", "固定悬浮窗", #selector(pinTapped)),
-            (collapseButton, "minus", "收起悬浮窗", #selector(collapseTapped)),
-            (closeButton, "xmark", "隐藏到唤起入口", #selector(closeTapped))
-        ] {
-            button.image = NSImage(systemSymbolName: image, accessibilityDescription: label)
-            button.isBordered = false
-            button.target = self; button.action = action
-            button.toolTip = label
-            button.setAccessibilityLabel(label)
-            addSubview(button)
-        }
         setAccessibilityLabel("搞门户悬浮窗入口；拖动调整位置，点击展开")
-        closeButton.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.CloseToEntry")
+        toolTip = "拖动顶部可移动悬浮窗，靠近左右边缘可吸附"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        guard bounds.contains(local) else { return nil }
-        for button in [pinButton, collapseButton, closeButton] where !button.isHidden && button.frame.contains(local) { return button }
-        return self
+        bounds.contains(convert(point, from: superview)) ? self : nil
     }
-    func update() {
-        let isExpanded = expanded?() ?? false
-        collapseButton.isHidden = !isExpanded
-        closeButton.isHidden = !isExpanded
-        pinButton.isHidden = !isExpanded
-        let isPinned = pinned?() ?? false
-        pinButton.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin", accessibilityDescription: nil)
-        pinButton.toolTip = isPinned ? "取消固定，移出后自动收起" : "固定悬浮窗，保持展开"
-        pinButton.setAccessibilityLabel(isPinned ? "取消固定悬浮窗" : "固定悬浮窗")
-        pinButton.frame = NSRect(x: bounds.width - 99, y: 12, width: 26, height: 24)
-        collapseButton.frame = NSRect(x: bounds.width - 68, y: 12, width: 26, height: 24)
-        closeButton.frame = NSRect(x: bounds.width - 37, y: 12, width: 26, height: 24)
-        toolTip = isExpanded ? "拖动顶部可移动悬浮窗，靠近左右边缘可吸附" : "点击展开 · 拖动可移动"
-        needsDisplay = true
-    }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.tertiaryLabelColor.withAlphaComponent(0.45).setFill()
-        let x: CGFloat = (expanded?() ?? false) ? 18 : (bounds.width - 22) / 2
-        NSBezierPath(roundedRect: NSRect(x: x, y: 23, width: 22, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
-    }
+    func update() { needsDisplay = true }
     override func mouseDown(with event: NSEvent) {
         startingPoint = NSEvent.mouseLocation
         moved = false
@@ -564,9 +515,6 @@ private final class FloatingLauncherHeader: NSView {
         if moved { drag?(point) }
     }
     override func mouseUp(with event: NSEvent) { endDrag?(moved) }
-    @objc private func collapseTapped() { collapse?() }
-    @objc private func closeTapped() { close?() }
-    @objc private func pinTapped() { togglePin?() }
 }
 
 private final class FloatingLauncherRow: NSButton {
