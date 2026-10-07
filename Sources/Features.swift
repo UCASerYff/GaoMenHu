@@ -208,6 +208,7 @@ extension AppDelegate {
         guard library == pending.baseline else { throw AppError.message("预览期间网站发生变化，请重新预览后导入。") }
         _ = try store.checkpoint(library, reason: pending.reason)
         try store.save(pending.library); library = pending.library
+        applyAppearance(); settingsModel?.refresh()
         pendingLibraryChanges.removeAll(); organizationHistory.removeAll(); launches.removeAll()
         for site in library.sites where site.icon == nil { fetchIcon(site) }
     }

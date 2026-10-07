@@ -19,3 +19,11 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sourc
 swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/IconLoader.swift" \
   "$PROJECT_DIR/Tests/Icons.swift" -framework AppKit -framework ImageIO -o "$TEST_DIR/icons"
 "$TEST_DIR/icons"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
+  "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/FullBackup.swift" \
+  "$PROJECT_DIR/Tests/FullBackupTests.swift" -o "$TEST_DIR/full-backup"
+"$TEST_DIR/full-backup"
+swiftc -swift-version 5 -D DEBUG_TESTING -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
+  "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/FullBackup.swift" \
+  "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Tests/BackupRestoreTests.swift" -o "$TEST_DIR/backup-restore"
+"$TEST_DIR/backup-restore"

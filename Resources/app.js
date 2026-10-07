@@ -2,6 +2,9 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const icons = {
+  launcher:'<rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/>',
+  workspaces:'<rect x="2" y="5" width="16" height="12" rx="2"/><path d="M7 5V3h6v2M2 10h16M8 10v2h4v-2"/>',
+  sidebar:'<rect x="2" y="3" width="16" height="14" rx="2"/><path d="M8 3v14"/>',
   search:'<circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 5 5"/>',
   vault:'<rect x="3" y="7" width="14" height="11" rx="3"/><path d="M6 7V5a4 4 0 0 1 8 0v2"/><path d="M10 11v3"/>',
   unlock:'<rect x="3" y="8" width="14" height="10" rx="3"/><path d="M7 8V5a4 4 0 0 1 7-2"/><path d="M10 12v2"/>',
@@ -12,7 +15,7 @@ const icons = {
 const svg = key => '<svg viewBox="0 0 20 20" aria-hidden="true">' + icons[key] + '</svg>';
 const waiters = new Map();
 let serial = 0, S = null, page = 0, folderID = null, draft = null, drag = null, mergeTimer = null, mergeTarget = null, toastTimer = null, lastFocus = null;
-let totalPages = 1, pageAnimation = null, dragSourceNode = null;
+let totalPages = 1, pageAnimation = null, dragSourceNode = null, activeSection = 'launcher', sidebarHidden = false;
 const wheelGesture = {lastTime: -Infinity, distance: 0, direction: 0, consumed: false};
 const palette = ['#D97757','#248977','#537CE6','#35384B','#ED83A7','#AC83C8','#C29A55','#5B9DAD'];
 function native(action, data = {}) {
@@ -38,12 +41,14 @@ window.nativeEvent = message => {
   switch(message.event){
     case 'toast':toast(message.payload.message);break;
     case 'settings':showSettings();break;
-    case 'search':if($('dialogOverlay').hidden&&$('cropOverlay').hidden){closeFolder();$('search').focus();$('search').select();}break;
+    case 'settingsPage':openSettingsPage(message.payload.page);break;
+    case 'toggleSidebar':toggleSidebar();break;
+    case 'search':if($('dialogOverlay').hidden&&$('cropOverlay').hidden){selectSection('launcher');$('search').focus();$('search').select();}break;
     case 'addSite':showEditor();break;
     case 'locked':if(S){S.unlocked=false;renderLock();}break;
   }
 };
-function updateState(state){S=state;document.body.classList.toggle('light',S.library.appearance==='light');$('version').textContent='V'+S.version;applyPreferences();render();renderLock();}
+function updateState(state){S=state;applyAppearance();$('version').textContent='V'+S.version;applyPreferences();render();renderLock();}
 function toast(message){if(!message)return;$('toast').textContent=message;$('toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),5200);}
 const siteById = id => S.library.sites.find(x=>x.id===id);
 const folderById = id => S.library.tiles.find(x=>x.kind==='folder'&&x.id===id);
@@ -103,7 +108,7 @@ function columns(){const size=Number(S?.library.iconSize)||76,compact=S?.library
 function pageSize(){const size=Number(S?.library.iconSize)||76,gap=S?.library.layoutDensity==='comfortable'?24:14;const rows=Math.max(1,Math.floor(($('launchArea').clientHeight-19+gap)/(size+49+gap)));return columns()*rows;}
 function pagingBlocked(target){
   const editing=el=>el instanceof Element&&(el.matches('input,textarea,select')||el.isContentEditable||!!el.closest('[role="textbox"]'));
-  return !S||folderID||draft||drag||!$('dialogOverlay').hidden||!$('cropOverlay').hidden||!$('folderOverlay').hidden||!$('contextMenu').hidden||editing(target)||editing(document.activeElement);
+  return !S||activeSection!=='launcher'||folderID||draft||drag||!$('dialogOverlay').hidden||!$('cropOverlay').hidden||!$('folderOverlay').hidden||!$('contextMenu').hidden||editing(target)||editing(document.activeElement);
 }
 function goToPage(next,{focusTile=false}={}){
   next=Math.max(0,Math.min(totalPages-1,next));if(next===page)return false;
@@ -159,7 +164,7 @@ function placeRenderedTile(root,tile,inside,index,held){
   return el;
 }
 function render(){
-  if(!S)return;const query=$('search').value.trim().toLowerCase();const root=$('grid'),held=clearGridForRender(root);root.style.setProperty('--columns',columns());
+  if(!S)return;updateNavigation();if(activeSection!=='launcher'){renderSection();return;}const query=$('search').value.trim().toLowerCase();const root=$('grid'),held=clearGridForRender(root);root.style.setProperty('--columns',columns());
   let tiles;
   if(query){
     const active=visibleIDs();tiles=S.library.sites.filter(s=>active.has(s.id)&&searchText(s).includes(query)).map(s=>({id:s.id,kind:'site'}));
@@ -175,7 +180,7 @@ function render(){
   renderPagination();renderSelection();
   if(folderID)renderFolder();
 }
-function renderLock(){$('lockButton').innerHTML=svg(S.unlocked?'unlock':'vault')+(S.unlocked?'账号库已解锁 · 点击锁定':'账号库已锁定');}
+function renderLock(){$('lockButton').innerHTML=svg(S.unlocked?'unlock':'vault')+(S.unlocked?'已解锁 · 点击锁定':'已锁定 · 点击解锁');$('lockButton').setAttribute('aria-label',S.unlocked?'锁定账号库':'解锁账号库');}
 async function launch(siteID,browser,accountID){
   try{toast('正在打开网站…');const result=await native('launch',{siteID,...(browser?{browser}:{}),...(accountID?{accountID}:{})});toast(result.message);}catch(error){toast(error.message);}
 }
@@ -231,7 +236,7 @@ function openDialog(html,small=false){
   $('dialog').querySelectorAll('[data-close]').forEach(button=>button.onclick=closeDialog);setTimeout(()=>($('dialog').querySelector('input,button')||$('dialog')).focus(),30);
 }
 function closeDialog(){closeCrop();$('dialogOverlay').hidden=true;$('dialog').replaceChildren();draft=null;if(lastFocus?.isConnected)lastFocus.focus();}
-function head(eyebrow,title,description){return '<div class="dialog-head"><div><span class="eyebrow">'+eyebrow+'</span><h2>'+esc(title)+'</h2>'+(description?'<p class="description">'+esc(description)+'</p>':'')+'</div><button class="icon-button close" data-close aria-label="关闭">×</button></div>';}
+function head(eyebrow,title,description){return '<div class="dialog-head"><div><h2>'+esc(title)+'</h2>'+(description?'<p class="description">'+esc(description)+'</p>':'')+'</div><button class="icon-button close" data-close aria-label="关闭">×</button></div>';}
 function confirmDialog(title,body,button,action){
   openDialog(head('MENDAO',title,'')+'<p class="confirm-body">'+esc(body)+'</p><div class="form-error" id="confirmError"></div><div class="dialog-actions"><button class="soft-button" data-close>取消</button><button class="primary-button" id="confirmAction">'+esc(button)+'</button></div>',true);
   $('confirmAction').onclick=async()=>{const el=$('confirmAction');el.disabled=true;try{await action();closeDialog();}catch(error){$('confirmError').textContent=error.message;el.disabled=false;}};
@@ -310,19 +315,47 @@ function renderAccounts(){
     root.append(el);
   });
 }
-async function setAppearance(appearance){try{await native('appearance',{appearance});S.library.appearance=appearance;document.body.classList.toggle('light',appearance==='light');}catch(error){toast(error.message);}}
+async function setAppearance(appearance){try{await native('appearance',{appearance});S.library.appearance=appearance;applyAppearance();}catch(error){toast(error.message);}}
+function vaultContents(archivedOnly=false){
+  const active=visibleIDs(),sites=S.library.sites.filter(s=>archivedOnly?!active.has(s.id):s.accounts.length||!active.has(s.id));
+  return (!sites.length?'<div class="empty-state"><span class="empty-state-symbol">'+svg('vault')+'</span><strong>'+(archivedOnly?'没有已移除的网站':'还没有保存账号')+'</strong><p>'+(archivedOnly?'移除的网站入口会保留在这里。':'在网站的编辑页面中添加账号，即可在这里集中管理。')+'</p></div>':'')+
+    sites.map(site=>'<section class="vault-site"><div class="vault-site-head"><div><strong>'+esc(site.name)+'</strong> '+(!active.has(site.id)?'<span class="form-note">已移除入口</span>':'')+'</div><div class="setting-actions">'+(!active.has(site.id)?'<button class="soft-button" data-restore="'+esc(site.id)+'">恢复入口</button>':'')+'<button class="soft-button" data-edit="'+esc(site.id)+'">编辑</button></div></div>'+site.accounts.map(account=>'<div class="vault-account"><div><strong>'+esc(account.label||'网站账号')+'</strong><span>'+esc(account.username||'未填写用户名')+' · '+(account.hasPassword?'密码已保存':'未保存密码')+'</span></div><button class="text-button danger" data-site="'+esc(site.id)+'" data-delete-account="'+esc(account.id)+'">删除账号</button></div>').join('')+'</section>').join('');
+}
+function bindVaultControls(root,archivedOnly=false){
+  root.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>showEditor(b.dataset.edit));
+  root.querySelectorAll('[data-restore]').forEach(b=>b.onclick=async()=>{try{await native('restoreSite',{siteID:b.dataset.restore});toast('网站入口已恢复。');if(root===$('dialog'))showVault(archivedOnly);}catch(error){toast(error.message);}});
+  root.querySelectorAll('[data-delete-account]').forEach(b=>b.onclick=()=>confirmDialog('删除保存的账号？','将删除搞门户中的账号信息与本机钥匙串密码。浏览器已保存的密码和网站登录状态由浏览器管理。','删除账号',async()=>{await native('deleteAccount',{siteID:b.dataset.site,accountID:b.dataset.deleteAccount});toast('搞门户保存的账号与密码已删除。');}));
+}
 function showVault(archivedOnly=false){
-  const active=visibleIDs();const sites=S.library.sites.filter(s=>archivedOnly?!active.has(s.id):s.accounts.length||!active.has(s.id));
-  openDialog(head(archivedOnly?'ARCHIVE':'ACCOUNTS',archivedOnly?'已移除的网站':'你的账号库',archivedOnly?'恢复后，网站会重新出现在首页。':'账号密码保存在 macOS 钥匙串，移除网站入口后仍可管理。')+
-    (!sites.length?'<p class="empty-accounts">'+(archivedOnly?'没有已移除的网站。':'还没有保存账号。编辑网站即可添加。')+'</p>':'')+
-    sites.map(site=>'<section class="vault-site"><div class="vault-site-head"><div><strong>'+esc(site.name)+'</strong> '+(!active.has(site.id)?'<span class="form-note">已移除入口</span>':'')+'</div><div class="setting-actions">'+(!active.has(site.id)?'<button class="soft-button" data-restore="'+esc(site.id)+'">恢复入口</button>':'')+'<button class="soft-button" data-edit="'+esc(site.id)+'">编辑</button></div></div>'+site.accounts.map(account=>'<div class="vault-account"><div><strong>'+esc(account.label||'网站账号')+'</strong><span>'+esc(account.username||'未填写用户名')+' · '+(account.hasPassword?'密码已保存':'未保存密码')+'</span></div><button class="text-button danger" data-site="'+esc(site.id)+'" data-delete-account="'+esc(account.id)+'">删除账号</button></div>').join('')+'</section>').join(''));
-  $('dialog').querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>showEditor(b.dataset.edit));
-  $('dialog').querySelectorAll('[data-restore]').forEach(b=>b.onclick=async()=>{try{await native('restoreSite',{siteID:b.dataset.restore});toast('网站入口已恢复。');showVault(archivedOnly);}catch(error){toast(error.message);}});
-  $('dialog').querySelectorAll('[data-delete-account]').forEach(b=>b.onclick=()=>confirmDialog('删除保存的账号？','将删除搞门户中的账号信息与本机钥匙串密码。浏览器已保存的密码和网站登录状态由浏览器管理。','删除账号',async()=>{await native('deleteAccount',{siteID:b.dataset.site,accountID:b.dataset.deleteAccount});toast('搞门户保存的账号与密码已删除。');}));
+  openDialog(head('',archivedOnly?'已移除的网站':'账号库',archivedOnly?'恢复后，网站会重新出现在首页。':'账号密码保存在 macOS 钥匙串，移除网站入口后仍可管理。')+vaultContents(archivedOnly));
+  bindVaultControls($('dialog'),archivedOnly);
+}
+function updateNavigation(){
+  $('siteCount').textContent=visibleIDs().size;$('workspaceCount').textContent=(S.library.workspaces||[]).length;$('accountCount').textContent=S.library.sites.reduce((n,s)=>n+s.accounts.length,0);
+  for(const [id,section] of [['launcherButton','launcher'],['workspacesButton','workspaces'],['vaultButton','vault']]){const selected=activeSection===section;$(id).classList.toggle('selected',selected);if(selected)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+}
+function selectSection(section){
+  if(!['launcher','workspaces','vault'].includes(section))return;
+  closeFolder();hideContext();selectionMode=false;selectedSites.clear();activeSection=section;
+  $('launcherPage').hidden=section!=='launcher';$('sectionPage').hidden=section==='launcher';
+  const titles={launcher:['网站启动台','常用网站，按你的习惯排列。'],workspaces:['工作场景','把同一件事需要的网站放在一起。'],vault:['账号库','集中管理网站账号，密码保存在本机钥匙串。']};
+  $('pageTitle').textContent=titles[section][0];$('pageSubtitle').textContent=titles[section][1];
+  $('addButton').innerHTML='<span>＋</span> '+(section==='workspaces'?'创建场景':'添加网站');
+  renderSelection();render();
+}
+function renderSection(){
+  const root=$('sectionPage');
+  if(activeSection==='workspaces'){root.innerHTML=workspaceContents();bindWorkspaceControls(root);}
+  if(activeSection==='vault'){root.innerHTML='<div class="section-notice">'+svg('vault')+'<span>账号库解锁后可自动填充。睡眠、锁屏或 5 分钟后会自动锁定。</span></div>'+vaultContents();bindVaultControls(root);}
+}
+function toggleSidebar(){sidebarHidden=!sidebarHidden;document.body.classList.toggle('sidebar-hidden',sidebarHidden);render();}
+function openSettingsPage(page){
+  const routes={bookmarks:showBookmarkSources,snapshots:showSnapshots,archived:()=>showVault(true),'backup-merge':()=>startBackupPreview('merge'),'backup-restore':()=>startBackupPreview('restore')};
+  if(routes[page])routes[page]();
 }
 function initializeLauncher(){
-$('searchSymbol').innerHTML=svg('search');$('dragSymbol').innerHTML=svg('drag');$('vaultButton').innerHTML=svg('vault');$('fullButton').innerHTML=svg('full');$('settingsButton').innerHTML=svg('settings');
-$('addButton').onclick=()=>showEditor();$('settingsButton').onclick=showSettings;$('vaultButton').onclick=()=>showVault();$('fullButton').onclick=()=>native('fullscreen').catch(e=>toast(e.message));
+$('searchSymbol').innerHTML=svg('search');$('dragSymbol').innerHTML=svg('drag');$('vaultSymbol').innerHTML=svg('vault');$('fullButton').innerHTML=svg('full');$('settingsSymbol').innerHTML=svg('settings');$('launcherSymbol').innerHTML=svg('launcher');$('workspacesSymbol').innerHTML=svg('workspaces');
+$('addButton').onclick=()=>activeSection==='workspaces'?showWorkspaceEditor():showEditor();$('settingsButton').onclick=showSettings;$('vaultButton').onclick=()=>selectSection('vault');$('launcherButton').onclick=()=>selectSection('launcher');$('fullButton').onclick=()=>native('fullscreen').catch(e=>toast(e.message));
 $('lockButton').onclick=async()=>{try{await native(S.unlocked?'lock':'unlock');toast(S.unlocked?'账号库已解锁，5 分钟后自动锁定。':'账号库已锁定。');}catch(error){toast(error.message);}};
 $('search').oninput=()=>{page=0;searchIndex=0;render();};$('search').addEventListener('keydown',handleSearchKey);$('folderClose').onclick=closeFolder;$('folderTitle').onclick=()=>renameFolder(folderID);
 $('previousPage').onclick=()=>goToPage(page-1);$('nextPage').onclick=()=>goToPage(page+1);
@@ -334,7 +367,7 @@ document.addEventListener('keydown',event=>{
   if(event.key==='Escape'&&!$('cropOverlay').hidden){event.preventDefault();closeCrop();return;}
   if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='z'&&!event.shiftKey&&!isTextEditing(event.target)){event.preventDefault();window.mendaoUndo();return;}
   if(event.key==='Escape'){hideContext();if(!$('dialogOverlay').hidden)closeDialog();else if(folderID)closeFolder();else if(selectionMode){setSelectionMode(false);}else if($('search').value){$('search').value='';page=0;render();}else $('search').blur();}
-  if((event.metaKey||event.ctrlKey)&&event.key==='f'){event.preventDefault();$('search').focus();}
+  if((event.metaKey||event.ctrlKey)&&event.key==='f'){event.preventDefault();if($('dialogOverlay').hidden&&$('cropOverlay').hidden){selectSection('launcher');$('search').focus();}}
   if(pagingBlocked(event.target)||event.metaKey||event.ctrlKey||event.altKey||event.shiftKey||event.isComposing)return;
   if(event.key==='ArrowRight'||event.key==='ArrowLeft'){
     const direction=event.key==='ArrowRight'?1:-1,tile=event.target.closest?.('#grid .tile');

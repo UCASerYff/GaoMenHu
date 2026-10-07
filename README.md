@@ -1,4 +1,4 @@
-# 搞门户 V1.04
+# 搞门户 V1.05
 
 macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排序、组合文件夹，并为每个网站指定浏览器和登录账号。
 
@@ -6,7 +6,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 
 ## 下载与安装
 
-从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.04.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
+从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.05.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
 
 1. 支持 macOS 13 或更高版本、Apple Silicon；当前未提供 Intel 版本。
 2. 打开 DMG，把 `搞门户.app` 拖入“应用程序”文件夹，然后启动。
@@ -16,7 +16,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 校验下载文件：
 
 ```sh
-shasum -a 256 -c GaoMenHu-1.04.dmg.sha256
+shasum -a 256 -c GaoMenHu-1.05.dmg.sha256
 ```
 
 ## 功能
@@ -30,7 +30,8 @@ shasum -a 256 -c GaoMenHu-1.04.dmg.sha256
 - 多选整理、批量移动与浏览器设置、布局撤销。
 - 导入 Chrome / Edge 收藏栏；通过浏览器助手收藏当前网页。
 - 工作场景可一次打开多个网站，各自使用指定浏览器和账号。
-- 备份导出、合并导入、恢复预览及本地自动快照。
+- 统一搞系列的原生侧栏风格、独立设置窗口、系统／浅色／深色外观。
+- 完整资料 ZIP 导出与校验恢复、JSON 模块备份、合并导入、恢复预览及本地自动快照。
 
 完整操作方法见 [使用说明](使用说明.txt)。
 
@@ -82,6 +83,8 @@ shasum -a 256 -c GaoMenHu-1.04.dmg.sha256
 
 ## 版本
 
-版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。本次公开发布沿用已完成的 V1.04。
+版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.05。
+
+V1.05：收细竖排图标字体，统一侧栏、主界面、原生设置与数据菜单；新增完整资料 ZIP 导出与恢复，保留安全快照和本机钥匙串绑定。
 
 V1.04：产品更名为“搞门户”，主程序、浏览器助手和安装包同步更名，图标采用搞系列的白底竖排书法“门户”。

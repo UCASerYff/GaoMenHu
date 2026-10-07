@@ -5,6 +5,16 @@ await pause();
 check('nativeBridgeReady',!!S&&S.library.sites.length===6);
 const original=structuredClone(S.library);
 check('sixWebsiteIcons',document.querySelectorAll('#grid .tile').length===6);
+check('seriesSidebarWidth',Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)===236);
+check('seriesNavigationSelected',$('launcherButton').getAttribute('aria-current')==='page'&&$('launcherButton').getBoundingClientRect().height>=32);
+check('launcherUsesCardSurface',getComputedStyle(document.querySelector('.launcher-card')).borderRadius==='14px');
+const previousAppearance=S.library.appearance;
+S.library.appearance='dark';applyAppearance();check('explicitDarkAppearance',document.body.classList.contains('dark')&&!document.body.classList.contains('light'));
+S.library.appearance='light';applyAppearance();check('explicitLightAppearance',document.body.classList.contains('light')&&!document.body.classList.contains('dark'));
+for(const legacy of ['system','dusk','paper','forest']){S.library.appearance=legacy;applyAppearance();check('appearanceFollowsSystem-'+legacy,document.documentElement.dataset.appearance==='system'&&document.body.classList.contains('dark')===systemAppearance.matches);}
+S.library.appearance=previousAppearance;applyAppearance();
+const sidebarWidthBefore=$('launchArea').clientWidth;window.nativeEvent({event:'toggleSidebar',payload:{}});check('nativeToolbarHidesSidebar',document.body.classList.contains('sidebar-hidden')&&$('launchArea').clientWidth>sidebarWidthBefore);window.nativeEvent({event:'toggleSidebar',payload:{}});check('nativeToolbarRestoresSidebar',!document.body.classList.contains('sidebar-hidden')&&$('launchArea').clientWidth===sidebarWidthBefore);
+selectSection('vault');check('vaultHasPrimaryPage',$('launcherPage').hidden&&!$('sectionPage').hidden&&$('vaultButton').getAttribute('aria-current')==='page'&&$('pageTitle').textContent==='账号库');window.nativeEvent({event:'search',payload:{}});check('nativeSearchReturnsToLauncher',!$('launcherPage').hidden&&activeSection==='launcher'&&document.activeElement===$('search'));$('search').blur();
 moveTile({id:'seed-0',inside:null,kind:'site'},'seed-1',null,true,false);await pause();
 const folder=S.library.tiles.find(t=>t.kind==='folder');
 check('dragCreatesFolder',folder.children.join(',')==='seed-1,seed-0');
@@ -42,7 +52,7 @@ await native('restoreSite',{siteID:'seed-0'});check('restoreWebsite',visibleIDs(
 const rejectedSite={...saved,allowedBrowsers:[],accounts:[],defaultAccount:null};
 let rejected=false;try{await native('saveSite',{site:rejectedSite});}catch(e){rejected=true;}
 check('rejectZeroBrowsers',rejected);
-showSettings();check('settingsHasExtensionSetup',!!document.getElementById('revealExtension'));closeDialog();
+const settingsNative=native;let settingsRequest=null;try{native=async action=>{settingsRequest=action;return {ok:true};};await showSettings();check('settingsOpensNativeWindow',settingsRequest==='openSettings'&&$('dialogOverlay').hidden);}finally{native=settingsNative;}
 // V1.03 native integration: saved preferences, aliases, grouping and reversible batches.
 const beforeFeatures=structuredClone(S.library);
 await native('preferences',{layoutDensity:'compact',iconSize:60});
@@ -68,13 +78,19 @@ selectedSites.add('seed-0');showBatchBrowser();const expectedCommon=S.browsers.f
 check('batchBrowserRespectsAllowedList',($('batchBrowser')?.options.length||0)===expectedCommon.length);closeDialog();setSelectionMode(false);
 const testWorkspace={id:crypto.randomUUID(),name:'UI 工作场景',siteIDs:['seed-0','seed-1']};
 await native('saveWorkspace',{workspace:testWorkspace});check('workspacePersists',S.library.workspaces.some(w=>w.id===testWorkspace.id&&w.siteIDs.length===2));
-showWorkspaces();check('workspaceShowsLaunchAndEdit',!!$('dialog').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&!!$('dialog').querySelector('[data-edit-workspace="'+testWorkspace.id+'"]'));showWorkspaceEditor(testWorkspace.id);check('workspaceEditorRestoresSelection',$('workspaceName').value==='UI 工作场景'&&$('workspacePicker').querySelectorAll('input:checked').length===2);closeDialog();
+showWorkspaces();check('workspaceShowsLaunchAndEdit',!!$('dialog').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&!!$('dialog').querySelector('[data-edit-workspace="'+testWorkspace.id+'"]'));showWorkspaceEditor(testWorkspace.id);check('workspaceEditorRestoresSelection',$('workspaceName').value==='UI 工作场景'&&$('workspacePicker').querySelectorAll('input:checked').length===2);closeDialog();selectSection('workspaces');check('workspaceHasPrimaryPage',$('launcherPage').hidden&&!!$('sectionPage').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&$('workspacesButton').getAttribute('aria-current')==='page');selectSection('launcher');
 await native('deleteWorkspace',{id:testWorkspace.id});check('workspaceDeletePreservesSites',!S.library.workspaces.some(w=>w.id===testWorkspace.id)&&visibleIDs().has('seed-0')&&visibleIDs().has('seed-1'));
 const snapshotsResult=await native('snapshots');check('bulkOperationCreatesSnapshot',Array.isArray(snapshotsResult.snapshots)&&snapshotsResult.snapshots.length>0);
 // UI-only source selection, search activation and image adjustment never open a real website.
 const realNative=native,featureLibrary=structuredClone(S.library),captured=[];
 try{
   native=async(action,data={})=>{captured.push({action,data});return action==='bookmarkSources'?{ok:true,sources:[{id:'fixture-edge',browser:'edge',label:'工作资料'}]}:action==='previewBookmarks'?{ok:true,token:'preview-fixture',preview:{sites:4,folders:1,duplicates:2,message:'测试导入预览'}}:{ok:true,message:'完成'};};
+  S.library.sites.push({...structuredClone(original.sites[0]),id:'long-name-fixture',name:'W'.repeat(100),accounts:[{id:'long-account-fixture',label:'测试账号',username:'fixture@example.test',loginHosts:[],hasPassword:false}]});
+  S.library.workspaces=[...(S.library.workspaces||[]),{id:'long-workspace-fixture',name:'W'.repeat(60),siteIDs:['long-name-fixture']}];
+  selectSection('vault');const longVault=$('sectionPage').querySelector('[data-edit="long-name-fixture"]').closest('.vault-site'),vaultTitle=longVault.querySelector('.vault-site-head strong'),vaultActions=longVault.querySelector('.setting-actions');
+  const vaultFits=longVault.scrollWidth<=longVault.clientWidth+1&&vaultTitle.getBoundingClientRect().right<=vaultActions.getBoundingClientRect().left;
+  selectSection('workspaces');const longWorkspace=$('sectionPage').querySelector('[data-launch-workspace="long-workspace-fixture"]').closest('.workspace-card'),workspaceTitle=longWorkspace.querySelector('.workspace-title strong'),workspaceAction=longWorkspace.querySelector('[data-launch-workspace]');
+  check('longNamesStayInsideCards',vaultFits&&longWorkspace.scrollWidth<=longWorkspace.clientWidth+1&&workspaceTitle.getBoundingClientRect().right<=workspaceAction.getBoundingClientRect().left);selectSection('launcher');
   S.library.sites.push({...structuredClone(original.sites[0]),id:'search-first',name:'Search Fixture First',accounts:[],aliases:'搜索测试'},{...structuredClone(original.sites[0]),id:'search-second',name:'Search Fixture Second',accounts:[],aliases:'搜索测试'});S.library.tiles.push({id:'search-first',kind:'site'},{id:'search-second',kind:'site'});
   $('search').value='搜索测试';searchIndex=0;page=0;render();$('search').focus();
   $('search').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
@@ -82,9 +98,11 @@ try{
   $('search').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));await pause();
   check('searchEnterLaunchesSelectedResult',captured.some(c=>c.action==='launch'&&c.data.siteID==='search-second'));
   const launches=captured.filter(c=>c.action==='launch').length;$('search').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}));await pause();check('imeEnterDoesNotLaunch',captured.filter(c=>c.action==='launch').length===launches);$('search').value='';$('search').blur();page=0;render();
+  window.nativeEvent({event:'settingsPage',payload:{page:'bookmarks'}});await pause();check('nativeSettingsRoutesToBookmarks',!!$('dialog').querySelector('[data-source="fixture-edge"]'));closeDialog();
   await showBookmarkSources();check('browserImportListsProfiles',!!$('dialog').querySelector('[data-source="fixture-edge"]'));$('dialog').querySelector('[data-source]').click();await pause();
   check('browserImportRequiresPreview',!!$('applyPreview')&&$('dialog').textContent.includes('测试导入预览')&&!captured.some(c=>c.action==='applyBookmarks'));
   $('applyPreview').click();await pause();check('browserImportAppliesPreviewToken',captured.some(c=>c.action==='applyBookmarks'&&c.data.token==='preview-fixture'));
+  window.nativeEvent({event:'settingsPage',payload:{page:'backup-merge'}});await pause();check('nativeSettingsRoutesToMerge',captured.some(c=>c.action==='previewBackup'&&c.data.mode==='merge'));window.nativeEvent({event:'settingsPage',payload:{page:'backup-restore'}});await pause();check('nativeSettingsRoutesToRestore',captured.some(c=>c.action==='previewBackup'&&c.data.mode==='restore'));
   showImportPreview({token:'backup-fixture',preview:{sites:3,folders:2,duplicates:0,message:'恢复排列预览'}},'applyBackup','恢复备份',true);check('restorePreviewHasExplicitAction',$('applyPreview').textContent==='恢复布局');closeDialog();check('cancelRestoreDoesNotApply',!captured.some(c=>c.action==='applyBackup'));
   showEditor(saved.id);const beforeCrop=draft.icon;const fixture=document.createElement('canvas');fixture.width=fixture.height=64;fixture.getContext('2d').fillStyle='#ee8855';fixture.getContext('2d').fillRect(0,0,64,64);openCrop(fixture.toDataURL());await pause();
   check('cropOpensWithoutChangingDraft',!$('cropOverlay').hidden&&draft.icon===beforeCrop);
@@ -119,7 +137,7 @@ key('ArrowRight');check('arrowKeyChangesPage',page===1);
 const firstTile=$('grid').firstElementChild;firstTile.focus();key('ArrowLeft',firstTile);check('arrowKeyCrossesPageWithFocus',page===0&&document.activeElement===$('grid').lastElementChild);
 $('search').focus();const inputKey=key('PageDown',$('search'));const inputWheel=wheel(100);check('focusedInputKeepsEditing',page===0&&!inputKey.defaultPrevented&&!inputWheel.defaultPrevented);$('search').blur();
 const editable=document.createElement('div');editable.contentEditable='true';document.body.append(editable);editable.focus();const editableKey=key('End',editable);check('contentEditableNotHijacked',page===0&&!editableKey.defaultPrevented);editable.remove();
-showSettings();const dialogKey=key('PageDown',$('dialog'));const dialogWheel=wheel(100);check('settingsDialogDoesNotTurnBackgroundPage',page===0&&!dialogKey.defaultPrevented&&!dialogWheel.defaultPrevented);closeDialog();document.activeElement?.blur();
+showVault();const dialogKey=key('PageDown',$('dialog'));const dialogWheel=wheel(100);check('accountDialogDoesNotTurnBackgroundPage',page===0&&!dialogKey.defaultPrevented&&!dialogWheel.defaultPrevented);closeDialog();document.activeElement?.blur();
 S.library.tiles.push({id:'paging-folder',kind:'folder',name:'Paging folder',children:[S.library.sites[0].id]});openFolder('paging-folder');const folderKey=key('End',$('folderClose'));check('folderDoesNotTurnBackgroundPage',page===0&&!folderKey.defaultPrevented);closeFolder();S.library.tiles.pop();
 drag={id:S.library.sites[0].id,inside:null,kind:'site'};const retainedDragSource=$('grid').firstElementChild,dragParent=retainedDragSource.parentNode;dragSourceNode=retainedDragSource;const edgeRect=$('launchArea').getBoundingClientRect();
 handleEdgePaging({clientX:edgeRect.right-5});await new Promise(resolve=>setTimeout(resolve,650));check('dragEdgeDwellTurnsPage',page===1);
@@ -135,4 +153,9 @@ S.library=beforePaging;page=0;render();
 const beforeSingle=S.library.tiles,launchHeight=$('launchArea').clientHeight;S.library.tiles=beforeSingle.slice(0,1);render();check('singlePageControlsHidden',totalPages===1&&$('pagination').classList.contains('single-page')&&$('pagingHint').hidden&&$('launchArea').clientHeight===launchHeight);S.library.tiles=beforeSingle;render();
 await native('removeSite',{siteID:saved.id});
 S.library=original;await native('layout',{tiles:original.tiles});render();
+// Snapshot only after transient test feedback and gesture animations have settled.
+clearTimeout(toastTimer);toastTimer=null;$('toast').classList.remove('visible');
+clearEdgePaging();drag=null;dragSourceNode=null;if(pageAnimation){pageAnimation.cancel();pageAnimation=null;}
+setSelectionMode(false);
+await new Promise(resolve=>setTimeout(resolve,250));
 return tests;

@@ -6,6 +6,31 @@ import WebKit
 extension AppDelegate {
     func runAutomatedTests() {
         let featureChecks = runNativeFeatureChecks()
+        var settingsChecks: [String: Bool] = [:]
+        let savedLibrary = library
+        do {
+            library.appearance = "dusk"
+            settingsChecks["legacyThemeFollowsSystem"] = effectiveAppearance == "system"
+            try updateSettings(appearance: "dark", density: "compact", iconSize: 92)
+            settingsChecks["darkAppearanceApplied"] = NSApp.appearance?.name == .darkAqua && library.appearance == "dark"
+            settingsChecks["layoutPreferencesSaved"] = library.layoutDensity == "compact" && library.iconSize == 92
+            try updateSettings(appearance: "light")
+            settingsChecks["lightAppearanceApplied"] = NSApp.appearance?.name == .aqua
+            try updateSettings(appearance: "system")
+            settingsChecks["systemAppearanceApplied"] = NSApp.appearance == nil
+            let beforeInvalid = library
+            do { try updateSettings(appearance: "unknown"); settingsChecks["invalidAppearanceRejected"] = false }
+            catch { settingsChecks["invalidAppearanceRejected"] = library == beforeInvalid }
+            settings()
+            let firstWindow = settingsWindow
+            settings()
+            settingsChecks["nativeSettingsWindowReused"] = settingsWindow === firstWindow && settingsWindow?.title == "搞门户设置"
+            settingsChecks["nativeSettingsSize"] = settingsWindow?.contentView?.frame.size == NSSize(width: 820, height: 740)
+            settingsChecks["nativeToolbarHasSidebar"] = window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "sidebar" } == true
+            settingsChecks["nativeDataMenuAvailable"] = NSApp.mainMenu?.items.contains { $0.submenu?.title == "数据" } == true
+            settingsWindow?.orderOut(nil)
+        } catch { settingsChecks["setup"] = false }
+        library = savedLibrary; applyAppearance(); window.makeKeyAndOrderFront(nil)
         var browserChecks: [String: Bool] = [:]
         let profile = UUID().uuidString
         let account = Account(id: UUID().uuidString, label: "Test", username: "test@example.test", loginHosts: ["auth.example.test"], hasPassword: true)
@@ -42,7 +67,7 @@ extension AppDelegate {
             print("UI test script missing"); NSApp.terminate(nil); return
         }
         web.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { result in
-            var report: [String: Any] = ["authorization": browserChecks, "nativeFeatures": featureChecks]
+            var report: [String: Any] = ["authorization": browserChecks, "nativeFeatures": featureChecks, "nativeSettings": settingsChecks]
             switch result {
             case .success(let value): report["ui"] = value
             case .failure(let error): report["uiError"] = String(describing: (error as NSError).userInfo)

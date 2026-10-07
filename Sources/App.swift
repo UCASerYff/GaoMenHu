@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var statusItem: NSStatusItem!
     var hotkey: EventHotKeyRef?
     var timer: Timer?
+    var settingsWindow: NSWindow?
+    var settingsModel: PortalSettingsModel?
     var testMode = CommandLine.arguments.contains("--ui-test")
     var lastInteraction = Date()
     var lastClientSignature = ""
@@ -42,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if !testMode && !FileManager.default.fileExists(atPath: store.file.path) { try store.save(library) }
         }
         catch { library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)"; store = LibraryStore(persistent: false) }
-        setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
+        applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
         if !testMode {
             do {
                 try registerNativeHosts()
@@ -92,12 +94,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         web.navigationDelegate = self
         web.setValue(false, forKey: "drawsBackground")
         if #available(macOS 13.3, *) { web.isInspectable = testMode }
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "搞门户"
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(calibratedRed: 0.12, green: 0.13, blue: 0.22, alpha: 1)
-        window.minSize = NSSize(width: 760, height: 580)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1380, height: 860), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "搞门户 V\(version)"
+        window.backgroundColor = .windowBackgroundColor
+        window.minSize = NSSize(width: 1040, height: 720)
+        configureToolbar()
         window.isReleasedWhenClosed = false; window.delegate = self
         window.contentView = web
         window.collectionBehavior = [.fullScreenPrimary]
@@ -128,6 +129,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         view.addItem(withTitle: "搜索网站", action: #selector(search), keyEquivalent: "f")
         view.addItem(withTitle: "添加网站", action: #selector(addSite), keyEquivalent: "n")
         let full = view.addItem(withTitle: "切换全屏", action: #selector(fullscreen), keyEquivalent: "f"); full.keyEquivalentModifierMask = [.command, .control]
+        let sidebar = view.addItem(withTitle: "显示或隐藏侧栏", action: #selector(toggleSidebar), keyEquivalent: "s"); sidebar.keyEquivalentModifierMask = [.command, .control]
+        let dataRoot = NSMenuItem(); bar.addItem(dataRoot); let data = NSMenu(title: "数据"); dataRoot.submenu = data
+        data.addItem(withTitle: "导出完整资料…", action: #selector(exportFullBackup), keyEquivalent: "")
+        data.addItem(withTitle: "从完整资料恢复…", action: #selector(restoreFullBackup), keyEquivalent: "")
+        data.addItem(.separator())
+        data.addItem(withTitle: "导出模块备份…", action: #selector(exportModuleBackup), keyEquivalent: "")
+        data.addItem(withTitle: "恢复模块备份…", action: #selector(restoreModuleBackup), keyEquivalent: "")
+        data.addItem(withTitle: "合并导入模块备份…", action: #selector(mergeModuleBackup), keyEquivalent: "")
         NSApp.mainMenu = bar
     }
     func setupStatusItem() {
@@ -152,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @objc func undoMenu() { web.evaluateJavaScript("window.mendaoUndo && window.mendaoUndo();", completionHandler: nil) }
     @objc func lockVault() { vault?.lock(); launches.removeAll(); emit("locked", [:]) }
     @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "搞门户", .applicationVersion: "V\(version)", .credits: NSAttributedString(string: "网站、账号，一点就到。\n网站启动台 · 浏览器选择 · 本地账号库")]) }
-    @objc func settings() { showWindow(); emit("settings", [:]) }
+    @objc func settings() { openNativeSettings() }
     @objc func search() { showWindow(); emit("search", [:]) }
     @objc func addSite() { showWindow(); emit("addSite", [:]) }
     @objc func fullscreen() { window.toggleFullScreen(nil) }
@@ -238,8 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 for site in library.sites where site.iconSource != "custom" { fetchIcon(site) }
                 reply(id, ["ok": true, "message": "正在重新获取清晰图标，完成后会自动更新。"])
             case "appearance":
-                var next = library; next.appearance = data["appearance"] as? String == "light" ? "light" : "dusk"
-                try store.save(next); library = next; reply(id, ["ok": true])
+                try updateSettings(appearance: data["appearance"] as? String)
+                reply(id, ["ok": true, "state": state()])
+            case "openSettings": settings(); reply(id, ["ok": true])
             case "export": exportLibrary(id)
             case "import": previewBackup(["mode": "merge"], responseID: id)
             case "quit": NSApp.terminate(nil)
@@ -550,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func exportLibrary(_ responseID: String) {
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "搞门户网站备份.json"; panel.allowedContentTypes = [.json]
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "搞门户-模块备份.json"; panel.allowedContentTypes = [.json]
         panel.beginSheetModal(for: window) { result in
             guard result == .OK, let url = panel.url else { self.reply(responseID, ["ok": false, "cancelled": true]); return }
             do {

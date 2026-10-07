@@ -56,7 +56,7 @@ struct Library: Codable, Equatable {
     var schema: Int = 1
     var sites: [Website]
     var tiles: [Tile]
-    var appearance: String = "dusk"
+    var appearance: String = "system"
     var layoutDensity: String? = nil
     var iconSize: Int? = nil
     var workspaces: [Workspace]? = nil
@@ -182,7 +182,14 @@ final class LibraryStore {
         self.persistent = persistent
     }
     func load(defaultBrowsers: [String]) throws -> Library {
-        guard persistent, FileManager.default.fileExists(atPath: file.path) else { return Library.initial(browsers: defaultBrowsers) }
+        guard persistent else { return Library.initial(browsers: defaultBrowsers) }
+        if FileManager.default.fileExists(atPath: directory.path) {
+            let entries = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            if let pending = entries.first(where: { $0.lastPathComponent.hasPrefix(".gaomenhu-restore-") }) {
+                throw AppError.message("检测到上次未完成的资料恢复，已停止写入以保护原资料。恢复资料保留在：\(pending.path)。请先检查并恢复其中的安全副本，再重新启动。")
+            }
+        }
+        guard FileManager.default.fileExists(atPath: file.path) else { return Library.initial(browsers: defaultBrowsers) }
         return try JSONDecoder().decode(Library.self, from: Data(contentsOf: file)).validated()
     }
     func save(_ library: Library) throws {

@@ -14,8 +14,8 @@ if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then TEST_FLAGS=(-D DEBUG_TESTING
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
   "$TEST_FLAGS[@]" "$PROJECT_DIR/Tests/UITesting.swift" "$PROJECT_DIR/Tests/NativeFeatureTests.swift" \
   "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
-  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/App.swift" \
-  -framework AppKit -framework WebKit -framework Security -framework LocalAuthentication -framework Carbon -framework ImageIO \
+  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/App.swift" \
+  -framework SwiftUI -framework AppKit -framework WebKit -framework Security -framework LocalAuthentication -framework Carbon -framework ImageIO \
   -o "$APP/Contents/MacOS/MenDao"
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
   "$PROJECT_DIR/Sources/Socket.swift" "$PROJECT_DIR/Sources/NativeHost.swift" \

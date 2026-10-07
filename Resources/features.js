@@ -1,6 +1,10 @@
 'use strict';
 // Launcher conveniences share the same local native bridge; no website content is loaded here.
 let selectionMode=false,selectedSites=new Set(),searchTiles=[],searchIndex=0;
+const systemAppearance=matchMedia('(prefers-color-scheme: dark)');
+function applyAppearance(){const preference=['light','dark'].includes(S?.library.appearance)?S.library.appearance:'system';const dark=preference==='dark'||preference==='system'&&systemAppearance.matches;document.documentElement.dataset.appearance=preference;document.body.classList.toggle('dark',dark);document.body.classList.toggle('light',!dark);}
+systemAppearance.addEventListener('change',()=>applyAppearance());
+applyAppearance();
 let edgeTimer=null,edgeDirection=0,edgeTurned=false,cropState=null,undoInFlight=false;
 function applyPreferences(){
   const density=S.library.layoutDensity==='comfortable'?'comfortable':'compact';
@@ -78,31 +82,7 @@ function settingRow(title,description,actions){return '<div class="setting-row">
 function updateConnectionLabels(){
   if(!S)return;document.querySelectorAll('[data-connection]').forEach(el=>{const profiles=S.profiles.filter(p=>p.browser===el.dataset.connection);el.textContent=profiles.length?profiles.map(p=>p.label).join('、')+' · 已连接':'尚未连接浏览器助手';el.classList.toggle('offline',!profiles.length);});
 }
-function showSettings(){
-  openDialog(head('PREFERENCES','让搞门户更顺手','搞门户 V'+S.version+' · 网站启动台')+
-    '<div class="settings-section"><h3>启动台</h3>'+settingRow('排列密度','紧凑布局让常去的网站更容易在一页找到。','<select class="compact-select" id="layoutDensity" aria-label="排列密度"><option value="compact">紧凑</option><option value="comfortable">宽松</option></select>')+
-    settingRow('图标大小','网站名称最多显示两行。','<select class="compact-select" id="iconSize" aria-label="图标大小"><option value="60">小 · 60</option><option value="76">标准 · 76</option><option value="92">大 · 92</option></select>')+
-    settingRow('启动台背景','暮色与暖白，两种安静的底色。','<button class="soft-button" id="duskTheme">暮色</button><button class="soft-button" id="lightTheme">暖白</button>')+'</div>'+
-    '<div class="settings-section"><h3>网站与图标</h3>'+settingRow('从浏览器导入收藏','选择 Edge 或 Chrome 的个人资料，预览收藏栏与文件夹后导入。','<button class="soft-button" id="browserImportButton">导入收藏</button>')+
-    settingRow('重新获取清晰图标','优先使用高清来源；你手动更换的图标会保留。','<button class="soft-button" id="refreshIconsButton">刷新图标</button>')+'</div>'+
-    '<div class="settings-section"><h3>浏览器助手</h3>'+S.browsers.filter(b=>b.supportsFill).map(browser=>'<div class="setting-row"><div><strong>'+esc(browser.name)+'</strong><p class="connection" data-connection="'+esc(browser.id)+'"></p></div><div class="setting-actions"><button class="soft-button" data-reconnect="'+esc(browser.id)+'" '+(!browser.installed?'disabled':'')+'>重新连接</button><button class="soft-button" data-setup="'+esc(browser.id)+'" '+(!browser.installed?'disabled':'')+'>管理扩展</button></div></div>').join('')+
-    '<details class="setup-details"><summary>首次安装助手</summary><div class="steps">① 打开扩展管理，开启「开发者模式」。<br>② 点击「加载已解压的扩展程序」，选择下面的 BrowserExtension 文件夹。<br>③ 打开「搞门户助手」，可为当前个人资料命名，也能收藏当前网页。<br><code>'+esc(S.extensionPath)+'</code><br><button class="soft-button" id="revealExtension" style="margin-top:9px">在 Finder 中显示扩展文件夹</button></div></details></div>'+
-    '<div class="settings-section"><h3>备份与恢复</h3>'+settingRow('导出完整网站备份','保存网站、文件夹、排列和工作场景；密码留在本机钥匙串。','<button class="soft-button" id="exportButton">导出</button>')+
-    settingRow('导入备份','合并新增内容，或完整恢复备份中的布局。先预览，再应用。','<button class="soft-button" id="importButton">合并导入</button><button class="soft-button" id="restoreBackupButton">恢复备份</button>')+
-    settingRow('本地自动快照','批量整理与导入前自动保存，可查看并恢复。','<button class="soft-button" id="snapshotsButton">查看快照</button>')+
-    settingRow('已移除的网站','移除入口后，网站与账号仍可以恢复。','<button class="soft-button" id="archivedButton">查看</button>')+'</div>'+
-    '<p class="form-note">⌃ ⌥ Space 唤起并搜索 · 输入后用 ↑ ↓ 选择、回车打开<br>⌘ N 添加网站 · ⌘ F 搜索 · ⌘ Z 撤销整理 · ⌘ L 锁定账号库<br>账号库解锁有效期为 5 分钟，睡眠或锁屏后自动锁定。</p>');
-  $('layoutDensity').value=S.library.layoutDensity==='comfortable'?'comfortable':'compact';$('iconSize').value=String(S.library.iconSize||76);
-  const preferences=async()=>{const fields=[$('layoutDensity'),$('iconSize')],values={layoutDensity:fields[0].value,iconSize:Number(fields[1].value)};fields.forEach(el=>el.disabled=true);try{await native('preferences',values);}catch(error){toast(error.message);if(fields[0].isConnected){fields[0].value=S.library.layoutDensity||'compact';fields[1].value=String(S.library.iconSize||76);}}finally{fields.forEach(el=>el.disabled=false);}};
-  $('layoutDensity').onchange=preferences;$('iconSize').onchange=preferences;
-  $('duskTheme').onclick=()=>setAppearance('dusk');$('lightTheme').onclick=()=>setAppearance('light');
-  $('refreshIconsButton').onclick=()=>performButton('refreshIconsButton','refreshIcons');
-  $('dialog').querySelectorAll('[data-setup]').forEach(button=>button.onclick=()=>native('extensionSetup',{browser:button.dataset.setup}).catch(e=>toast(e.message)));
-  $('dialog').querySelectorAll('[data-reconnect]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{toast('正在唤起浏览器助手…');const result=await native('reconnectBrowser',{browser:button.dataset.reconnect});toast(result.message);}catch(error){toast(error.message);}finally{button.disabled=false;}});
-  $('revealExtension').onclick=()=>native('extensionFolder').catch(e=>toast(e.message));
-  $('exportButton').onclick=()=>performButton('exportButton','export');$('archivedButton').onclick=()=>showVault(true);
-  $('importButton').onclick=()=>startBackupPreview('merge');$('restoreBackupButton').onclick=()=>startBackupPreview('restore');$('snapshotsButton').onclick=showSnapshots;$('browserImportButton').onclick=showBookmarkSources;updateConnectionLabels();
-}
+function showSettings(){return native('openSettings').catch(error=>toast(error.message));}
 async function performButton(id,action,data={}){const button=$(id);if(button)button.disabled=true;try{const result=await native(action,data);toast(result.message);return result;}catch(error){toast(error.message);}finally{if(button)button.disabled=false;}}
 async function startBackupPreview(mode){
   try{const result=await native('previewBackup',{mode});if(!result.cancelled)showImportPreview(result,'applyBackup',mode==='restore'?'恢复备份':'合并导入备份',mode==='restore');}catch(error){toast(error.message);}
@@ -133,14 +113,19 @@ async function showBookmarkSources(){
     $('dialog').querySelectorAll('[data-source]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{const response=await native('previewBookmarks',{sourceID:button.dataset.source});showImportPreview(response,'applyBookmarks','导入收藏栏');}catch(error){toast(error.message);button.disabled=false;}});
   }catch(error){toast(error.message);}
 }
-function showWorkspaces(){
+function workspaceContents(){
   const workspaces=S.library.workspaces||[];
-  openDialog(head('WORKSPACES','为一件事，打开常用网站','每个网站仍使用自己的默认浏览器。一个场景最多包含 20 个网站。')+
-    '<div class="workspace-list">'+(!workspaces.length?'<p class="empty-accounts">例如创建「写论文」，把检索、写作和邮箱放在一起。</p>':workspaces.map(w=>{const sites=w.siteIDs.map(siteById).filter(Boolean);return '<section class="workspace-card"><div class="workspace-title"><div><strong>'+esc(w.name)+'</strong><p>'+sites.length+' 个网站 · '+esc(sites.slice(0,3).map(s=>s.name).join('、'))+(sites.length>3?'…':'')+'</p></div><button class="primary-button" data-launch-workspace="'+esc(w.id)+'">打开场景</button></div><div class="workspace-controls"><button class="text-button" data-edit-workspace="'+esc(w.id)+'">编辑场景</button><button class="text-button danger" data-delete-workspace="'+esc(w.id)+'">删除</button></div></section>';}).join(''))+'</div><div class="dialog-actions"><button class="primary-button" id="newWorkspace">＋ 创建工作场景</button></div>');
-  $('newWorkspace').onclick=()=>showWorkspaceEditor();
-  $('dialog').querySelectorAll('[data-edit-workspace]').forEach(button=>button.onclick=()=>showWorkspaceEditor(button.dataset.editWorkspace));
-  $('dialog').querySelectorAll('[data-delete-workspace]').forEach(button=>button.onclick=()=>confirmDialog('删除这个工作场景？','只删除场景，里面的网站入口和账号会保留。','删除场景',async()=>{const result=await native('deleteWorkspace',{id:button.dataset.deleteWorkspace});toast(result.message||'工作场景已删除。');}));
-  $('dialog').querySelectorAll('[data-launch-workspace]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{toast('正在打开工作场景…');const result=await native('launchWorkspace',{id:button.dataset.launchWorkspace});toast(result.message);closeDialog();}catch(error){toast(error.message);button.disabled=false;}});
+  return '<div class="workspace-list">'+(!workspaces.length?'<div class="empty-state"><span class="empty-state-symbol">'+svg('workspaces')+'</span><strong>还没有工作场景</strong><p>例如创建「写论文」，把检索、写作和邮箱放在一起。<br>每个网站使用自己的默认浏览器，一个场景最多包含 20 个网站。</p><button class="primary-button" id="newWorkspace">创建工作场景</button></div>':workspaces.map(w=>{const sites=w.siteIDs.map(siteById).filter(Boolean);return '<section class="workspace-card"><div class="workspace-title"><div><strong>'+esc(w.name)+'</strong><p>'+sites.length+' 个网站 · '+esc(sites.slice(0,3).map(s=>s.name).join('、'))+(sites.length>3?'…':'')+'</p></div><button class="primary-button" data-launch-workspace="'+esc(w.id)+'">打开场景</button></div><div class="workspace-controls"><button class="text-button" data-edit-workspace="'+esc(w.id)+'">编辑场景</button><button class="text-button danger" data-delete-workspace="'+esc(w.id)+'">删除</button></div></section>';}).join(''))+'</div>';
+}
+function bindWorkspaceControls(root){
+  root.querySelector('#newWorkspace')?.addEventListener('click',()=>showWorkspaceEditor());
+  root.querySelectorAll('[data-edit-workspace]').forEach(button=>button.onclick=()=>showWorkspaceEditor(button.dataset.editWorkspace));
+  root.querySelectorAll('[data-delete-workspace]').forEach(button=>button.onclick=()=>confirmDialog('删除这个工作场景？','只删除场景，里面的网站入口和账号会保留。','删除场景',async()=>{const result=await native('deleteWorkspace',{id:button.dataset.deleteWorkspace});toast(result.message||'工作场景已删除。');}));
+  root.querySelectorAll('[data-launch-workspace]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{toast('正在打开工作场景…');const result=await native('launchWorkspace',{id:button.dataset.launchWorkspace});toast(result.message);closeDialog();}catch(error){toast(error.message);}finally{button.disabled=false;}});
+}
+function showWorkspaces(){
+  openDialog(head('','工作场景','每个网站使用自己的默认浏览器，一个场景最多包含 20 个网站。')+workspaceContents()+((S.library.workspaces||[]).length?'<div class="dialog-actions"><button class="primary-button" id="newWorkspace">创建工作场景</button></div>':''));
+  bindWorkspaceControls($('dialog'));
 }
 function showWorkspaceEditor(id){
   const existing=(S.library.workspaces||[]).find(w=>w.id===id),selected=new Set(existing?.siteIDs||[]),active=visibleIDs();
@@ -150,7 +135,7 @@ function showWorkspaceEditor(id){
   const renderPicker=()=>{const query=$('workspaceSearch').value.trim().toLowerCase(),filtered=sites.filter(s=>searchText(s).includes(query));$('workspaceSelectedCount').textContent=selected.size+' / 20 已选';$('workspacePicker').innerHTML=filtered.map(s=>'<label class="workspace-choice"><input type="checkbox" value="'+esc(s.id)+'" '+(selected.has(s.id)?'checked':'')+'><span class="workspace-mini" style="--site-color:'+safeColor(s.color)+'">'+iconHTML(s,true)+'</span><span>'+esc(s.name)+'</span><small>'+esc(S.browsers.find(b=>b.id===s.defaultBrowser)?.name||s.defaultBrowser)+'</small></label>').join('')||'<p class="empty-accounts">没有找到网站。</p>';
     $('workspacePicker').querySelectorAll('input').forEach(input=>input.onchange=()=>{if(input.checked&&selected.size>=20){input.checked=false;$('workspaceError').textContent='每个工作场景最多选择 20 个网站。';return;}if(input.checked)selected.add(input.value);else selected.delete(input.value);$('workspaceError').textContent='';$('workspaceSelectedCount').textContent=selected.size+' / 20 已选';});};
   $('workspaceSearch').oninput=renderPicker;renderPicker();
-  $('workspaceForm').onsubmit=async event=>{event.preventDefault();const name=$('workspaceName').value.trim();if(!name||!selected.size){$('workspaceError').textContent='请填写场景名称，并至少选择一个网站。';return;}$('workspaceSave').disabled=true;try{const result=await native('saveWorkspace',{workspace:{id:existing?.id||crypto.randomUUID(),name,siteIDs:[...selected]}});toast(result.message||'工作场景已保存。');showWorkspaces();}catch(error){if($('workspaceError'))$('workspaceError').textContent=error.message;if($('workspaceSave'))$('workspaceSave').disabled=false;}};
+  $('workspaceForm').onsubmit=async event=>{event.preventDefault();const name=$('workspaceName').value.trim();if(!name||!selected.size){$('workspaceError').textContent='请填写场景名称，并至少选择一个网站。';return;}$('workspaceSave').disabled=true;try{const result=await native('saveWorkspace',{workspace:{id:existing?.id||crypto.randomUUID(),name,siteIDs:[...selected]}});toast(result.message||'工作场景已保存。');if(activeSection==='workspaces'){closeDialog();renderSection();}else showWorkspaces();}catch(error){if($('workspaceError'))$('workspaceError').textContent=error.message;if($('workspaceSave'))$('workspaceSave').disabled=false;}};
 }
 function openCrop(dataURL){
   if(!draft||!/^data:image\/(png|jpeg|webp);base64,/.test(dataURL))return;
@@ -174,7 +159,7 @@ $('cropCanvas').addEventListener('pointermove',event=>{const p=cropState?.pointe
 ['pointerup','pointercancel','lostpointercapture'].forEach(name=>$('cropCanvas').addEventListener(name,()=>{if(cropState)cropState.pointer=null;}));
 $('cropCanvas').tabIndex=0;$('cropCanvas').addEventListener('keydown',event=>{if(!cropState||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;event.preventDefault();const step=event.shiftKey?20:4;if(event.key==='ArrowLeft')cropState.x-=step;if(event.key==='ArrowRight')cropState.x+=step;if(event.key==='ArrowUp')cropState.y-=step;if(event.key==='ArrowDown')cropState.y+=step;drawCrop();});
 $('manageButton').onclick=()=>setSelectionMode(!selectionMode);$('folderManage').onclick=()=>setSelectionMode(!selectionMode);$('manageDone').onclick=()=>setSelectionMode(false);$('undoButton').onclick=()=>window.mendaoUndo();
-$('selectPageButton').onclick=selectCurrentPage;$('clearSelectionButton').onclick=()=>{selectedSites.clear();render();};$('batchMoveButton').onclick=showBatchMove;$('batchBrowserButton').onclick=showBatchBrowser;$('batchRemoveButton').onclick=showBatchRemove;$('workspacesButton').onclick=showWorkspaces;
+$('selectPageButton').onclick=selectCurrentPage;$('clearSelectionButton').onclick=()=>{selectedSites.clear();render();};$('batchMoveButton').onclick=showBatchMove;$('batchBrowserButton').onclick=showBatchBrowser;$('batchRemoveButton').onclick=showBatchRemove;$('workspacesButton').onclick=()=>selectSection('workspaces');
 initializeLauncher();
 if(S){applyPreferences();render();}
 native('state').catch(error=>toast(error.message));
