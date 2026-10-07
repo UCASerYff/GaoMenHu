@@ -144,6 +144,13 @@ enum FloatingLauncherGeometry {
     static let headerHeight: CGFloat = 48
     static let hiddenSize = CGSize(width: 20, height: 104)
 
+    /// Keep short lists compact; longer search results scroll within eight visible rows.
+    static func expandedSize(siteCount: Int) -> CGSize {
+        let visibleRows = min(max(siteCount, 0), 8)
+        let listHeight: CGFloat = visibleRows == 0 ? 64 : CGFloat(visibleRows) * 46
+        return CGSize(width: 364, height: 114 + listHeight)
+    }
+
     static func constrain(frame: CGRect, to screen: CGRect) -> CGRect {
         let bounds = validScreen(screen)
         let width = min(positive(frame.size.width, fallback: Self.width), bounds.width)

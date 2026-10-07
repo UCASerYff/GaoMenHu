@@ -234,6 +234,36 @@ import CoreGraphics
             check("expanded-to-collapsed keeps \(edge.rawValue) normalized anchor", collapsedAgain == anchor)
             check("repeated hide preserves \(edge.rawValue) handle position", FloatingLauncherGeometry.hiddenFrame(anchor: collapsedAgain, edge: edge, in: leftScreen) == FloatingLauncherGeometry.hiddenFrame(anchor: anchor, edge: edge, in: leftScreen))
         }
+
+        let compactSizes: [(count: Int, height: CGFloat)] = [
+            (0, 178), (1, 160), (6, 390), (8, 482), (9, 482),
+            (-1, 178), (Int.min, 178), (Int.max, 482)
+        ]
+        for fixture in compactSizes {
+            check("compact size for \(fixture.count) sites", FloatingLauncherGeometry.expandedSize(siteCount: fixture.count) == CGSize(width: 364, height: fixture.height))
+        }
+        let sixRows = FloatingLauncherGeometry.expandedSize(siteCount: 6)
+        check("adding a seventh row increases only one row height", FloatingLauncherGeometry.expandedSize(siteCount: 7).height - sixRows.height == 46)
+        check("eight row viewport is shorter than old fixed window", FloatingLauncherGeometry.expandedSize(siteCount: 8).height < expandedSize.height)
+
+        let geometryFixtures: [(count: Int, height: CGFloat)] = [(0, 178), (1, 160), (6, 390), (8, 482), (Int.max, 482)]
+        for edge in [FloatingLauncherEdge.left, .right, .none] {
+            let anchorX = edge == .right ? leftScreen.maxX - collapsedSize.width : edge == .left ? leftScreen.minX : -900
+            let compactAnchor = CGRect(x: anchorX, y: 750, width: collapsedSize.width, height: collapsedSize.height)
+            for fixture in geometryFixtures {
+                let dynamicSize = FloatingLauncherGeometry.expandedSize(siteCount: fixture.count)
+                let dynamicFrame = FloatingLauncherGeometry.resizedFrame(compactAnchor, size: dynamicSize, in: leftScreen, edge: edge)
+                check("compact \(edge.rawValue) frame for \(fixture.count) sites keeps exact size and top", dynamicFrame.size == CGSize(width: 364, height: fixture.height) && dynamicFrame.maxY == compactAnchor.maxY && leftScreen.contains(dynamicFrame))
+                check("compact \(edge.rawValue) frame for \(fixture.count) sites keeps horizontal anchor", edge == .right ? dynamicFrame.maxX == compactAnchor.maxX : dynamicFrame.minX == compactAnchor.minX)
+
+                let bottomCompactAnchor = CGRect(x: anchorX, y: leftScreen.minY, width: collapsedSize.width, height: collapsedSize.height)
+                let bottomCompact = FloatingLauncherGeometry.resizedFrame(bottomCompactAnchor, size: dynamicSize, in: leftScreen, edge: edge)
+                check("compact \(edge.rawValue) frame for \(fixture.count) sites stays above screen bottom", bottomCompact.minY == leftScreen.minY && bottomCompact.size == dynamicSize && leftScreen.contains(bottomCompact))
+
+                let smallCompact = FloatingLauncherGeometry.resizedFrame(compactAnchor, size: dynamicSize, in: tiny, edge: edge)
+                check("compact \(edge.rawValue) frame for \(fixture.count) sites fits a screen smaller than the content", smallCompact == tiny)
+            }
+        }
         print("Floating launcher logic: \(count) checks passed")
     }
 }

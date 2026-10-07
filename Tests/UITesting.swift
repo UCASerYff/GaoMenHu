@@ -44,7 +44,8 @@ extension AppDelegate {
                 return view.subviews.compactMap { findView(id, in: $0) }.first
             }
             floating.setExpanded(true)
-            floatingChecks["expandedPanelSize"] = floating.expanded && floating.panel.frame.width >= 300 && floating.panel.frame.height >= 400
+            floatingChecks["expandedPanelSize"] = floating.expanded &&
+                floating.panel.frame.size == FloatingLauncherGeometry.expandedSize(siteCount: floating.visibleSiteIDs.count)
             let originalHistory = launchHistory
             launchHistory = WebsiteLaunchHistory(preferences: nil)
             for _ in 0..<12 { launchHistory.record(siteID: "seed-5", at: Date(timeIntervalSince1970: 10)) }
@@ -80,7 +81,48 @@ extension AppDelegate {
             floatingChecks["nativeSearchAcceptsPinyin"] = floating.visibleSiteIDs == ["seed-4"]
             floating.search("gaomenhu-no-result-fixture")
             floatingChecks["nativeEmptySearchResult"] = floating.visibleSiteIDs.isEmpty
+            floatingChecks["emptySearchUsesCompactHeight"] = floating.panel.frame.size == NSSize(width: 364, height: 178)
+            if let content = floating.panel.contentView {
+                func findEmptyLabel(_ view: NSView) -> NSTextField? {
+                    if let label = view as? NSTextField, label.stringValue.contains("没有匹配的网站") { return label }
+                    return view.subviews.compactMap { findEmptyLabel($0) }.first
+                }
+                if let empty = findEmptyLabel(content), let parent = empty.superview {
+                    floatingChecks["emptySearchMessageFitsList"] = parent.bounds.contains(empty.frame) &&
+                        content.bounds.contains(empty.convert(empty.bounds, to: content))
+                } else { floatingChecks["emptySearchMessageFitsList"] = false }
+            } else { floatingChecks["emptySearchMessageFitsList"] = false }
             floating.search("")
+            let heightLibrary = library
+            var heightSites = heightLibrary.sites
+            while heightSites.count < 11, var extra = heightLibrary.sites.first {
+                extra.id = "floating-height-fixture-\(heightSites.count)"
+                extra.name = "高度测试 \(heightSites.count)"
+                heightSites.append(extra)
+            }
+            for count in [0, 1, 6, 8, 11] {
+                let sites = Array(heightSites.prefix(count))
+                library = Library(sites: sites, tiles: sites.map { Tile(id: $0.id, kind: "site", name: nil, children: nil) })
+                floating.search("")
+                let expected = FloatingLauncherGeometry.expandedSize(siteCount: min(count, 8))
+                floatingChecks["heightFollowsResultCount-\(count)"] = floating.expanded &&
+                    floating.visibleSiteIDs.count == min(count, 8) && floating.panel.frame.size == expected
+            }
+            floating.search("https")
+            floatingChecks["manySearchResultsKeepCompactHeight"] = floating.visibleSiteIDs.count == 11 &&
+                floating.panel.frame.size == NSSize(width: 364, height: 482)
+            if let content = floating.panel.contentView {
+                func findListScroll(_ view: NSView) -> NSScrollView? {
+                    if let list = view as? NSScrollView { return list }
+                    return view.subviews.compactMap { findListScroll($0) }.first
+                }
+                floatingChecks["manySearchResultsRemainScrollable"] = findListScroll(content).map {
+                    ($0.documentView?.frame.height ?? 0) > $0.contentSize.height
+                } ?? false
+            } else { floatingChecks["manySearchResultsRemainScrollable"] = false }
+            library = heightLibrary; floating.search("")
+            floatingChecks["refreshRestoresHeightWithoutReopening"] = floating.expanded &&
+                floating.panel.frame.size == NSSize(width: 364, height: 390)
             floating.setExpanded(false)
             floatingChecks["collapsedPanelSize"] = !floating.expanded && floating.edgeHidden && floating.panel.frame.size == NSSize(width: 20, height: 104)
             floatingChecks["collapseClearsQuery"] = floating.query.isEmpty
@@ -88,36 +130,81 @@ extension AppDelegate {
             let insideHandle = NSPoint(x: handleFrame.midX, y: handleFrame.midY)
             let outside = NSPoint(x: handleFrame.minX - 1000, y: handleFrame.minY - 1000)
             let clock = ProcessInfo.processInfo.systemUptime + 3
+            floating.processPointer(at: outside, now: clock - 0.1)
             floating.processPointer(at: insideHandle, now: clock)
             floating.processPointer(at: insideHandle, now: clock + 0.3)
             floatingChecks["hoverDelayPreventsAccidentalReveal"] = floating.edgeHidden
             floating.processPointer(at: insideHandle, now: clock + 0.5)
             floatingChecks["hoverRevealsAfterDelay"] = floating.expanded && !floating.edgeHidden
             floating.processPointer(at: outside, now: clock + 0.7)
-            floating.processPointer(at: outside, now: clock + 1.3)
-            floatingChecks["revealGraceProtectsPointerTravel"] = floating.expanded
-            floating.processPointer(at: outside, now: clock + 1.6)
-            floating.processPointer(at: outside, now: clock + 1.9)
+            floating.processPointer(at: outside, now: clock + 0.84)
             floatingChecks["pointerExitDelayPreventsFlicker"] = floating.expanded
-            floating.processPointer(at: outside, now: clock + 2.2)
+            floating.processPointer(at: outside, now: clock + 0.86)
             floatingChecks["pointerExitReturnsToHandle"] = floating.edgeHidden && !floating.expanded
+            floatingChecks["pointerExitHasNoOpeningGrace"] = floating.edgeHidden && !floating.expanded
             floatingChecks["modeChangesKeepAnchor"] = floating.panel.frame == handleFrame
+            floating.processPointer(at: insideHandle, now: clock + 1)
+            floating.processPointer(at: insideHandle, now: clock + 2)
+            floatingChecks["collapseDoesNotImmediatelyHoverReopen"] = floating.edgeHidden && !floating.expanded
+            floating.processPointer(at: outside, now: clock + 2.1)
+            floating.processPointer(at: insideHandle, now: clock + 2.2)
+            floating.processPointer(at: insideHandle, now: clock + 2.7)
+            floatingChecks["leavingEntryRearmsHoverReveal"] = floating.expanded && !floating.edgeHidden
             floating.setExpanded(true)
             let insidePanel = NSPoint(x: floating.panel.frame.midX, y: floating.panel.frame.midY)
             floating.processPointer(at: insidePanel, now: clock + 10)
             floating.processPointer(at: insidePanel, now: clock + 11)
             floatingChecks["pointerInsideKeepsPanelOpen"] = floating.expanded
             floating.processPointer(at: outside, now: clock + 20, mouseDown: true)
+            floating.processPointer(at: outside, now: clock + 20.16, mouseDown: true)
+            floatingChecks["externalPressedMouseDoesNotProtectPanel"] = floating.edgeHidden && !floating.expanded
+            floating.setExpanded(true)
+            floating.processMouseDown(at: insidePanel)
             floating.processPointer(at: outside, now: clock + 21, mouseDown: true)
-            floatingChecks["pressedMouseProtectsPanel"] = floating.expanded
+            floating.processPointer(at: outside, now: clock + 22, mouseDown: true)
+            floatingChecks["internalPressedMouseProtectsPanel"] = floating.expanded
+            floating.processMouseUp(at: outside, now: clock + 22.1)
+            floating.processPointer(at: outside, now: clock + 22.24)
+            floatingChecks["internalMouseReleaseUsesShortExitDelay"] = floating.expanded
+            floating.processPointer(at: outside, now: clock + 22.26)
+            floatingChecks["internalMouseReleaseRestoresAutoHide"] = floating.edgeHidden && !floating.expanded
+            for (index, side) in ["left", "right", "top", "bottom"].enumerated() {
+                floating.setExpanded(true)
+                let frame = floating.panel.frame
+                let point: NSPoint
+                switch side {
+                case "left": point = NSPoint(x: frame.minX - 1, y: frame.midY)
+                case "right": point = NSPoint(x: frame.maxX + 1, y: frame.midY)
+                case "top": point = NSPoint(x: frame.midX, y: frame.maxY + 1)
+                default: point = NSPoint(x: frame.midX, y: frame.minY - 1)
+                }
+                let start = clock + 23 + Double(index)
+                floating.processPointer(at: point, now: start)
+                floating.processPointer(at: point, now: start + 0.14)
+                floatingChecks["onePointExitHasBriefDelay-\(side)"] = floating.expanded
+                floating.processPointer(at: point, now: start + 0.16)
+                floatingChecks["onePointExitCollapses-\(side)"] = floating.edgeHidden && !floating.expanded
+            }
+            floating.setExpanded(true)
+            floating.processPointer(at: outside, now: clock + 27)
+            floating.processPointer(at: insidePanel, now: clock + 27.1)
+            floating.processPointer(at: insidePanel, now: clock + 28)
+            floatingChecks["returnBeforeExitDelayCancelsCollapse"] = floating.expanded
+            for kind in ["left", "right"] {
+                floating.processMouseDown(at: outside)
+                floatingChecks["externalMouseDownImmediatelyCollapses-\(kind)"] = floating.edgeHidden && !floating.expanded && floating.isVisible
+                floating.processMouseUp(at: outside, now: clock + 29)
+                floating.setExpanded(true)
+            }
             let testMenu = NSMenu()
             floating.menuWillOpen(testMenu)
+            floating.processMouseDown(at: outside)
             floating.processPointer(at: outside, now: clock + 30)
             floating.processPointer(at: outside, now: clock + 31)
             floatingChecks["contextMenuProtectsPanel"] = floating.expanded
             floating.menuDidClose(testMenu)
             floating.processPointer(at: outside, now: clock + 32)
-            floating.processPointer(at: outside, now: clock + 33)
+            floating.processPointer(at: outside, now: clock + 32.16)
             floatingChecks["menuCloseRestoresAutoHide"] = floating.edgeHidden
             if let content = floating.panel.contentView,
                let dragArea = findView("GaoMenHu.Floating.DragArea", in: content),
@@ -127,12 +214,13 @@ extension AppDelegate {
                                             windowNumber: floating.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0) {
                 floating.setExpanded(true)
                 dragArea.mouseDown(with: down)
+                floating.processMouseDown(at: outside)
                 floating.processPointer(at: outside, now: clock + 35)
                 floating.processPointer(at: outside, now: clock + 36)
                 floatingChecks["dragAreaPressProtectsPanel"] = floating.expanded
                 dragArea.mouseUp(with: up)
                 floating.processPointer(at: outside, now: clock + 37)
-                floating.processPointer(at: outside, now: clock + 38)
+                floating.processPointer(at: outside, now: clock + 37.16)
                 floatingChecks["dragAreaReleaseRestoresAutoHide"] = floating.edgeHidden
             } else { floatingChecks["dragAreaPressProtectsPanel"] = false }
             floating.setExpanded(true)
@@ -142,24 +230,48 @@ extension AppDelegate {
             }
             if let content = floating.panel.contentView, let field = findSearch(content) {
                 floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
-                floating.search("blbl"); floating.noteSearchInteraction(now: clock + 40)
+                floating.search("blbl")
                 floating.processPointer(at: outside, now: clock + 40)
-                floating.processPointer(at: outside, now: clock + 41)
-                floating.processPointer(at: outside, now: clock + 44.9)
-                floatingChecks["recentSearchInputProtectsPanel"] = floating.expanded && floating.panel.firstResponder is NSTextView
-                floating.processPointer(at: outside, now: clock + 45.1)
-                floating.processPointer(at: outside, now: clock + 45.4)
-                floatingChecks["expiredSearchInputStillUsesExitDelay"] = floating.expanded
-                floating.processPointer(at: outside, now: clock + 45.7)
-                floatingChecks["expiredSearchFocusAllowsAutoHide"] = floating.edgeHidden && !floating.expanded && floating.isVisible
+                floating.processPointer(at: outside, now: clock + 40.14)
+                floatingChecks["searchExitUsesBriefDelay"] = floating.expanded
+                floating.processPointer(at: outside, now: clock + 40.16)
+                floatingChecks["searchFocusDoesNotDelayAutoHide"] = floating.edgeHidden && !floating.expanded && floating.isVisible
                 floatingChecks["autoHideClearsSearchAndFocus"] = floating.query.isEmpty && !(floating.panel.firstResponder is NSTextView)
                 floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
-                floating.search("blbl"); floating.noteSearchInteraction(now: clock + 50)
+                floating.search("blbl")
+                floating.processMouseDown(at: outside)
+                floatingChecks["searchExternalClickImmediatelyCollapses"] = floating.edgeHidden && !floating.expanded &&
+                    floating.query.isEmpty && !(floating.panel.firstResponder is NSTextView)
+                floating.processMouseUp(at: outside, now: clock + 42)
+                floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                if let editor = floating.panel.firstResponder as? NSTextView {
+                    editor.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+                    floating.processPointer(at: outside, now: clock + 43)
+                    floating.processPointer(at: outside, now: clock + 44)
+                    floating.processMouseDown(at: outside)
+                    floatingChecks["markedChineseInputProtectsPanel"] = floating.expanded && editor.hasMarkedText()
+                    editor.unmarkText()
+                    floating.processMouseUp(at: outside, now: clock + 44.1)
+                    floating.processPointer(at: outside, now: clock + 44.26)
+                    floatingChecks["completedChineseInputRestoresAutoHide"] = floating.edgeHidden && !floating.expanded
+                } else { floatingChecks["markedChineseInputProtectsPanel"] = false }
+                floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                if let editor = floating.panel.firstResponder as? NSTextView {
+                    editor.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+                    window.makeKeyAndOrderFront(nil)
+                    floating.processPointer(at: outside, now: clock + 46)
+                    floating.processPointer(at: outside, now: clock + 46.16)
+                    floatingChecks["markedInputLosingKeyFocusAllowsAutoHide"] = !floating.panel.isKeyWindow &&
+                        floating.edgeHidden && !floating.expanded && floating.isVisible
+                    editor.unmarkText()
+                } else { floatingChecks["markedInputLosingKeyFocusAllowsAutoHide"] = false }
+                floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                floating.search("blbl")
                 window.makeKeyAndOrderFront(nil)
                 floating.processPointer(at: outside, now: clock + 50.1)
-                floating.processPointer(at: outside, now: clock + 50.7)
+                floating.processPointer(at: outside, now: clock + 50.26)
                 floatingChecks["searchLosesKeyFocusAllowsAutoHide"] = floating.edgeHidden && !floating.expanded
-            } else { floatingChecks["recentSearchInputProtectsPanel"] = false }
+            } else { floatingChecks["searchFocusDoesNotDelayAutoHide"] = false }
             if let content = floating.panel.contentView,
                let handle = findView("GaoMenHu.Floating.EdgeHandle", in: content) {
                 for (index, edge) in [FloatingLauncherEdge.left, .right, .none].enumerated() {
@@ -175,6 +287,7 @@ extension AppDelegate {
                             $0.visibleFrame.contains(frame) && (edge == .left ? frame.minX == $0.visibleFrame.minX : frame.maxX == $0.visibleFrame.maxX)
                         }
                     }
+                    floating.processPointer(at: outside, now: start - 0.1)
                     floating.processPointer(at: point, now: start)
                     floating.processPointer(at: point, now: start + 0.5)
                     floatingChecks["hoverRevealsWithoutReenable-\(edge.rawValue)"] = floating.expanded && floating.isVisible

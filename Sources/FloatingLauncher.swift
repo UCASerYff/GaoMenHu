@@ -4,7 +4,6 @@ import QuartzCore
 /// A native, nonactivating companion to the website launcher. Window preferences
 /// remain separate from the library, so showing it never rewrites user data.
 final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuDelegate {
-    static let expandedSize = NSSize(width: 364, height: 526)
     static let collapsedSize = NSSize(width: 20, height: 104)
     private unowned let app: AppDelegate
     private let preferences: UserDefaults?
@@ -21,6 +20,11 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var currentRows: [Website] = []
     private var screenObserver: NSObjectProtocol?
     private var pointerTimer: Timer?
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
+    private var keyObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
+    private var pressStartedInside = false
     private var enabled = true
     private var dragOffset: NSPoint?
     private var dock = "right"
@@ -34,11 +38,11 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var status = "点击网站打开，右键选择浏览器"
     private(set) var expanded = false
     private(set) var edgeHidden = false
-    private var searchHoldUntil: TimeInterval = 0
     var dockEdge: FloatingLauncherEdge { FloatingLauncherEdge(rawValue: dock) ?? .none }
     var isVisible: Bool { panel.isVisible }
     var visibleSiteIDs: [String] { currentRows.map(\.id) }
     var query: String { searchField.stringValue }
+    var activeMonitorCount: Int { [localMouseMonitor, globalMouseMonitor].compactMap { $0 }.count }
 
     init(app: AppDelegate, testPreferences: UserDefaults? = nil) {
         self.app = app
@@ -53,6 +57,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     }
 
     func start() {
+        stop()
         restorePosition()
         refresh()
         if enabled { panel.orderFrontRegardless() }
@@ -62,11 +67,19 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
                 self.normalizeAnchor(); self.renderFrame(); self.savePosition()
             }
         if !(app.testMode && CommandLine.arguments.contains("--self-test")) {
-            let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            installMouseMonitors()
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
                 self?.processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime,
                                      mouseDown: NSEvent.pressedMouseButtons != 0)
             }
+            timer.tolerance = 0.01
             RunLoop.main.add(timer, forMode: .common); pointerTimer = timer
+            keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
+                self?.dismissForOutsideInteraction()
+            }
+            activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
+                self?.dismissForOutsideInteraction()
+            }
         }
     }
 
@@ -74,6 +87,13 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         pointerTimer?.invalidate(); pointerTimer = nil
+        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+        localMouseMonitor = nil; globalMouseMonitor = nil
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        keyObserver = nil; activationObserver = nil
+        pressStartedInside = false
         panel.orderOut(nil)
     }
 
@@ -81,7 +101,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         let matches = FloatingLauncherLogic.sites(in: app.library, query: query, usage: app.launchHistory.records, limit: 8)
         if matches != currentRows {
             currentRows = matches
-            rebuildRows()
+            if expanded { renderFrame() }
         }
         footer.stringValue = status
         footer.toolTip = status
@@ -114,9 +134,10 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         guard expanded != value else { return }
         expanded = value
         hoverStartedAt = nil; outsideStartedAt = nil
-        holdUntil = ProcessInfo.processInfo.systemUptime + 1
+        holdUntil = value ? 0 : ProcessInfo.processInfo.systemUptime + 0.2
         if !value {
-            searchHoldUntil = 0
+            hoverArmed = false
+            pressStartedInside = false
             panel.makeFirstResponder(nil)
             searchField.stringValue = ""
         }
@@ -149,10 +170,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         if let data = bitmap.representation(using: .png, properties: [:]) { try? data.write(to: url, options: .atomic) }
     }
 
-    func noteSearchInteraction(now: TimeInterval = ProcessInfo.processInfo.systemUptime) { searchHoldUntil = now + 5 }
-
-    func controlTextDidBeginEditing(_ notification: Notification) { noteSearchInteraction() }
-    func controlTextDidChange(_ notification: Notification) { noteSearchInteraction(); refresh() }
+    func controlTextDidChange(_ notification: Notification) { refresh() }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
@@ -187,7 +205,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         container.addSubview(surface); container.addSubview(edgeHandle)
         edgeHandle.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.EdgeHandle")
         container.pointerEntered = { [weak self] in self?.outsideStartedAt = nil }
-        container.pointerExited = { [weak self] in self?.hoverStartedAt = nil }
+        container.pointerExited = { [weak self] in
+            self?.processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime, mouseDown: NSEvent.pressedMouseButtons != 0)
+        }
 
         header.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.DragArea")
         header.beginDrag = { [weak self] point in
@@ -256,9 +276,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         [searchField, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
         if expanded {
             searchField.frame = NSRect(x: 16, y: height - 64, width: width - 32, height: 30)
-            scroll.frame = NSRect(x: 12, y: 46, width: max(0, width - 24), height: max(0, height - 120))
-            footer.frame = NSRect(x: 18, y: 16, width: width - 134, height: 16)
-            openMain.frame = NSRect(x: width - 100, y: 12, width: 84, height: 24)
+            scroll.frame = NSRect(x: 12, y: 40, width: max(0, width - 24), height: max(0, height - 114))
+            footer.frame = NSRect(x: 18, y: 12, width: width - 134, height: 16)
+            openMain.frame = NSRect(x: width - 100, y: 8, width: 84, height: 24)
             rebuildRows()
         }
     }
@@ -355,7 +375,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         edgeHidden = !expanded
         let frame: NSRect
         if edgeHidden { frame = FloatingLauncherGeometry.hiddenFrame(anchor: anchorFrame, edge: dockEdge, in: screen) }
-        else { frame = FloatingLauncherGeometry.resizedFrame(anchorFrame, size: Self.expandedSize,
+        else { frame = FloatingLauncherGeometry.resizedFrame(anchorFrame, size: FloatingLauncherGeometry.expandedSize(siteCount: currentRows.count),
                                                             in: screen, edge: dockEdge) }
         panel.hasShadow = !edgeHidden
         panel.setFrame(frame, display: true)
@@ -373,7 +393,8 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
                              width: Self.collapsedSize.width, height: Self.collapsedSize.height)
         normalizeAnchor(); renderFrame(); savePosition()
         hoverArmed = false; hoverStartedAt = nil; outsideStartedAt = nil
-        holdUntil = ProcessInfo.processInfo.systemUptime + 1
+        holdUntil = ProcessInfo.processInfo.systemUptime + 0.2
+        processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime)
     }
 
     private func savePosition() {
@@ -390,31 +411,74 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     func menuWillOpen(_ menu: NSMenu) { menuDepth += 1; outsideStartedAt = nil }
     func menuDidClose(_ menu: NSMenu) {
         menuDepth = max(0, menuDepth - 1); outsideStartedAt = nil
-        holdUntil = ProcessInfo.processInfo.systemUptime + 0.5
+        processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime, mouseDown: NSEvent.pressedMouseButtons != 0)
     }
 
-    /// Polling only this app's window bounds needs no global event hook or permissions.
+    private var protectedInteraction: Bool {
+        let composing = panel.isKeyWindow && (searchField.currentEditor() as? NSTextView)?.hasMarkedText() == true
+        return launching || menuDepth > 0 || dragOffset != nil || composing
+    }
+
+    private func dismissForOutsideInteraction() {
+        guard enabled, panel.isVisible, expanded, !protectedInteraction else { return }
+        setExpanded(false)
+    }
+
+    private func installMouseMonitors() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                           .leftMouseUp, .rightMouseUp, .otherMouseUp]
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            let point = event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow
+            self?.observeMouse(event.type, at: point)
+            return event
+        }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.observeMouse(event.type, at: event.locationInWindow)
+        }
+    }
+
+    private func observeMouse(_ type: NSEvent.EventType, at point: NSPoint) {
+        switch type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown: processMouseDown(at: point)
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp: processMouseUp(at: point)
+        default: break
+        }
+    }
+
+    func processMouseDown(at point: NSPoint) {
+        guard enabled, panel.isVisible, expanded else { return }
+        if panel.frame.contains(point) {
+            pressStartedInside = true; outsideStartedAt = nil
+        } else { dismissForOutsideInteraction() }
+    }
+
+    func processMouseUp(at point: NSPoint, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        pressStartedInside = false
+        processPointer(at: point, now: now)
+    }
+
+    /// Mouse-only observation never intercepts a click or reads keyboard input.
     func processPointer(at point: NSPoint, now: TimeInterval, mouseDown: Bool = false) {
         guard enabled, panel.isVisible, !NSApp.isHidden, dragOffset == nil else {
             hoverStartedAt = nil; outsideStartedAt = nil; return
         }
+        if !mouseDown { pressStartedInside = false }
         if edgeHidden {
-            let inside = panel.frame.insetBy(dx: -3, dy: -3).contains(point)
-            if !inside { hoverArmed = true; hoverStartedAt = nil; return }
+            if !panel.frame.contains(point) { hoverArmed = true; hoverStartedAt = nil; return }
             guard hoverArmed, !mouseDown, now >= holdUntil else { hoverStartedAt = nil; return }
             if hoverStartedAt == nil { hoverStartedAt = now }
-            if now - (hoverStartedAt ?? now) >= 0.45 { setExpanded(true); holdUntil = now + 1 }
+            if now - (hoverStartedAt ?? now) >= 0.45 { setExpanded(true) }
             return
         }
         guard expanded else { outsideStartedAt = nil; return }
-        let editingSearch = panel.isKeyWindow && panel.firstResponder is NSTextView && now < searchHoldUntil
-        guard !launching, menuDepth == 0, !mouseDown, !editingSearch, now >= holdUntil else {
+        if panel.frame.contains(point) { outsideStartedAt = nil; return }
+        guard !protectedInteraction, !(mouseDown && pressStartedInside) else {
             outsideStartedAt = nil; return
         }
-        if panel.frame.insetBy(dx: -18, dy: -18).contains(point) { outsideStartedAt = nil; return }
         if outsideStartedAt == nil { outsideStartedAt = now }
-        if now - (outsideStartedAt ?? now) >= 0.45 { setExpanded(false) }
+        if now - (outsideStartedAt ?? now) >= 0.15 { setExpanded(false) }
     }
+
 }
 
 private final class FloatingLauncherTrackingView: NSView {
