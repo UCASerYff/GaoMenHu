@@ -264,6 +264,118 @@ import CoreGraphics
                 check("compact \(edge.rawValue) frame for \(fixture.count) sites fits a smaller screen without growing", tiny.contains(smallCompact) && smallCompact.size == CGSize(width: min(dynamicSize.width, tiny.width), height: min(dynamicSize.height, tiny.height)))
             }
         }
+
+        let physical = CGRect(x: -1440, y: -200, width: 1440, height: 900)
+        let leftDockVisible = CGRect(x: -1360, y: -200, width: 1360, height: 876)
+        let rightDockVisible = CGRect(x: -1440, y: -200, width: 1360, height: 876)
+        let sideBounds = FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: rightDockVisible)
+        check("visible left Dock retains reachable docking edge", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: leftDockVisible) == leftDockVisible)
+        check("visible right Dock retains reachable docking edge", sideBounds == rightDockVisible)
+        for inset in [CGFloat(0), CGFloat(8), CGFloat(9)] {
+            let leftVisible = CGRect(x: physical.minX + inset, y: -200, width: physical.width - inset, height: 876)
+            let rightVisible = CGRect(x: physical.minX, y: -200, width: physical.width - inset, height: 876)
+            let leftBounds = FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: leftVisible)
+            let rightBounds = FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: rightVisible)
+            check("left reserved gap \(inset) respects small-gap limit", inset <= 8 ? leftBounds.minX == physical.minX : leftBounds == leftVisible)
+            check("right reserved gap \(inset) respects small-gap limit", inset <= 8 ? rightBounds.maxX == physical.maxX : rightBounds == rightVisible)
+            check("reserved gaps keep menu bar boundary \(inset)", leftBounds.maxY == 676 && rightBounds.maxY == 676 && physical.contains(leftBounds) && physical.contains(rightBounds))
+        }
+        let mixedVisible = CGRect(x: physical.minX + 8, y: -200, width: physical.width - 88, height: 876)
+        check("small left gap and large right Dock are handled independently", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: mixedVisible) == rightDockVisible)
+        let reverseMixedVisible = CGRect(x: physical.minX + 80, y: -200, width: physical.width - 88, height: 876)
+        check("large left Dock and small right gap are handled independently", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: reverseMixedVisible) == leftDockVisible)
+        for edge in [FloatingLauncherEdge.left, .right] {
+            let smallGapVisible = CGRect(x: physical.minX + 8, y: -200, width: physical.width - 16, height: 876)
+            let smallGapBounds = FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: smallGapVisible)
+            let gapHandle = FloatingLauncherGeometry.hiddenFrame(anchor: saved, edge: edge, in: smallGapBounds)
+            check("\(edge.rawValue) small reserved gap reaches physical edge", smallGapBounds.contains(gapHandle) && (edge == .left ? gapHandle.minX == physical.minX : gapHandle.maxX == physical.maxX))
+        }
+        let leftDockBounds = FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: leftDockVisible)
+        let leftDockHandle = FloatingLauncherGeometry.hiddenFrame(anchor: saved, edge: .left, in: leftDockBounds)
+        check("left Dock handle is not placed behind the visible Dock", leftDockVisible.contains(leftDockHandle) && leftDockHandle.minX == leftDockVisible.minX)
+        let leftDockSnap = FloatingLauncherGeometry.snap(frame: CGRect(x: leftDockVisible.minX + 32, y: 100, width: 364, height: 368), to: leftDockBounds)
+        check("left Dock snap uses its reachable boundary", leftDockSnap.edge == .left && leftDockSnap.frame.minX == leftDockVisible.minX)
+        check("bottom Dock and menu bar retain their vertical space", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: -1440, y: -132, width: 1440, height: 808)) == CGRect(x: -1440, y: -132, width: 1440, height: 808))
+        check("visible bounds cannot extend outside physical display", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: -1600, y: -300, width: 1800, height: 1200)) == physical)
+        check("partially escaped visible width is safely clipped", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: -1500, y: -200, width: 1000, height: 876)) == CGRect(x: -1440, y: -200, width: 940, height: 876))
+        check("partially escaped visible height is clipped", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: -1440, y: -240, width: 1440, height: 800)) == CGRect(x: -1440, y: -200, width: 1440, height: 760))
+        check("disjoint visible height falls back to physical bounds", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: -1440, y: 800, width: 1440, height: 500)) == physical)
+        check("disjoint visible width falls back to physical bounds", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: CGRect(x: 500, y: -200, width: 1000, height: 876)) == physical)
+        for invalidVisible in [CGRect.zero, invalid, CGRect(x: 0, y: 0, width: 100, height: CGFloat.infinity)] {
+            check("invalid visible frame safely retains physical bounds \(invalidVisible)", FloatingLauncherGeometry.dockingBounds(frame: physical, visibleFrame: invalidVisible) == physical)
+        }
+        let fallbackBounds = CGRect(x: 0, y: 0, width: 360, height: 500)
+        check("invalid physical and visible frames use finite fallback", FloatingLauncherGeometry.dockingBounds(frame: invalid, visibleFrame: invalid) == fallbackBounds)
+        check("invalid physical frame still clips valid visible height to fallback", FloatingLauncherGeometry.dockingBounds(frame: invalid, visibleFrame: CGRect(x: -100, y: 24, width: 700, height: 1000)) == CGRect(x: 0, y: 24, width: 360, height: 476))
+        let overflowingBounds = CGRect(x: CGFloat.greatestFiniteMagnitude, y: 0, width: CGFloat.greatestFiniteMagnitude, height: 500)
+        check("overflowing physical extent uses safe fallback", FloatingLauncherGeometry.dockingBounds(frame: overflowingBounds, visibleFrame: invalid) == fallbackBounds)
+
+        for edge in [FloatingLauncherEdge.left, .right] {
+            let dockedHandle = FloatingLauncherGeometry.hiddenFrame(anchor: saved, edge: edge, in: sideBounds)
+            check("\(edge.rawValue) handle remains reachable outside visible Dock", rightDockVisible.contains(dockedHandle) && (edge == .left ? dockedHandle.minX == sideBounds.minX : dockedHandle.maxX == sideBounds.maxX))
+            let dockedExpanded = FloatingLauncherGeometry.resizedFrame(dockedHandle, size: FloatingLauncherGeometry.expandedSize(siteCount: 8), in: sideBounds, edge: edge)
+            check("\(edge.rawValue) expansion stays outside visible Dock and menu bar", rightDockVisible.contains(dockedExpanded) && (edge == .left ? dockedExpanded.minX == sideBounds.minX : dockedExpanded.maxX == sideBounds.maxX))
+            let resizedHandle = FloatingLauncherGeometry.resizedFrame(dockedExpanded, size: handleSize, in: sideBounds, edge: edge)
+            check("\(edge.rawValue) collapse keeps reachable Dock boundary", resizedHandle == dockedHandle)
+        }
+        let adjacentPhysical = CGRect(x: 0, y: -200, width: 1920, height: 1080)
+        let adjacentBounds = FloatingLauncherGeometry.dockingBounds(frame: adjacentPhysical, visibleFrame: CGRect(x: 70, y: -200, width: 1850, height: 1056))
+        let sideHandle = FloatingLauncherGeometry.hiddenFrame(anchor: saved, edge: .right, in: sideBounds)
+        check("physical side handle stays within its monitor", physical.contains(sideHandle) && !sideHandle.intersects(adjacentPhysical))
+        check("physical screen selection includes side Dock area", FloatingLauncherGeometry.screen(for: CGRect(x: 10, y: 100, width: 20, height: 104), among: [sideBounds, adjacentBounds]) == adjacentBounds)
+        check("negative physical screen keeps handle after adjacent display changes", FloatingLauncherGeometry.screen(for: sideHandle, among: [adjacentBounds, sideBounds]) == sideBounds)
+
+        let physicalA = CGRect(x: -1440, y: 0, width: 1440, height: 900)
+        let physicalB = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let visibleA = CGRect(x: -1440, y: 0, width: 1360, height: 876)
+        let visibleB = CGRect(x: 80, y: 0, width: 1360, height: 876)
+        let oldRightAnchor = CGRect(x: -20, y: 500, width: 20, height: 104)
+        let oldLeftAnchor = CGRect(x: 0, y: 500, width: 20, height: 104)
+        let dockScreenA = FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [physicalA, physicalB], visibleScreens: [visibleA, visibleB])
+        let dockScreenB = FloatingLauncherGeometry.dockingScreen(for: oldLeftAnchor, physicalScreens: [physicalA, physicalB], visibleScreens: [visibleA, visibleB])
+        check("right Dock appearing preserves anchor physical monitor", dockScreenA == visibleA)
+        check("left Dock appearing preserves anchor physical monitor", dockScreenB == visibleB)
+        check("Dock-excluded old anchor does not select adjacent monitor", FloatingLauncherGeometry.screen(for: oldRightAnchor, among: [visibleA, physicalB]) == physicalB && dockScreenA != visibleB)
+        check("left excluded anchor does not select adjacent negative monitor", FloatingLauncherGeometry.screen(for: oldLeftAnchor, among: [physicalA, visibleB]) == physicalA && dockScreenB != visibleA)
+        check("removed negative monitor uses nearest remaining physical screen", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [physicalB], visibleScreens: [visibleB]) == visibleB)
+        check("removed positive monitor uses nearest remaining physical screen", FloatingLauncherGeometry.dockingScreen(for: oldLeftAnchor, physicalScreens: [physicalA], visibleScreens: [visibleA]) == visibleA)
+        check("invalid preceding screen retains original visible array index", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [invalid, physicalA, physicalB], visibleScreens: [invalid, visibleA, visibleB]) == visibleA)
+        check("missing visible frame safely uses corresponding physical screen", FloatingLauncherGeometry.dockingScreen(for: oldLeftAnchor, physicalScreens: [physicalA, physicalB], visibleScreens: [visibleA]) == physicalB)
+        check("empty visible snapshot safely uses selected physical screen", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [physicalA, physicalB], visibleScreens: []) == physicalA)
+        check("invalid matching visible frame safely uses physical screen", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [physicalA, physicalB], visibleScreens: [invalid, visibleB]) == physicalA)
+        check("empty physical snapshot can use available visible screens", FloatingLauncherGeometry.dockingScreen(for: oldLeftAnchor, physicalScreens: [], visibleScreens: [visibleA, visibleB]) == visibleB)
+        check("invalid physical snapshot can use available visible screen", FloatingLauncherGeometry.dockingScreen(for: oldLeftAnchor, physicalScreens: [invalid], visibleScreens: [visibleB]) == visibleB)
+        check("empty display snapshots return no docking screen", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [], visibleScreens: []) == nil)
+        check("unusable display snapshots return no docking screen", FloatingLauncherGeometry.dockingScreen(for: oldRightAnchor, physicalScreens: [invalid], visibleScreens: [invalid]) == nil)
+
+        for distance in [CGFloat(32), CGFloat(33)] {
+            let leftCandidate = CGRect(x: physical.minX + distance, y: 100, width: 364, height: 368)
+            let rightCandidate = CGRect(x: sideBounds.maxX - 364 - distance, y: 100, width: 364, height: 368)
+            let leftResult = FloatingLauncherGeometry.snap(frame: leftCandidate, to: sideBounds)
+            let rightResult = FloatingLauncherGeometry.snap(frame: rightCandidate, to: sideBounds)
+            check("left default snap threshold at \(distance)", distance == 32 ? leftResult.edge == .left && leftResult.frame.minX == physical.minX : leftResult.edge == .none && leftResult.frame == leftCandidate)
+            check("right default snap threshold at \(distance)", distance == 32 ? rightResult.edge == .right && rightResult.frame.maxX == sideBounds.maxX : rightResult.edge == .none && rightResult.frame == rightCandidate)
+        }
+        let thresholdCandidate = CGRect(x: physical.minX + 32, y: 100, width: 364, height: 368)
+        check("explicit smaller snap threshold remains respected", FloatingLauncherGeometry.snap(frame: thresholdCandidate, to: sideBounds, threshold: 24).edge == .none)
+        check("invalid snap threshold uses new safe default", FloatingLauncherGeometry.snap(frame: thresholdCandidate, to: sideBounds, threshold: .nan).edge == .left)
+        check("negative snap threshold only attaches exact edge", FloatingLauncherGeometry.snap(frame: thresholdCandidate, to: sideBounds, threshold: -1).edge == .none)
+
+        let offsetHitBounds = CGRect(x: 40, y: -12, width: 20, height: 104)
+        for edge in [FloatingLauncherEdge.left, .right, .none] {
+            let strip = FloatingLauncherGeometry.stripRect(in: offsetHitBounds, edge: edge)
+            check("\(edge.rawValue) visual strip is contained in wider hit bounds", offsetHitBounds.contains(strip) && strip.size == CGSize(width: 6, height: 88) && strip.midY == offsetHitBounds.midY)
+            switch edge {
+            case .left: check("left strip has no transparent outer gap", strip.minX == offsetHitBounds.minX)
+            case .right: check("right strip has no transparent outer gap", strip.maxX == offsetHitBounds.maxX)
+            case .none: check("free strip remains centered", strip.midX == offsetHitBounds.midX)
+            }
+            let tinyStripBounds = CGRect(x: -80, y: -32, width: 4, height: 40)
+            check("\(edge.rawValue) strip shrinks safely with tiny hit bounds", FloatingLauncherGeometry.stripRect(in: tinyStripBounds, edge: edge) == tinyStripBounds)
+        }
+        check("invalid strip bounds do not create nonfinite drawing rectangles", FloatingLauncherGeometry.stripRect(in: invalid, edge: .right) == .zero)
+        check("empty strip bounds produce an empty drawing rectangle", FloatingLauncherGeometry.stripRect(in: .zero, edge: .left) == .zero)
+        check("overflowing strip bounds produce an empty drawing rectangle", FloatingLauncherGeometry.stripRect(in: overflowingBounds, edge: .none) == .zero)
         print("Floating launcher logic: \(count) checks passed")
     }
 }

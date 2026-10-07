@@ -2,6 +2,7 @@
 import Foundation
 import AppKit
 import WebKit
+import QuartzCore
 
 extension AppDelegate {
     func runAutomatedTests() {
@@ -42,6 +43,9 @@ extension AppDelegate {
             func findView(_ id: String, in view: NSView) -> NSView? {
                 if view.identifier?.rawValue == id { return view }
                 return view.subviews.compactMap { findView(id, in: $0) }.first
+            }
+            func dockingFrame(_ screen: NSScreen) -> NSRect {
+                FloatingLauncherGeometry.dockingBounds(frame: screen.frame, visibleFrame: screen.visibleFrame)
             }
             floating.setExpanded(true)
             floatingChecks["expandedPanelSize"] = floating.expanded &&
@@ -281,11 +285,17 @@ extension AppDelegate {
                     let point = NSPoint(x: frame.midX, y: frame.midY)
                     floatingChecks["uniformVerticalEntry-\(edge.rawValue)"] = floating.isVisible && floating.edgeHidden &&
                         !floating.expanded && frame.size == NSSize(width: 20, height: 104) && floating.dockEdge == edge
-                    floatingChecks["entryWithinDisplay-\(edge.rawValue)"] = NSScreen.screens.contains { $0.visibleFrame.contains(frame) }
+                    floatingChecks["entryWithinDisplay-\(edge.rawValue)"] = NSScreen.screens.contains { dockingFrame($0).contains(frame) }
                     if edge != .none {
                         floatingChecks["entryTouchesRequestedEdge-\(edge.rawValue)"] = NSScreen.screens.contains {
-                            $0.visibleFrame.contains(frame) && (edge == .left ? frame.minX == $0.visibleFrame.minX : frame.maxX == $0.visibleFrame.maxX)
+                            dockingFrame($0).contains(frame) && (edge == .left ? frame.minX == dockingFrame($0).minX : frame.maxX == dockingFrame($0).maxX)
                         }
+                        if let bitmap = handle.bitmapImageRepForCachingDisplay(in: handle.bounds) {
+                            handle.cacheDisplay(in: handle.bounds, to: bitmap)
+                            let x = edge == .left ? 0 : max(0, bitmap.pixelsWide - 1)
+                            floatingChecks["visibleStripHasNoSideGap-\(edge.rawValue)"] =
+                                (bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2)?.alphaComponent ?? 0) > 0.1
+                        } else { floatingChecks["visibleStripHasNoSideGap-\(edge.rawValue)"] = false }
                     }
                     floating.processPointer(at: outside, now: start - 0.1)
                     floating.processPointer(at: point, now: start)
@@ -298,9 +308,249 @@ extension AppDelegate {
                         floating.edgeHidden && floating.query.isEmpty && floating.panel.frame == frame && floating.dockEdge == edge
                     let clicked = handle.accessibilityPerformPress()
                     floatingChecks["clickRevealsWithoutReenable-\(edge.rawValue)"] = clicked && floating.isVisible && floating.expanded
+                    let expandedFrame = floating.panel.frame
+                    floatingChecks["expandedDockTouchesUsableSideEdge-\(edge.rawValue)"] = NSScreen.screens.contains {
+                        let bounds = dockingFrame($0)
+                        return bounds.contains(expandedFrame) && (edge == .none ||
+                            (edge == .left ? expandedFrame.minX == bounds.minX : expandedFrame.maxX == bounds.maxX))
+                    }
+                    let surface = content.subviews.first { $0 is NSVisualEffectView }
+                    let expectedCorners: CACornerMask
+                    switch edge {
+                    case .left: expectedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+                    case .right: expectedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
+                    case .none: expectedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+                    }
+                    floatingChecks["dockedOuterCornersAreFlush-\(edge.rawValue)"] = surface?.layer?.maskedCorners == expectedCorners
                     floating.setExpanded(false)
                 }
             } else { floatingChecks["entryHandleAvailable"] = false }
+            let dragSuite = "cn.mendao.tests.floating-drag." + UUID().uuidString
+            if let preferences = UserDefaults(suiteName: dragSuite), let screen = NSScreen.main ?? NSScreen.screens.first {
+                let bounds = dockingFrame(screen)
+                preferences.set(true, forKey: "GaoMenHu.Floating.Enabled")
+                preferences.set("free", forKey: "GaoMenHu.Floating.Dock")
+                preferences.set(Double(bounds.midX - 182), forKey: "GaoMenHu.Floating.X")
+                preferences.set(Double(bounds.maxY - 72), forKey: "GaoMenHu.Floating.Top")
+                let dragged = FloatingLauncherController(app: self, testPreferences: preferences)
+                defer { dragged.stop(); preferences.removePersistentDomain(forName: dragSuite) }
+                dragged.start(); dragged.setExpanded(true)
+                func sendDragEvent(_ type: NSEvent.EventType, at point: NSPoint) -> Bool {
+                    guard let event = NSEvent.mouseEvent(with: type,
+                        location: dragged.panel.convertPoint(fromScreen: point), modifierFlags: [], timestamp: clock + 200,
+                        windowNumber: dragged.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                        pressure: type == .leftMouseUp ? 0 : 1) else { return false }
+                    dragged.panel.sendEvent(event)
+                    return true
+                }
+                for area in ["top", "left", "right", "bottom"] {
+                    let before = dragged.panel.frame
+                    let point: NSPoint
+                    switch area {
+                    case "top": point = NSPoint(x: before.midX, y: before.maxY - 6)
+                    case "left": point = NSPoint(x: before.minX + 2, y: before.midY)
+                    case "right": point = NSPoint(x: before.maxX - 2, y: before.midY)
+                    default: point = NSPoint(x: before.midX, y: before.minY + 4)
+                    }
+                    floatingChecks["expandedBlankAreaIsDraggable-\(area)"] = dragged.panel.canBeginBackgroundDrag(at: dragged.panel.convertPoint(fromScreen: point))
+                    let target = NSPoint(x: point.x + 12, y: point.y - 6)
+                    let down = sendDragEvent(.leftMouseDown, at: point)
+                    dragged.processPointer(at: outside, now: clock + 201, mouseDown: true)
+                    floatingChecks["blankPressProtectsExpandedPanel-\(area)"] = dragged.expanded && dragged.panel.frame == before
+                    let moved = sendDragEvent(.leftMouseDragged, at: target)
+                    let during = dragged.panel.frame
+                    floatingChecks["nativeBlankDragMovesPanel-\(area)"] = down && moved && during.origin ==
+                        NSPoint(x: before.minX + 12, y: before.minY - 6) && during.size == before.size && dragged.expanded
+                    let up = sendDragEvent(.leftMouseUp, at: target)
+                    floatingChecks["blankDragMouseUpDoesNotReposition-\(area)"] = up && dragged.panel.frame == during && dragged.expanded
+                }
+                for edge in [FloatingLauncherEdge.left, .right] {
+                    for distance in [CGFloat(32), 33] {
+                        let before = dragged.panel.frame
+                        let point = NSPoint(x: before.midX, y: before.maxY - 6)
+                        let desiredX = edge == .left ? bounds.minX + distance : bounds.maxX - before.width - distance
+                        let target = NSPoint(x: desiredX + before.width / 2, y: point.y)
+                        let down = sendDragEvent(.leftMouseDown, at: point)
+                        let moved = sendDragEvent(.leftMouseDragged, at: target)
+                        let during = dragged.panel.frame
+                        let expectedEdge: FloatingLauncherEdge = distance == 32 ? edge : .none
+                        let expectedX = distance == 32 ? (edge == .left ? bounds.minX : bounds.maxX - before.width) : desiredX
+                        floatingChecks["dragSnapsBeforeMouseUp-\(edge.rawValue)-\(Int(distance))"] = down && moved &&
+                            dragged.dockEdge == expectedEdge && during.minX == expectedX && during.maxY == before.maxY
+                        let up = sendDragEvent(.leftMouseUp, at: target)
+                        floatingChecks["snapReleaseHasNoSecondPlacement-\(edge.rawValue)-\(Int(distance))"] =
+                            up && dragged.panel.frame == during && dragged.dockEdge == expectedEdge && dragged.expanded
+                        let savedX = expectedEdge == .right ? during.maxX - 20 : during.minX
+                        floatingChecks["dragSavesActualAnchor-\(edge.rawValue)-\(Int(distance))"] =
+                            preferences.double(forKey: "GaoMenHu.Floating.X") == Double(savedX) &&
+                            preferences.double(forKey: "GaoMenHu.Floating.Top") == Double(during.maxY)
+                    }
+                }
+                let heldFrame = dragged.panel.frame
+                let heldIDs = dragged.visibleSiteIDs
+                let heldPoint = NSPoint(x: heldFrame.midX, y: heldFrame.maxY - 6)
+                dragged.beginDragging(at: heldPoint)
+                dragged.search("blbl"); dragged.refresh()
+                dragged.processPointer(at: outside, now: clock + 210, mouseDown: true)
+                floatingChecks["dragDefersSearchResultAndFrameChanges"] = dragged.panel.frame == heldFrame &&
+                    dragged.visibleSiteIDs == heldIDs && dragged.expanded
+                let releasePoint = NSPoint(x: heldPoint.x - 12, y: heldPoint.y - 6)
+                dragged.drag(to: releasePoint)
+                let releaseFrame = dragged.panel.frame
+                floatingChecks["dragRetainsSizeDuringPendingSearch"] = releaseFrame.size == heldFrame.size && dragged.expanded
+                dragged.endDragging(moved: true, at: releasePoint, now: clock + 211)
+                floatingChecks["releaseAppliesDeferredSearchWithoutLosingTop"] = dragged.visibleSiteIDs == ["seed-4"] &&
+                    dragged.panel.frame.size == FloatingLauncherGeometry.expandedSize(siteCount: 1) &&
+                    dragged.panel.frame.maxY == releaseFrame.maxY && dragged.expanded
+                dragged.search("")
+                if let content = dragged.panel.contentView {
+                    func allViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { allViews($0) } }
+                    let views = allViews(content)
+                    let websiteButtons = views.compactMap { $0 as? NSScrollView }.flatMap {
+                        $0.documentView?.subviews.compactMap { $0 as? NSButton } ?? []
+                    }
+                    let mainButtons = content.subviews.compactMap { $0 as? NSVisualEffectView }.flatMap {
+                        $0.subviews.compactMap { $0 as? NSButton }
+                    }
+                    // Test our six website rows and the main-window action. Private
+                    // search-field buttons can have clipped centres outside the field.
+                    let buttons = websiteButtons + mainButtons
+                    buttons.forEach { $0.layoutSubtreeIfNeeded(); $0.layout() }
+                    floatingChecks["websiteAndOpenMainButtonsKeepNativeInput"] = websiteButtons.count == 6 && mainButtons.count == 1 && buttons.allSatisfy {
+                        let point = $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil)
+                        return !dragged.panel.canBeginBackgroundDrag(at: point)
+                    }
+                    let buttonChildren = buttons.flatMap(\.subviews).filter { !$0.isHidden && $0.bounds.width > 0 && $0.bounds.height > 0 }
+                    floatingChecks["buttonLabelsAndIconsKeepNativeInput"] = buttonChildren.count >= 6 && buttonChildren.allSatisfy {
+                        let point = $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil)
+                        return !dragged.panel.canBeginBackgroundDrag(at: point)
+                    }
+                    if let field = views.compactMap({ $0 as? NSSearchField }).first {
+                        floatingChecks["searchFieldKeepsNativeInput"] = !dragged.panel.canBeginBackgroundDrag(at:
+                            field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil))
+                        dragged.panel.makeKey(); dragged.panel.makeFirstResponder(field)
+                        if let editor = dragged.panel.firstResponder as? NSTextView {
+                            floatingChecks["searchEditorKeepsNativeTextSelection"] = !dragged.panel.canBeginBackgroundDrag(at:
+                                editor.convert(NSPoint(x: editor.bounds.midX, y: editor.bounds.midY), to: nil))
+                        } else { floatingChecks["searchEditorKeepsNativeTextSelection"] = false }
+                        dragged.panel.makeFirstResponder(nil)
+                    } else { floatingChecks["searchFieldKeepsNativeInput"] = false }
+                    let scrollerLibrary = library
+                    var scrollSites = library.sites
+                    while scrollSites.count < 11, var extra = library.sites.first {
+                        extra.id = "floating-scroll-fixture-\(scrollSites.count)"
+                        scrollSites.append(extra)
+                    }
+                    library = Library(sites: scrollSites, tiles: scrollSites.map { Tile(id: $0.id, kind: "site", name: nil, children: nil) })
+                    dragged.search("https")
+                    let scrollers = allViews(content).compactMap { $0 as? NSScroller }.filter { !$0.isHidden && $0.bounds.width > 0 && $0.bounds.height > 0 }
+                    floatingChecks["overflowScrollerKeepsNativeInput"] = !scrollers.isEmpty && scrollers.allSatisfy {
+                        !dragged.panel.canBeginBackgroundDrag(at: $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil))
+                    }
+                    floatingChecks["scrollerSubviewsKeepNativeInput"] = scrollers.flatMap(\.subviews).allSatisfy {
+                        guard !$0.isHidden, $0.bounds.width > 0, $0.bounds.height > 0 else { return true }
+                        return !dragged.panel.canBeginBackgroundDrag(at: $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil))
+                    }
+                    library = scrollerLibrary; dragged.search("")
+                } else { floatingChecks["websiteAndOpenMainButtonsKeepNativeInput"] = false }
+                for (index, recovery) in ["externalMouseUp", "pointerPoll"].enumerated() {
+                    dragged.setVisible(true); dragged.setExpanded(true); dragged.search("")
+                    let before = dragged.panel.frame
+                    let point = NSPoint(x: before.midX, y: before.maxY - 6)
+                    let target = NSPoint(x: bounds.midX, y: point.y - 6)
+                    let down = sendDragEvent(.leftMouseDown, at: point)
+                    let moved = sendDragEvent(.leftMouseDragged, at: target)
+                    let heldFrame = dragged.panel.frame
+                    let heldIDs = dragged.visibleSiteIDs
+                    dragged.search("blbl")
+                    let start = clock + 220 + Double(index) * 10
+                    dragged.processMouseUp(at: outside, now: start, recoverDrag: false)
+                    dragged.pollPointer(at: outside, now: start + 1, mouseButtons: 1)
+                    dragged.pollPointer(at: outside, now: start + 2, mouseButtons: 1)
+                    floatingChecks["nonLeftReleaseDoesNotEndDrag-\(recovery)"] = down && moved &&
+                        dragged.panel.frame == heldFrame && dragged.visibleSiteIDs == heldIDs && dragged.expanded
+                    floatingChecks["leftButtonPollKeepsDragProtected-\(recovery)"] = dragged.expanded && dragged.query == "blbl"
+                    let releasedAt = start + 3
+                    if recovery == "externalMouseUp" {
+                        dragged.processMouseUp(at: outside, now: releasedAt)
+                    } else {
+                        dragged.pollPointer(at: outside, now: releasedAt, mouseButtons: 0)
+                    }
+                    floatingChecks["lostDragReleaseRestoresDeferredRefresh-\(recovery)"] = dragged.visibleSiteIDs == ["seed-4"] &&
+                        dragged.panel.frame.size == FloatingLauncherGeometry.expandedSize(siteCount: 1) &&
+                        dragged.panel.frame.maxY == heldFrame.maxY && dragged.expanded
+                    let recoveredFrame = dragged.panel.frame
+                    let savedX = preferences.double(forKey: "GaoMenHu.Floating.X")
+                    let savedTop = preferences.double(forKey: "GaoMenHu.Floating.Top")
+                    dragged.endDragging(moved: true, at: NSPoint(x: bounds.minX, y: bounds.minY), now: releasedAt + 0.01)
+                    floatingChecks["duplicateDragEndDoesNotMoveOrRewrite-\(recovery)"] = dragged.panel.frame == recoveredFrame &&
+                        preferences.double(forKey: "GaoMenHu.Floating.X") == savedX &&
+                        preferences.double(forKey: "GaoMenHu.Floating.Top") == savedTop
+                    dragged.pollPointer(at: outside, now: releasedAt + 0.16, mouseButtons: 0)
+                    floatingChecks["lostDragReleaseRestoresAutoHide-\(recovery)"] = dragged.edgeHidden && !dragged.expanded && dragged.isVisible
+                }
+                for (index, interruption) in ["escape", "disable", "stop"].enumerated() {
+                    dragged.setVisible(true); dragged.start(); dragged.setExpanded(true); dragged.search("")
+                    let before = dragged.panel.frame
+                    let point = NSPoint(x: before.midX, y: before.maxY - 6)
+                    let expectedDock: FloatingLauncherEdge = index == 0 ? .left : (index == 1 ? .right : .none)
+                    let wantedX: CGFloat
+                    switch expectedDock {
+                    case .left: wantedX = bounds.minX + 20
+                    case .right: wantedX = bounds.maxX - before.width - 20
+                    case .none: wantedX = bounds.midX - before.width / 2
+                    }
+                    let target = NSPoint(x: wantedX + before.width / 2, y: point.y - 8)
+                    let down = sendDragEvent(.leftMouseDown, at: point)
+                    let moved = sendDragEvent(.leftMouseDragged, at: target)
+                    let movedFrame = dragged.panel.frame
+                    switch interruption {
+                    case "escape": dragged.panel.cancelOperation(nil)
+                    case "disable": dragged.setVisible(false)
+                    default: dragged.stop()
+                    }
+                    let expectedX = expectedDock == .right ? movedFrame.maxX - 20 : movedFrame.minX
+                    let expectedAnchor = NSRect(x: expectedX, y: movedFrame.maxY - 104, width: 20, height: 104)
+                    let expectedEntry = FloatingLauncherGeometry.hiddenFrame(anchor: expectedAnchor, edge: expectedDock, in: bounds)
+                    let expectedDockName = expectedDock == .none ? "free" : expectedDock.rawValue
+                    floatingChecks["interruptedDragCommitsActualAnchor-\(interruption)"] = down && moved &&
+                        dragged.dockEdge == expectedDock && preferences.string(forKey: "GaoMenHu.Floating.Dock") == expectedDockName &&
+                        preferences.double(forKey: "GaoMenHu.Floating.X") == Double(expectedX) &&
+                        preferences.double(forKey: "GaoMenHu.Floating.Top") == Double(movedFrame.maxY)
+                    if interruption == "stop" {
+                        floatingChecks["interruptedDragKeepsCurrentFrame-\(interruption)"] = !dragged.isVisible && dragged.panel.frame == movedFrame
+                    } else {
+                        floatingChecks["interruptedDragKeepsCurrentFrame-\(interruption)"] = dragged.panel.frame == expectedEntry &&
+                            dragged.edgeHidden && !dragged.expanded && dragged.isVisible == (interruption == "escape")
+                    }
+                    let savedEnabled = preferences.bool(forKey: "GaoMenHu.Floating.Enabled")
+                    let reopened = FloatingLauncherController(app: self, testPreferences: preferences)
+                    reopened.start()
+                    floatingChecks["interruptedDragRestoresConsistentPosition-\(interruption)"] = reopened.panel.frame == expectedEntry &&
+                        reopened.dockEdge == expectedDock && reopened.isVisible == savedEnabled &&
+                        preferences.double(forKey: "GaoMenHu.Floating.X") == Double(expectedX) &&
+                        preferences.double(forKey: "GaoMenHu.Floating.Top") == Double(movedFrame.maxY)
+                    reopened.stop()
+                }
+                dragged.setVisible(true); dragged.start(); dragged.setExpanded(true); dragged.search("")
+                let expandedBeforeHide = dragged.panel.frame
+                let savedDock = dragged.dockEdge
+                dragged.setExpanded(false)
+                floatingChecks["draggedPositionSurvivesCollapse"] = dragged.panel.frame.maxY == expandedBeforeHide.maxY &&
+                    dragged.dockEdge == savedDock && dragged.isVisible && dragged.edgeHidden
+                floatingChecks["collapsedEntryDoesNotUseBackgroundDrag"] = !dragged.panel.canBeginBackgroundDrag(at:
+                    NSPoint(x: dragged.panel.frame.width / 2, y: dragged.panel.frame.height / 2))
+                let savedEntry = dragged.panel.frame
+                let savedX = preferences.double(forKey: "GaoMenHu.Floating.X")
+                let savedTop = preferences.double(forKey: "GaoMenHu.Floating.Top")
+                dragged.stop()
+                let restored = FloatingLauncherController(app: self, testPreferences: preferences)
+                restored.start()
+                floatingChecks["draggedAnchorRestoresWithoutPreferenceRewrite"] = restored.panel.frame == savedEntry &&
+                    restored.dockEdge == savedDock && preferences.double(forKey: "GaoMenHu.Floating.X") == savedX &&
+                    preferences.double(forKey: "GaoMenHu.Floating.Top") == savedTop
+                restored.stop()
+            } else { floatingChecks["dragFixtureCreated"] = false }
             let migrationSuite = "cn.mendao.tests.floating-migration." + UUID().uuidString
             if let preferences = UserDefaults(suiteName: migrationSuite), let screen = NSScreen.main ?? NSScreen.screens.first {
                 defer { preferences.removePersistentDomain(forName: migrationSuite) }
@@ -351,7 +601,7 @@ extension AppDelegate {
             floating.setVisible(false)
             floatingChecks["hiddenWhenDisabled"] = !floating.isVisible && !floating.panel.isVisible
             floating.setVisible(true); floating.resetPosition(); floating.setExpanded(true)
-            floatingChecks["restoredWithinDisplay"] = NSScreen.screens.contains { $0.visibleFrame.contains(floating.panel.frame) }
+            floatingChecks["restoredWithinDisplay"] = NSScreen.screens.contains { dockingFrame($0).contains(floating.panel.frame) }
             floating.showStatus("点击网站打开，右键选择浏览器")
             floating.capturePreview(to: URL(fileURLWithPath: "/private/tmp/mendao-floating-test.png"))
             floatingChecks["previewRendered"] = FileManager.default.fileExists(atPath: "/private/tmp/mendao-floating-test.png")

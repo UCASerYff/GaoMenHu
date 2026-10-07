@@ -61,7 +61,7 @@ struct PortalSettingsView: View {
                         Button("重置悬浮窗位置") { app.floatingLauncher?.resetPosition(); app.setFloatingLauncherVisible(true); model.refresh() }
                         Text("⌃⌘P 显示或隐藏").foregroundStyle(.secondary)
                     }
-                    Text("所有位置均收起为竖线，悬停约 0.45 秒或点击展开。鼠标移出实际窗口约 0.15 秒收起，点击其他位置立即收起；顶部可拖动，中文组词、右键菜单与登录验证时暂缓收起。窗口高度随网站数量调整，位置与显示开关仅保存在本机。")
+                    Text("所有位置均收起为竖线，悬停约 0.45 秒或点击展开。鼠标移出实际窗口约 0.15 秒收起，点击其他位置立即收起；展开时可拖动顶部、两侧和底部空白处，靠近侧边 32 点内实时吸附，移开恢复自由移动；中文组词、右键菜单与登录验证时暂缓收起。窗口高度随网站数量调整，位置与显示开关仅保存在本机。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Section("账号库") {

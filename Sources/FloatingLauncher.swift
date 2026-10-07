@@ -27,6 +27,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var pressStartedInside = false
     private var enabled = true
     private var dragOffset: NSPoint?
+    private var dragMoved = false
     private var dock = "right"
     private var launching = false
     private var anchorFrame = NSRect(x: 0, y: 0, width: 20, height: 104)
@@ -69,8 +70,8 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         if !(app.testMode && CommandLine.arguments.contains("--self-test")) {
             installMouseMonitors()
             let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                self?.processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime,
-                                     mouseDown: NSEvent.pressedMouseButtons != 0)
+                self?.pollPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime,
+                                  mouseButtons: NSEvent.pressedMouseButtons)
             }
             timer.tolerance = 0.01
             RunLoop.main.add(timer, forMode: .common); pointerTimer = timer
@@ -94,17 +95,19 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
         keyObserver = nil; activationObserver = nil
         pressStartedInside = false
+        commitDragging()
         panel.orderOut(nil)
     }
 
     func refresh() {
+        footer.stringValue = status
+        footer.toolTip = status
+        guard dragOffset == nil else { return }
         let matches = FloatingLauncherLogic.sites(in: app.library, query: query, usage: app.launchHistory.records, limit: 8)
         if matches != currentRows {
             currentRows = matches
             if expanded { renderFrame() }
         }
-        footer.stringValue = status
-        footer.toolTip = status
     }
 
     func setVisible(_ value: Bool) {
@@ -115,6 +118,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
             refresh()
             panel.orderFrontRegardless()
         } else {
+            commitDragging()
             setExpanded(false)
             panel.makeFirstResponder(nil)
             panel.orderOut(nil)
@@ -132,6 +136,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
 
     func setExpanded(_ value: Bool) {
         guard expanded != value else { return }
+        if !value { commitDragging() }
         expanded = value
         hoverStartedAt = nil; outsideStartedAt = nil
         holdUntil = value ? 0 : ProcessInfo.processInfo.systemUptime + 0.2
@@ -154,8 +159,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     func resetPosition() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         dock = "right"
-        anchorFrame = NSRect(x: screen.visibleFrame.maxX - Self.collapsedSize.width,
-                             y: screen.visibleFrame.maxY - Self.collapsedSize.height - 96,
+        let bounds = dockingBounds(for: screen)
+        anchorFrame = NSRect(x: bounds.maxX - Self.collapsedSize.width,
+                             y: bounds.maxY - Self.collapsedSize.height - 96,
                              width: Self.collapsedSize.width, height: Self.collapsedSize.height)
         normalizeAnchor(); renderFrame()
         savePosition()
@@ -201,6 +207,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         surface.wantsLayer = true
         surface.layer?.cornerRadius = 16
         surface.layer?.masksToBounds = true
+        surface.toolTip = "拖动空白处移动，靠近左右边缘自动吸附"
         panel.contentView = container
         container.addSubview(surface); container.addSubview(edgeHandle)
         edgeHandle.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.EdgeHandle")
@@ -210,25 +217,20 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         }
 
         header.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.DragArea")
-        header.beginDrag = { [weak self] point in
-            guard let self else { return }
-            self.dragOffset = NSPoint(x: point.x - self.panel.frame.minX, y: point.y - self.panel.frame.minY)
-            self.hoverStartedAt = nil; self.outsideStartedAt = nil
-        }
-        header.drag = { [weak self] point in
-            guard let self, let offset = self.dragOffset else { return }
-            var frame = self.panel.frame
-            frame.origin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
-            self.panel.setFrame(frame, display: true)
-        }
+        header.beginDrag = { [weak self] point in self?.beginDragging(at: point) }
+        header.drag = { [weak self] point in self?.drag(to: point) }
         header.endDrag = { [weak self] moved in
-            guard let self else { return }
-            self.dragOffset = nil
-            if moved { self.finishDrag() }
-            else if !self.expanded { self.setExpanded(true) }
+            self?.endDragging(moved: moved, at: NSEvent.mouseLocation)
         }
         surface.addSubview(header)
         edgeHandle.beginDrag = header.beginDrag; edgeHandle.drag = header.drag; edgeHandle.endDrag = header.endDrag
+        panel.backgroundDraggingEnabled = { [weak self] in
+            guard let self else { return false }
+            return self.enabled && self.panel.isVisible && self.expanded && !self.launching && self.menuDepth == 0
+        }
+        panel.beginBackgroundDrag = header.beginDrag
+        panel.dragBackground = header.drag
+        panel.endBackgroundDrag = { [weak self] moved, point in self?.endDragging(moved: moved, at: point) }
 
         searchField.placeholderString = "搜索网站、拼音或网址"
         searchField.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Floating.Search")
@@ -271,6 +273,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         edgeHandle.edge = dockEdge
         edgeHandle.isHidden = !edgeHidden; surface.isHidden = edgeHidden
         edgeHandle.needsDisplay = true
+        updateDockAppearance()
         header.frame = NSRect(x: 0, y: height - 12, width: width, height: 12)
         header.update()
         [searchField, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
@@ -355,13 +358,14 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
            let top = preferences?.object(forKey: "GaoMenHu.Floating.Top") as? Double,
            x.isFinite, top.isFinite {
             let frame = NSRect(x: x, y: top - size.height, width: size.width, height: size.height)
-            anchorFrame = FloatingLauncherGeometry.restoredFrame(saved: frame, size: size, screens: NSScreen.screens.map(\.visibleFrame))
+            let bounds = dockingScreen(for: frame)
+            anchorFrame = FloatingLauncherGeometry.restoredFrame(saved: frame, size: size, screens: bounds.map { [$0] } ?? dockingScreens)
         } else { resetPosition() }
         normalizeAnchor(); renderFrame()
     }
 
     private func normalizeAnchor() {
-        let screens = NSScreen.screens.map(\.visibleFrame)
+        let screens = dockingScreen(for: anchorFrame).map { [$0] } ?? dockingScreens
         anchorFrame = FloatingLauncherGeometry.restoredFrame(saved: anchorFrame, size: Self.collapsedSize, screens: screens)
         if let screen = FloatingLauncherGeometry.screen(for: anchorFrame, among: screens) {
             if dockEdge == .left { anchorFrame.origin.x = screen.minX }
@@ -370,7 +374,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     }
 
     private func renderFrame() {
-        let screen = FloatingLauncherGeometry.screen(for: anchorFrame, among: NSScreen.screens.map(\.visibleFrame))
+        let screen = dockingScreen(for: anchorFrame)
             ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
         edgeHidden = !expanded
         let frame: NSRect
@@ -382,19 +386,78 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         layout()
     }
 
-    private func finishDrag() {
-        let frame = panel.frame
-        let screen = FloatingLauncherGeometry.screen(for: frame, among: NSScreen.screens.map(\.visibleFrame))
+    private var dockingScreens: [NSRect] { NSScreen.screens.map { dockingBounds(for: $0) } }
+
+    private func dockingBounds(for screen: NSScreen) -> NSRect {
+        FloatingLauncherGeometry.dockingBounds(frame: screen.frame, visibleFrame: screen.visibleFrame)
+    }
+
+    private func dockingScreen(for frame: NSRect) -> NSRect? {
+        FloatingLauncherGeometry.dockingScreen(for: frame, physicalScreens: NSScreen.screens.map(\.frame),
+                                               visibleScreens: NSScreen.screens.map(\.visibleFrame))
+    }
+
+    private func updateDockAppearance() {
+        switch dockEdge {
+        case .left: surface.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        case .right: surface.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
+        case .none: surface.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        }
+    }
+
+    func beginDragging(at point: NSPoint) {
+        guard enabled, panel.isVisible, !launching, menuDepth == 0 else { return }
+        dragOffset = NSPoint(x: point.x - panel.frame.minX, y: point.y - panel.frame.minY)
+        dragMoved = false
+        hoverStartedAt = nil; outsideStartedAt = nil
+    }
+
+    func drag(to point: NSPoint) {
+        guard let offset = dragOffset else { return }
+        dragMoved = true
+        var wanted = panel.frame
+        wanted.origin = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
+        // Use the pointer's display so the panel can cross to an adjacent monitor.
+        let screen = NSScreen.screens.first { $0.frame.contains(point) }.map { dockingBounds(for: $0) }
+            ?? dockingScreen(for: wanted)
             ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
-        let snapped = FloatingLauncherGeometry.snap(frame: frame, to: screen)
+        let snapped = FloatingLauncherGeometry.snap(frame: wanted, to: screen)
         dock = snapped.edge == .none ? "free" : snapped.edge.rawValue
-        anchorFrame = NSRect(x: snapped.edge == .right ? snapped.frame.maxX - Self.collapsedSize.width : snapped.frame.minX,
-                             y: snapped.frame.maxY - Self.collapsedSize.height,
-                             width: Self.collapsedSize.width, height: Self.collapsedSize.height)
-        normalizeAnchor(); renderFrame(); savePosition()
+        let sizeChanged = panel.frame.size != snapped.frame.size
+        panel.setFrame(snapped.frame, display: true)
+        edgeHandle.edge = dockEdge; edgeHandle.needsDisplay = true
+        updateDockAppearance()
+        if sizeChanged { layout() }
+    }
+
+    func endDragging(moved: Bool, at point: NSPoint, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard enabled, panel.isVisible else { commitDragging(); return }
+        let active = dragOffset != nil
+        let didMove = moved || dragMoved
+        commitDragging()
+        if !didMove {
+            if !expanded { setExpanded(true) }
+            refresh()
+            return
+        }
+        guard active else { return }
         hoverArmed = false; hoverStartedAt = nil; outsideStartedAt = nil
-        holdUntil = ProcessInfo.processInfo.systemUptime + 0.2
-        processPointer(at: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime)
+        holdUntil = now + 0.2
+        refresh(); app.settingsModel?.refresh()
+        processPointer(at: point, now: now)
+    }
+
+    private func commitDragging() {
+        let moved = dragOffset != nil && dragMoved
+        dragOffset = nil; dragMoved = false; panel.cancelBackgroundDrag()
+        guard moved else { return }
+        // Every drag event has already clamped and snapped the actual frame.
+        // Persist that same frame without a second placement on mouse-up.
+        let frame = panel.frame
+        anchorFrame = NSRect(x: dockEdge == .right ? frame.maxX - Self.collapsedSize.width : frame.minX,
+                             y: frame.maxY - Self.collapsedSize.height,
+                             width: Self.collapsedSize.width, height: Self.collapsedSize.height)
+        savePosition()
     }
 
     private func savePosition() {
@@ -428,8 +491,9 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown,
                                            .leftMouseUp, .rightMouseUp, .otherMouseUp]
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            guard let self else { return event }
             let point = event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow
-            self?.observeMouse(event.type, at: point)
+            self.observeMouse(event.type, at: point, fromPanel: event.window === self.panel)
             return event
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
@@ -437,10 +501,11 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         }
     }
 
-    private func observeMouse(_ type: NSEvent.EventType, at point: NSPoint) {
+    private func observeMouse(_ type: NSEvent.EventType, at point: NSPoint, fromPanel: Bool = false) {
         switch type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: processMouseDown(at: point)
-        case .leftMouseUp, .rightMouseUp, .otherMouseUp: processMouseUp(at: point)
+        case .leftMouseUp: processMouseUp(at: point, recoverDrag: !fromPanel)
+        case .rightMouseUp, .otherMouseUp: processMouseUp(at: point, recoverDrag: false)
         default: break
         }
     }
@@ -452,9 +517,16 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         } else { dismissForOutsideInteraction() }
     }
 
-    func processMouseUp(at point: NSPoint, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    func processMouseUp(at point: NSPoint, now: TimeInterval = ProcessInfo.processInfo.systemUptime, recoverDrag: Bool = true) {
         pressStartedInside = false
+        if recoverDrag, dragOffset != nil { endDragging(moved: dragMoved, at: point, now: now) }
         processPointer(at: point, now: now)
+    }
+
+    /// Recover a release swallowed by another app or a system interaction.
+    func pollPointer(at point: NSPoint, now: TimeInterval, mouseButtons: Int) {
+        if mouseButtons & 1 == 0, dragOffset != nil { endDragging(moved: dragMoved, at: point, now: now) }
+        processPointer(at: point, now: now, mouseDown: mouseButtons != 0)
     }
 
     /// Mouse-only observation never intercepts a click or reads keyboard input.
@@ -511,14 +583,7 @@ private final class FloatingLauncherEdgeHandle: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.controlAccentColor.withAlphaComponent(0.65).setFill()
-        let width = min(6, bounds.width), height = min(88, max(0, bounds.height - 8))
-        let x: CGFloat
-        switch edge {
-        case .left: x = min(2, max(0, bounds.width - width))
-        case .right: x = max(0, bounds.width - width - 2)
-        case .none: x = max(0, (bounds.width - width) / 2)
-        }
-        NSBezierPath(roundedRect: NSRect(x: x, y: (bounds.height - height) / 2, width: width, height: height),
+        NSBezierPath(roundedRect: FloatingLauncherGeometry.stripRect(in: bounds, edge: edge),
                      xRadius: 3, yRadius: 3).fill()
     }
     override func mouseDown(with event: NSEvent) { start = NSEvent.mouseLocation; moved = false; beginDrag?(start) }
@@ -533,8 +598,59 @@ private final class FloatingLauncherEdgeHandle: NSView {
 
 final class FloatingLauncherPanel: NSPanel {
     var dismiss: (() -> Void)?
+    var backgroundDraggingEnabled: (() -> Bool)?
+    var beginBackgroundDrag: ((NSPoint) -> Void)?
+    var dragBackground: ((NSPoint) -> Void)?
+    var endBackgroundDrag: ((Bool, NSPoint) -> Void)?
+    private var backgroundPress: NSPoint?
+    private var backgroundMoved = false
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Only the expanded panel's blank areas are draggable. Native controls keep
+    /// their own click, text selection, context-menu and scroll handling.
+    func canBeginBackgroundDrag(at point: NSPoint) -> Bool {
+        guard backgroundDraggingEnabled?() == true, let content = contentView,
+              content.bounds.contains(content.convert(point, from: nil)) else { return false }
+        let hitPoint = content.superview?.convert(point, from: nil) ?? point
+        var candidate = content.hitTest(hitPoint)
+        while let view = candidate {
+            if view is NSButton || view is NSSearchField || view is NSTextView || view is NSScroller { return false }
+            if view === content { break }
+            candidate = view.superview
+        }
+        return true
+    }
+
+    func cancelBackgroundDrag() { backgroundPress = nil; backgroundMoved = false }
+
+    override func sendEvent(_ event: NSEvent) {
+        let point = convertPoint(toScreen: event.locationInWindow)
+        switch event.type {
+        case .leftMouseDown where !event.modifierFlags.contains(.control):
+            if canBeginBackgroundDrag(at: event.locationInWindow) {
+                backgroundPress = point; backgroundMoved = false
+                beginBackgroundDrag?(point)
+                return
+            }
+        case .leftMouseDragged:
+            if let start = backgroundPress {
+                if hypot(point.x - start.x, point.y - start.y) > 3 { backgroundMoved = true }
+                if backgroundMoved { dragBackground?(point) }
+                return
+            }
+        case .leftMouseUp:
+            if backgroundPress != nil {
+                let moved = backgroundMoved
+                cancelBackgroundDrag()
+                endBackgroundDrag?(moved, point)
+                return
+            }
+        default: break
+        }
+        super.sendEvent(event)
+    }
+
     override func cancelOperation(_ sender: Any?) { dismiss?() }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { dismiss?() } else { super.keyDown(with: event) }
@@ -560,7 +676,7 @@ private final class FloatingLauncherHeader: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setAccessibilityLabel("搞门户悬浮窗入口；拖动调整位置，点击展开")
-        toolTip = "拖动顶部可移动悬浮窗，靠近左右边缘可吸附"
+        toolTip = "拖动顶部、两侧或底部空白处移动，靠近左右边缘自动吸附"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

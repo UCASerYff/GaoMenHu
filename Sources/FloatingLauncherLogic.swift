@@ -151,6 +151,41 @@ enum FloatingLauncherGeometry {
         return CGSize(width: 364, height: 92 + listHeight)
     }
 
+    /// Bridge small reserved side gaps, while preserving the space of a visible side Dock.
+    static func dockingBounds(frame: CGRect, visibleFrame: CGRect) -> CGRect {
+        let physical = hasFiniteExtent(frame) ? frame : CGRect(x: 0, y: 0, width: width, height: 500)
+        guard hasFiniteExtent(visibleFrame) else { return physical }
+        let visible = physical.intersection(visibleFrame)
+        guard hasFiniteExtent(visible) else { return physical }
+        let left = visible.minX - physical.minX <= 8 ? physical.minX : visible.minX
+        let right = physical.maxX - visible.maxX <= 8 ? physical.maxX : visible.maxX
+        return CGRect(x: left, y: visible.minY, width: right - left, height: visible.height)
+    }
+
+    /// Resolve display ownership before excluding its Dock area; keep physical/visible arrays aligned.
+    static func dockingScreen(for frame: CGRect, physicalScreens: [CGRect], visibleScreens: [CGRect]) -> CGRect? {
+        if let physical = screen(for: frame, among: physicalScreens),
+           let index = physicalScreens.firstIndex(of: physical) {
+            let visible = visibleScreens.indices.contains(index) ? visibleScreens[index] : physical
+            return dockingBounds(frame: physical, visibleFrame: visible)
+        }
+        guard let visible = screen(for: frame, among: visibleScreens) else { return nil }
+        return dockingBounds(frame: visible, visibleFrame: visible)
+    }
+
+    /// The visible strip and its wider hit window share an edge with no transparent side gap.
+    static func stripRect(in bounds: CGRect, edge: FloatingLauncherEdge) -> CGRect {
+        guard hasFiniteExtent(bounds) else { return .zero }
+        let stripWidth = min(6, bounds.width), stripHeight = min(88, bounds.height)
+        let x: CGFloat
+        switch edge {
+        case .left: x = bounds.minX
+        case .right: x = bounds.maxX - stripWidth
+        case .none: x = bounds.midX - stripWidth / 2
+        }
+        return CGRect(x: x, y: bounds.midY - stripHeight / 2, width: stripWidth, height: stripHeight)
+    }
+
     static func constrain(frame: CGRect, to screen: CGRect) -> CGRect {
         let bounds = validScreen(screen)
         let width = min(positive(frame.size.width, fallback: Self.width), bounds.width)
@@ -161,7 +196,7 @@ enum FloatingLauncherGeometry {
                       y: min(max(y, bounds.minY), bounds.maxY - height), width: width, height: height)
     }
 
-    /// Screen rectangles are visible frames, so menu bars and the Dock remain unobstructed.
+    /// Supplied screen bounds retain safe vertical limits while allowing physical side docking.
     static func restoredFrame(saved: CGRect?, size: CGSize, screens: [CGRect]) -> CGRect {
         let valid = screens.filter(isValidScreen)
         guard !valid.isEmpty else {
@@ -220,10 +255,10 @@ enum FloatingLauncherGeometry {
         return constrain(frame: CGRect(x: x, y: top - height, width: width, height: height), to: bounds)
     }
 
-    static func snap(frame: CGRect, to screen: CGRect, threshold: CGFloat = 24) -> (frame: CGRect, edge: FloatingLauncherEdge) {
+    static func snap(frame: CGRect, to screen: CGRect, threshold: CGFloat = 32) -> (frame: CGRect, edge: FloatingLauncherEdge) {
         let bounds = validScreen(screen)
         var result = constrain(frame: frame, to: bounds)
-        let distance = threshold.isFinite ? max(0, threshold) : 24
+        let distance = threshold.isFinite ? max(0, threshold) : 32
         let left = abs(result.minX - bounds.minX), right = abs(bounds.maxX - result.maxX)
         if left <= distance && left <= right { result.origin.x = bounds.minX; return (result, .left) }
         if right <= distance { result.origin.x = bounds.maxX - result.width; return (result, .right) }
@@ -231,6 +266,9 @@ enum FloatingLauncherGeometry {
     }
 
     private static func positive(_ value: CGFloat, fallback: CGFloat) -> CGFloat { value.isFinite && value > 0 ? value : fallback }
+    private static func hasFiniteExtent(_ frame: CGRect) -> Bool {
+        isValidScreen(frame) && frame.maxX.isFinite && frame.maxY.isFinite && frame.maxX > frame.minX && frame.maxY > frame.minY
+    }
     private static func isValidScreen(_ frame: CGRect) -> Bool {
         frame.origin.x.isFinite && frame.origin.y.isFinite && frame.size.width.isFinite && frame.size.height.isFinite && frame.size.width > 0 && frame.size.height > 0
     }
