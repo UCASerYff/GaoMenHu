@@ -40,6 +40,32 @@ extension AppDelegate {
             floatingChecks["allSpacesAvailable"] = floating.panel.collectionBehavior.contains(.canJoinAllSpaces)
             floating.setExpanded(true)
             floatingChecks["expandedPanelSize"] = floating.expanded && floating.panel.frame.width >= 300 && floating.panel.frame.height >= 400
+            let originalHistory = launchHistory
+            launchHistory = WebsiteLaunchHistory(preferences: nil)
+            for _ in 0..<12 { launchHistory.record(siteID: "seed-5", at: Date(timeIntervalSince1970: 10)) }
+            for (index, id) in ["seed-0", "seed-1", "seed-2"].enumerated() {
+                launchHistory.record(siteID: id, at: Date(timeIntervalSince1970: Double(20 + index)))
+            }
+            floating.refresh()
+            floatingChecks["recentAndFrequentAppearFirst"] = Array(floating.visibleSiteIDs.prefix(4)) == ["seed-2", "seed-1", "seed-0", "seed-5"]
+            let beforeUsage = library
+            recordWebsiteOpen(siteID: "seed-4")
+            floatingChecks["successfulOpenRefreshesRecommendation"] = Array(floating.visibleSiteIDs.prefix(4)) == ["seed-4", "seed-2", "seed-1", "seed-5"]
+            floatingChecks["usageDoesNotRewriteLibrary"] = library == beforeUsage
+            if let content = floating.panel.contentView {
+                func labels(in view: NSView) -> [String] {
+                    (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { labels(in: $0) }
+                }
+                floatingChecks["floatingHasNoProductTitleOrVersion"] = !labels(in: content).contains {
+                    $0 == "搞门户" || $0.contains("V" + version) || $0.contains("最近使用优先")
+                }
+                func hasImageView(in view: NSView) -> Bool {
+                    view is NSImageView || view.subviews.contains { hasImageView(in: $0) }
+                }
+                let header = content.subviews.flatMap(\.subviews).first { $0.accessibilityLabel() == "搞门户悬浮窗入口；拖动调整位置，点击展开" }
+                floatingChecks["floatingHeaderHasNoAppIcon"] = header.map { !hasImageView(in: $0) } ?? false
+            } else { floatingChecks["floatingHasNoProductTitleOrVersion"] = false }
+            launchHistory = originalHistory; floating.refresh()
             floating.search("blbl")
             floatingChecks["nativeSearchAcceptsPinyin"] = floating.visibleSiteIDs == ["seed-4"]
             floating.search("gaomenhu-no-result-fixture")
@@ -98,13 +124,13 @@ extension AppDelegate {
             floating.setExpanded(false); floating.setDock(.left)
             floatingChecks["leftDockHasNarrowHandle"] = floating.edgeHidden && NSScreen.screens.contains { $0.visibleFrame.minX == floating.panel.frame.minX && $0.visibleFrame.contains(floating.panel.frame) }
             floating.setDock(.none)
-            floatingChecks["freePositionUsesCompactEntry"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 140, height: 48)
+            floatingChecks["freePositionUsesCompactEntry"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 48, height: 48)
             floating.setExpanded(true)
             floating.processPointer(at: outside, now: clock + 50)
             floating.processPointer(at: outside, now: clock + 51)
             floatingChecks["freePositionDoesNotAutoHide"] = floating.expanded
             floating.setExpanded(false); floating.setDock(.right); floating.setAutoHide(false)
-            floatingChecks["autoHideCanBeDisabled"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 140, height: 48)
+            floatingChecks["autoHideCanBeDisabled"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 48, height: 48)
             floating.setAutoHide(true)
             func findView(_ id: String, in view: NSView) -> NSView? {
                 if view.identifier?.rawValue == id { return view }

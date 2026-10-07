@@ -1,6 +1,62 @@
 import Foundation
 import CoreGraphics
 
+struct WebsiteLaunchUsage: Codable, Equatable {
+    var openCount: Int
+    var lastOpenedAt: Double
+
+    var isValid: Bool { openCount >= 0 && lastOpenedAt.isFinite && lastOpenedAt >= 0 }
+}
+
+/// Local launch statistics contain no account details, URLs, or browser history.
+final class WebsiteLaunchHistory {
+    private static let key = "GaoMenHu.WebsiteLaunchHistory"
+    private static let maximumRecords = 5000
+    private let preferences: UserDefaults?
+    private(set) var records: [String: WebsiteLaunchUsage] = [:]
+
+    init(preferences: UserDefaults?) {
+        self.preferences = preferences
+        guard let data = preferences?.data(forKey: Self.key) else { return }
+        let decoder = JSONDecoder()
+        decoder.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+        guard let saved = try? decoder.decode([String: WebsiteLaunchUsage].self, from: data) else { return }
+        let valid = saved.filter { !$0.key.isEmpty && $0.value.isValid }
+        records = Dictionary(uniqueKeysWithValues: valid.sorted(by: Self.moreRecent).prefix(Self.maximumRecords).map { ($0.key, $0.value) })
+    }
+
+    func record(siteID: String, at date: Date = Date()) {
+        let timestamp = date.timeIntervalSince1970
+        guard !siteID.isEmpty, timestamp.isFinite, timestamp >= 0 else { return }
+        let old = records[siteID]
+        if old == nil, records.count >= Self.maximumRecords, let oldest = records.sorted(by: Self.moreRecent).last {
+            records.removeValue(forKey: oldest.key)
+        }
+        let count = old?.openCount ?? 0
+        records[siteID] = WebsiteLaunchUsage(openCount: count == Int.max ? Int.max : count + 1, lastOpenedAt: timestamp)
+        save()
+    }
+
+    func prune(siteIDs: Set<String>) {
+        let retained = records.filter { siteIDs.contains($0.key) }
+        guard retained != records else { return }
+        records = retained
+        save()
+    }
+
+    private func save() {
+        guard let preferences, let data = try? JSONEncoder().encode(records) else { return }
+        preferences.set(data, forKey: Self.key)
+    }
+
+    private static func moreRecent(_ lhs: (key: String, value: WebsiteLaunchUsage),
+                                   _ rhs: (key: String, value: WebsiteLaunchUsage)) -> Bool {
+        if lhs.value.lastOpenedAt != rhs.value.lastOpenedAt { return lhs.value.lastOpenedAt > rhs.value.lastOpenedAt }
+        if lhs.value.openCount != rhs.value.openCount { return lhs.value.openCount > rhs.value.openCount }
+        return lhs.key < rhs.key
+    }
+}
+
 enum FloatingLauncherLogic {
     /// Uses the launchpad arrangement as the source of truth. Unarranged sites are archived.
     static func orderedSites(in library: Library) -> [Website] {
@@ -21,10 +77,35 @@ enum FloatingLauncherLogic {
         return result
     }
 
-    static func sites(in library: Library, query: String, limit: Int = 8) -> [Website] {
+    static func sites(in library: Library, query: String, usage: [String: WebsiteLaunchUsage] = [:], limit: Int = 8) -> [Website] {
         let ordered = orderedSites(in: library)
         let terms = normalized(query).split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        guard !terms.isEmpty else { return Array(ordered.prefix(max(0, limit))) }
+        guard !terms.isEmpty else {
+            let capacity = max(0, limit)
+            guard capacity > 0 else { return [] }
+            let positions = Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($0.element.id, $0.offset) })
+            let used = ordered.filter { site in
+                guard let record = usage[site.id] else { return false }
+                return record.isValid && record.openCount > 0
+            }
+            let recent = used.sorted { lhs, rhs in
+                let left = usage[lhs.id]!, right = usage[rhs.id]!
+                if left.lastOpenedAt != right.lastOpenedAt { return left.lastOpenedAt > right.lastOpenedAt }
+                return positions[lhs.id]! < positions[rhs.id]!
+            }
+            var result = Array(recent.prefix(min(3, capacity)))
+            var seen = Set(result.map(\.id))
+            let frequent = used.sorted { lhs, rhs in
+                let left = usage[lhs.id]!, right = usage[rhs.id]!
+                if left.openCount != right.openCount { return left.openCount > right.openCount }
+                if left.lastOpenedAt != right.lastOpenedAt { return left.lastOpenedAt > right.lastOpenedAt }
+                return positions[lhs.id]! < positions[rhs.id]!
+            }
+            for site in frequent + ordered where result.count < capacity {
+                if seen.insert(site.id).inserted { result.append(site) }
+            }
+            return result
+        }
         return ordered.filter { site in
             let text = searchText(for: site)
             return terms.allSatisfy { text.contains($0) }

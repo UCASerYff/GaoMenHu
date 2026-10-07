@@ -5,7 +5,7 @@ import QuartzCore
 /// remain separate from the library, so showing it never rewrites user data.
 final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuDelegate {
     static let expandedSize = NSSize(width: 364, height: 526)
-    static let collapsedSize = NSSize(width: 140, height: 48)
+    static let collapsedSize = NSSize(width: 48, height: 48)
     private unowned let app: AppDelegate
     private let preferences: UserDefaults?
     let panel: FloatingLauncherPanel
@@ -14,7 +14,6 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private let edgeHandle = FloatingLauncherEdgeHandle()
     private let header = FloatingLauncherHeader()
     private let searchField = FloatingLauncherSearchField()
-    private let summary = NSTextField(labelWithString: "")
     private let scroll = NSScrollView()
     private let rows = NSView()
     private let footer = NSTextField(labelWithString: "")
@@ -26,7 +25,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     private var dragOffset: NSPoint?
     private var dock = "right"
     private var launching = false
-    private var anchorFrame = NSRect(x: 0, y: 0, width: 140, height: 48)
+    private var anchorFrame = NSRect(x: 0, y: 0, width: 48, height: 48)
     private var hoverStartedAt: TimeInterval?
     private var outsideStartedAt: TimeInterval?
     private var holdUntil: TimeInterval = 0
@@ -80,10 +79,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
     }
 
     func refresh() {
-        let matches = FloatingLauncherLogic.sites(in: app.library, query: query, limit: 8)
-        summary.stringValue = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "按启动台顺序 · \(FloatingLauncherLogic.orderedSites(in: app.library).count) 个网站"
-            : "找到 \(matches.count) 个网站"
+        let matches = FloatingLauncherLogic.sites(in: app.library, query: query, usage: app.launchHistory.records, limit: 8)
         if matches != currentRows {
             currentRows = matches
             rebuildRows()
@@ -224,10 +220,6 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         searchField.delegate = self
         surface.addSubview(searchField)
 
-        summary.font = .systemFont(ofSize: 11)
-        summary.textColor = .secondaryLabelColor
-        surface.addSubview(summary)
-
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -262,11 +254,10 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         edgeHandle.needsDisplay = true
         header.frame = NSRect(x: 0, y: height - 48, width: width, height: 48)
         header.update()
-        [searchField, summary, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
+        [searchField, scroll, footer, openMain].forEach { $0.isHidden = !expanded }
         if expanded {
             searchField.frame = NSRect(x: 16, y: height - 88, width: width - 32, height: 30)
-            summary.frame = NSRect(x: 18, y: height - 115, width: width - 36, height: 16)
-            scroll.frame = NSRect(x: 12, y: 46, width: max(0, width - 24), height: max(0, height - 172))
+            scroll.frame = NSRect(x: 12, y: 46, width: max(0, width - 24), height: max(0, height - 144))
             footer.frame = NSRect(x: 18, y: 16, width: width - 134, height: 16)
             openMain.frame = NSRect(x: width - 100, y: 12, width: 84, height: 24)
             rebuildRows()
@@ -511,8 +502,6 @@ private final class FloatingLauncherHeader: NSView {
     var endDrag: ((Bool) -> Void)?
     var collapse: (() -> Void)?
     var close: (() -> Void)?
-    private let title = NSTextField(labelWithString: "搞门户")
-    private let symbol = NSImageView()
     private let collapseButton = NSButton()
     private let closeButton = NSButton()
     private let pinButton = NSButton()
@@ -521,11 +510,6 @@ private final class FloatingLauncherHeader: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        symbol.image = NSImage(systemSymbolName: "door.left.hand.open", accessibilityDescription: nil)
-        symbol.contentTintColor = NSColor(calibratedRed: 0.20, green: 0.45, blue: 0.82, alpha: 1)
-        addSubview(symbol)
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        addSubview(title)
         for (button, image, label, action) in [
             (pinButton, "pin", "固定悬浮窗", #selector(pinTapped)),
             (collapseButton, "minus", "收起悬浮窗", #selector(collapseTapped)),
@@ -551,8 +535,6 @@ private final class FloatingLauncherHeader: NSView {
     }
     func update() {
         let isExpanded = expanded?() ?? false
-        symbol.frame = NSRect(x: 15, y: 14, width: 20, height: 20)
-        title.frame = NSRect(x: 44, y: 15, width: 90, height: 18)
         collapseButton.isHidden = !isExpanded
         closeButton.isHidden = !isExpanded
         pinButton.isHidden = !isExpanded
@@ -563,7 +545,13 @@ private final class FloatingLauncherHeader: NSView {
         pinButton.frame = NSRect(x: bounds.width - 99, y: 12, width: 26, height: 24)
         collapseButton.frame = NSRect(x: bounds.width - 68, y: 12, width: 26, height: 24)
         closeButton.frame = NSRect(x: bounds.width - 37, y: 12, width: 26, height: 24)
-        toolTip = isExpanded ? "拖动标题可移动悬浮窗，靠近左右边缘可吸附" : "点击展开 · 拖动可移动"
+        toolTip = isExpanded ? "拖动顶部可移动悬浮窗，靠近左右边缘可吸附" : "点击展开 · 拖动可移动"
+        needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.tertiaryLabelColor.withAlphaComponent(0.45).setFill()
+        let x: CGFloat = (expanded?() ?? false) ? 18 : (bounds.width - 22) / 2
+        NSBezierPath(roundedRect: NSRect(x: x, y: 23, width: 22, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
     }
     override func mouseDown(with event: NSEvent) {
         startingPoint = NSEvent.mouseLocation

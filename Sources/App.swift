@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate, NSMenuItemValidation {
     var window: NSWindow!
     var web: WKWebView!
-    var library: Library = .empty() { didSet { floatingLauncher?.refresh() } }
+    var library: Library = .empty() { didSet {
+        if store?.persistent == true { launchHistory.prune(siteIDs: Set(library.sites.map(\.id))) }
+        floatingLauncher?.refresh()
+    } }
     var store: LibraryStore!
     var vault: Vault!
     var server: BridgeServer?
@@ -20,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var settingsModel: PortalSettingsModel?
     var floatingLauncher: FloatingLauncherController?
     var testMode = CommandLine.arguments.contains("--ui-test")
+    lazy var launchHistory = WebsiteLaunchHistory(preferences: testMode ? nil : .standard)
     var lastInteraction = Date()
     var lastClientSignature = ""
     let iconLoader = IconLoader()
@@ -44,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             library = try store.load(defaultBrowsers: installedBrowsers().map { $0.id })
             if !testMode && !FileManager.default.fileExists(atPath: store.file.path) { try store.save(library) }
         }
-        catch { library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)"; store = LibraryStore(persistent: false) }
+        catch { store = LibraryStore(persistent: false); library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)" }
         applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
         floatingLauncher = FloatingLauncherController(app: self)
         floatingLauncher?.start()
@@ -381,6 +385,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
+    func recordWebsiteOpen(siteID: String, error: Error? = nil) {
+        guard error == nil, library.sites.contains(where: { $0.id == siteID }) else { return }
+        launchHistory.record(siteID: siteID)
+        floatingLauncher?.refresh()
+    }
+
     func launch(_ data: [String: Any], responseID: String?, completion: (([String: Any]) -> Void)? = nil) {
         let respond: ([String: Any]) -> Void = { value in
             if let completion { completion(value) }
@@ -423,14 +433,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                         self.emit("toast", ["message": "指定的浏览器资料未响应，请打开它的搞门户助手并重新连接。"])
                     } else {
                         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                            DispatchQueue.main.async { self.emit("toast", ["message": error == nil ? "网页已打开，但助手未连接。请在浏览器中打开搞门户助手并重新连接后重试自动填充。" : "网页打开失败，请检查浏览器。"]) }
+                            DispatchQueue.main.async {
+                                self.recordWebsiteOpen(siteID: site.id, error: error)
+                                self.emit("toast", ["message": error == nil ? "网页已打开，但助手未连接。请在浏览器中打开搞门户助手并重新连接后重试自动填充。" : "网页打开失败，请检查浏览器。"])
+                            }
                         }
                     }
                 }
             } else {
                 // Ordinary launches do not wait for a browser helper when no account needs filling.
                 NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                    DispatchQueue.main.async { self.emit("toast", ["message": error == nil ? "已交给 \(browser.name) 打开 \(site.name)。" : "网页打开失败，请检查浏览器后重试。"]) }
+                    DispatchQueue.main.async {
+                        self.recordWebsiteOpen(siteID: site.id, error: error)
+                        self.emit("toast", ["message": error == nil ? "已交给 \(browser.name) 打开 \(site.name)。" : "网页打开失败，请检查浏览器后重试。"])
+                    }
                 }
                 respond(["ok": true, "message": "正在用 \(browser.name) 打开…"])
             }
@@ -474,11 +490,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                   request.expires > Date(), request.tabID == nil else { return ["ok": false] }
             request.tabID = tabID; launches[id] = request; return ["ok": true]
         case "launchStatus":
-            guard let id = data["requestId"] as? String, let request = launches[id], request.browser == browser,
+            guard let id = data["requestId"] as? String, var request = launches[id], request.browser == browser,
                   request.claimedProfile == profileID, request.expires > Date(),
                   let status = data["status"] as? String, ["opened", "failed"].contains(status) else { return ["ok": false] }
             if status == "opened" {
                 guard let tabID = data["tabId"] as? Int, request.tabID == tabID else { return ["ok": false] }
+                if !request.usageRecorded {
+                    request.usageRecorded = true; launches[id] = request
+                    recordWebsiteOpen(siteID: request.siteID)
+                }
                 let site = library.sites.first { $0.id == request.siteID }
                 let needsFill = site?.accounts.contains { $0.id == request.accountID && $0.hasPassword } == true
                 if request.filled { return ["ok": true] }

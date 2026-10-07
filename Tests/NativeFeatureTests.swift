@@ -3,9 +3,11 @@ import Foundation
 
 extension AppDelegate {
     func runNativeFeatureChecks() -> [String: Bool] {
-        let original = library, originalStore = store!
+        let original = library, originalStore = store!, originalHistory = launchHistory
+        launchHistory = WebsiteLaunchHistory(preferences: nil)
         defer {
             library = original; store = originalStore; organizationHistory.removeAll()
+            launchHistory = originalHistory; floatingLauncher?.refresh()
             pendingLibraryChanges.removeAll(); launches.removeAll(); clients.removeAll(); launchFeedback.removeAll()
         }
         store = LibraryStore(persistent: false)
@@ -71,6 +73,7 @@ extension AppDelegate {
             let launch = request(["type": "poll"])["launch"] as? [String: Any]
             check("sceneLaunchQueueIsFIFO", launch?["id"] as? String == oldID)
             check("launchStatusRejectsUnboundTab", request(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "opened"])["ok"] as? Bool == false)
+            check("unboundOpenDoesNotCountUsage", launchHistory.records.isEmpty)
             _ = request(["type": "bind", "requestId": oldID, "tabId": 5])
             let denied = request(["type": "credentials", "requestId": oldID, "tabId": 5, "url": "https://other.example.test/login"])
             check("unapprovedLoginDomainExplained", denied["ok"] as? Bool == false && (denied["error"] as? String)?.contains("域名") == true)
@@ -81,11 +84,26 @@ extension AppDelegate {
             let feedback = launchFeedback[oldID]
             _ = request(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "opened"])
             check("lateOpenedKeepsFilledFeedback", feedback == launchFeedback[oldID])
+            check("validatedOpenedRecordsUsage", launchHistory.records["seed-0"]?.openCount == 1)
+            _ = request(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "opened"])
+            check("repeatedOpenedDoesNotDoubleCountUsage", launchHistory.records["seed-0"]?.openCount == 1)
             check("launchStatusRejectsWrongProfile", handleBrowser(base.merging(["type": "launchStatus", "requestId": oldID, "tabId": 5, "status": "failed", "profileId": UUID().uuidString]) { _, new in new })["ok"] as? Bool == false)
+            check("wrongProfileDoesNotChangeUsage", launchHistory.records["seed-0"]?.openCount == 1)
+            _ = request(["type": "poll"])
+            _ = request(["type": "bind", "requestId": newID, "tabId": 6])
+            _ = request(["type": "launchStatus", "requestId": newID, "tabId": 6, "status": "failed"])
+            check("helperFailureDoesNotCountUsage", launchHistory.records["seed-1"] == nil)
+            recordWebsiteOpen(siteID: "seed-1", error: NSError(domain: "fixture-open", code: 1))
+            check("ordinaryOrFallbackFailureDoesNotCountUsage", launchHistory.records["seed-1"] == nil)
+            recordWebsiteOpen(siteID: "seed-1")
+            check("ordinaryOrFallbackSuccessRecordsUsage", launchHistory.records["seed-1"]?.openCount == 1)
+            recordWebsiteOpen(siteID: "deleted-fixture")
+            check("deletedWebsiteCannotAddUsage", launchHistory.records["deleted-fixture"] == nil)
             clients = clients.filter { $0.key == profile }
             var floatingError: String? = "No callback"
             launchFromFloating(siteID: "seed-0", browserID: nil) { floatingError = $0 }
             check("floatingLaunchReusesDefaultBrowser", floatingError == nil)
+            check("queuedLaunchDoesNotCountUsage", launchHistory.records["seed-0"]?.openCount == 1)
             launchFromFloating(siteID: "seed-0", browserID: "edge") { floatingError = $0 }
             check("floatingLaunchRejectsUnallowedBrowser", floatingError?.contains("允许列表") == true)
             library.sites[0].profiles["chrome"] = UUID().uuidString
@@ -94,6 +112,9 @@ extension AppDelegate {
             library.tiles = removeFromTiles("seed-0", library.tiles)
             launchFromFloating(siteID: "seed-0", browserID: nil) { floatingError = $0 }
             check("floatingLaunchRejectsRemovedEntry", floatingError?.contains("移除") == true)
+            let beforeReadOnly = launchHistory.records
+            library = .empty()
+            check("readOnlyEmptyLibraryKeepsUsageHistory", launchHistory.records == beforeReadOnly)
         } catch { checks["setupOrUnexpectedFailure"] = false; print("Native feature test error: \(error.localizedDescription)") }
         return checks
     }

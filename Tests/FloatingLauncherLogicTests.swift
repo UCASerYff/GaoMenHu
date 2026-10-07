@@ -42,6 +42,100 @@ import CoreGraphics
         check("diacritics insensitive", FloatingLauncherLogic.sites(in: library, query: "cafe equipe").map(\.id) == ["accent"])
         check("full-width case folding", FloatingLauncherLogic.sites(in: library, query: "ＣＡＦＥ").map(\.id) == ["accent"])
         check("all query words must match", FloatingLauncherLogic.sites(in: library, query: "team absent").isEmpty)
+        let usage: [String: WebsiteLaunchUsage] = [
+            "extra-9": WebsiteLaunchUsage(openCount: 1000, lastOpenedAt: 900),
+            "extra-8": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: 800),
+            "extra-7": WebsiteLaunchUsage(openCount: 2, lastOpenedAt: 700),
+            "extra-6": WebsiteLaunchUsage(openCount: 100, lastOpenedAt: 100),
+            "extra-5": WebsiteLaunchUsage(openCount: 50, lastOpenedAt: 90),
+            "first": WebsiteLaunchUsage(openCount: 10, lastOpenedAt: 10),
+            "second": WebsiteLaunchUsage(openCount: 10, lastOpenedAt: 20),
+            "extra-4": WebsiteLaunchUsage(openCount: 10, lastOpenedAt: 20),
+            "archived": WebsiteLaunchUsage(openCount: 5000, lastOpenedAt: 1000),
+            "missing": WebsiteLaunchUsage(openCount: 5000, lastOpenedAt: 1000)
+        ]
+        let ranked = FloatingLauncherLogic.sites(in: library, query: "", usage: usage)
+        check("recent three appear before frequent sites", Array(ranked.prefix(3)).map(\.id) == ["extra-9", "extra-8", "extra-7"])
+        check("remaining sites sort by count then recency then original arrangement", ranked.map(\.id) == ["extra-9", "extra-8", "extra-7", "extra-6", "extra-5", "second", "extra-4", "first"])
+        check("recent frequent overlap appears only once", Set(ranked.map(\.id)).count == ranked.count)
+        check("archived and deleted history never appears", !ranked.contains(archived) && !ranked.contains { $0.id == "missing" })
+        check("small limits reserve only available slots for recent", FloatingLauncherLogic.sites(in: library, query: "", usage: usage, limit: 2).map(\.id) == ["extra-9", "extra-8"])
+        check("ranked negative limit remains empty", FloatingLauncherLogic.sites(in: library, query: "", usage: usage, limit: -1).isEmpty)
+        check("ranked zero limit remains empty", FloatingLauncherLogic.sites(in: library, query: "", usage: usage, limit: 0).isEmpty)
+        check("original arrangement fills unused recommendation slots", FloatingLauncherLogic.sites(in: library, query: "", usage: usage, limit: 10).map(\.id).suffix(2) == ["chinese", "accent"])
+        check("ranked search preserves all matches and original arrangement", FloatingLauncherLogic.sites(in: library, query: "extra", usage: usage, limit: 2).map(\.id) == (0..<10).map { "extra-\($0)" })
+        let oneUsage = ["extra-9": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: 100)]
+        check("one used site precedes unchanged arrangement fallback", FloatingLauncherLogic.sites(in: library, query: "", usage: oneUsage, limit: 3).map(\.id) == ["extra-9", "first", "second"])
+        let tiedUsage = Dictionary(uniqueKeysWithValues: ["extra-9", "extra-8", "extra-7", "extra-6"].map { ($0, WebsiteLaunchUsage(openCount: 1, lastOpenedAt: 100)) })
+        check("recency ties retain original arrangement deterministically", FloatingLauncherLogic.sites(in: library, query: "", usage: tiedUsage, limit: 4).map(\.id) == ["extra-6", "extra-7", "extra-8", "extra-9"])
+        let invalidUsage = ["extra-9": WebsiteLaunchUsage(openCount: -1, lastOpenedAt: 900),
+                            "extra-8": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: .nan),
+                            "extra-7": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: -.infinity),
+                            "extra-6": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: -1),
+                            "extra-5": WebsiteLaunchUsage(openCount: 0, lastOpenedAt: 900)]
+        check("invalid and never opened statistics do not promote sites", FloatingLauncherLogic.sites(in: library, query: "", usage: invalidUsage).map(\.id) == Array(ordered.prefix(8)).map(\.id))
+        check("ranking is read only and preserves library order", FloatingLauncherLogic.orderedSites(in: library).map(\.id) == ordered.map(\.id) && usage["extra-9"]?.openCount == 1000)
+
+        let preferenceKey = "GaoMenHu.WebsiteLaunchHistory"
+        let suite = "cn.mendao.launch-history-test." + UUID().uuidString
+        guard let preferences = UserDefaults(suiteName: suite) else { fatalError("temporary preferences unavailable") }
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let history = WebsiteLaunchHistory(preferences: preferences)
+        check("old preferences without history start empty", history.records.isEmpty)
+        check("reading old preferences does not write statistics", preferences.data(forKey: preferenceKey) == nil)
+        history.record(siteID: "first", at: Date(timeIntervalSince1970: 10))
+        history.record(siteID: "first", at: Date(timeIntervalSince1970: 20))
+        history.record(siteID: "second", at: Date(timeIntervalSince1970: 15))
+        check("successful launches increment per site and update last open", history.records["first"] == WebsiteLaunchUsage(openCount: 2, lastOpenedAt: 20) && history.records["second"]?.openCount == 1)
+        let savedHistory = preferences.data(forKey: preferenceKey)
+        check("history survives creating a new store", WebsiteLaunchHistory(preferences: preferences).records == history.records)
+        check("loading statistics does not rewrite persisted bytes", preferences.data(forKey: preferenceKey) == savedHistory)
+        if let savedHistory, let json = try JSONSerialization.jsonObject(with: savedHistory) as? [String: [String: Any]] {
+            check("persisted statistics contain only count and time", json.count == 2 && json.values.allSatisfy { Set($0.keys) == ["openCount", "lastOpenedAt"] })
+        } else { check("persisted statistics are valid JSON", false) }
+        history.record(siteID: "", at: Date(timeIntervalSince1970: 50))
+        history.record(siteID: "first", at: Date(timeIntervalSince1970: -1))
+        history.record(siteID: "first", at: Date(timeIntervalSince1970: .nan))
+        history.record(siteID: "first", at: Date(timeIntervalSince1970: .infinity))
+        check("invalid record attempts leave memory and persistence unchanged", history.records["first"]?.openCount == 2 && history.records.count == 2 && preferences.data(forKey: preferenceKey) == savedHistory)
+        let isolated = WebsiteLaunchHistory(preferences: nil)
+        isolated.record(siteID: "isolated", at: Date(timeIntervalSince1970: 100))
+        check("nil preferences allow isolated in memory usage", isolated.records["isolated"]?.openCount == 1 && history.records["isolated"] == nil)
+        check("test isolated history never changes persisted history", preferences.data(forKey: preferenceKey) == savedHistory)
+        history.prune(siteIDs: ["first"])
+        check("pruning deleted sites retains visible statistics", history.records.keys.sorted() == ["first"] && WebsiteLaunchHistory(preferences: preferences).records == history.records)
+        let pruned = preferences.data(forKey: preferenceKey)
+        history.prune(siteIDs: ["first"])
+        check("unchanged prune does not rewrite bytes", preferences.data(forKey: preferenceKey) == pruned)
+        let malformedData = Data("{broken".utf8)
+        preferences.set(malformedData, forKey: preferenceKey)
+        check("corrupt data safely loads empty without changing it", WebsiteLaunchHistory(preferences: preferences).records.isEmpty && preferences.data(forKey: preferenceKey) == malformedData)
+        let invalidSaved: [String: WebsiteLaunchUsage] = ["valid": WebsiteLaunchUsage(openCount: 4, lastOpenedAt: 40),
+            "negativeCount": WebsiteLaunchUsage(openCount: -1, lastOpenedAt: 40),
+            "negativeDate": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: -1),
+            "nanDate": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: .nan),
+            "infiniteDate": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: .infinity),
+            "": WebsiteLaunchUsage(openCount: 1, lastOpenedAt: 50)]
+        let invalidEncoder = JSONEncoder()
+        invalidEncoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+        let invalidSavedData = try invalidEncoder.encode(invalidSaved)
+        preferences.set(invalidSavedData, forKey: preferenceKey)
+        check("invalid saved records are skipped while valid records survive", WebsiteLaunchHistory(preferences: preferences).records == ["valid": WebsiteLaunchUsage(openCount: 4, lastOpenedAt: 40)])
+        check("sanitizing while loading never rewrites saved history", preferences.data(forKey: preferenceKey) == invalidSavedData)
+        preferences.set(try JSONEncoder().encode(["saturated": WebsiteLaunchUsage(openCount: Int.max, lastOpenedAt: 50)]), forKey: preferenceKey)
+        let saturated = WebsiteLaunchHistory(preferences: preferences)
+        saturated.record(siteID: "saturated", at: Date(timeIntervalSince1970: 60))
+        check("maximum count saturates without overflow and time updates", saturated.records["saturated"] == WebsiteLaunchUsage(openCount: Int.max, lastOpenedAt: 60))
+        let oversized = Dictionary(uniqueKeysWithValues: (0..<5001).map { ("record-\($0)", WebsiteLaunchUsage(openCount: 1, lastOpenedAt: Double($0))) })
+        let oversizedData = try JSONEncoder().encode(oversized)
+        preferences.set(oversizedData, forKey: preferenceKey)
+        let bounded = WebsiteLaunchHistory(preferences: preferences)
+        check("oversized history retains at most five thousand newest sites", bounded.records.count == 5000 && bounded.records["record-0"] == nil && bounded.records["record-5000"] != nil)
+        check("bounded loading is read only", preferences.data(forKey: preferenceKey) == oversizedData)
+        bounded.record(siteID: "new", at: Date(timeIntervalSince1970: 6000))
+        check("recording a new site evicts oldest at the history limit", bounded.records.count == 5000 && bounded.records["new"]?.openCount == 1 && bounded.records["record-1"] == nil)
+        check("bounded history persists after another launch", WebsiteLaunchHistory(preferences: preferences).records == bounded.records)
         var malformed = library
         malformed.tiles += [tile("first"), Tile(id: "duplicate-folder", kind: "folder", name: "Duplicated", children: ["chinese", "missing"]),
                             Tile(id: "unknown", kind: "unknown", name: nil, children: ["archived"])]

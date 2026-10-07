@@ -67,5 +67,6 @@ struct LaunchRequest {
     var claimedProfile: String?
     var tabID: Int?
     var filled: Bool = false
+    var usageRecorded: Bool = false
     var createdAt: Date = Date()
 }
