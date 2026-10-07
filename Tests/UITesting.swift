@@ -34,6 +34,7 @@ extension AppDelegate {
         var floatingChecks: [String: Bool] = [:]
         if let floating = floatingLauncher {
             floating.setVisible(true)
+            floating.setAutoHide(true); floating.setDock(.right)
             floatingChecks["visibleWhenEnabled"] = floating.isVisible && floating.panel.isVisible
             floatingChecks["nonactivatingNativePanel"] = floating.panel.styleMask.contains(.nonactivatingPanel) && !floating.panel.canBecomeMain
             floatingChecks["allSpacesAvailable"] = floating.panel.collectionBehavior.contains(.canJoinAllSpaces)
@@ -45,8 +46,66 @@ extension AppDelegate {
             floatingChecks["nativeEmptySearchResult"] = floating.visibleSiteIDs.isEmpty
             floating.search("")
             floating.setExpanded(false)
-            floatingChecks["collapsedPanelSize"] = !floating.expanded && floating.panel.frame.height == 48
+            floatingChecks["collapsedPanelSize"] = !floating.expanded && floating.edgeHidden && floating.panel.frame.size == NSSize(width: 20, height: 104)
             floatingChecks["collapseClearsQuery"] = floating.query.isEmpty
+            let handleFrame = floating.panel.frame
+            let insideHandle = NSPoint(x: handleFrame.midX, y: handleFrame.midY)
+            let outside = NSPoint(x: handleFrame.minX - 1000, y: handleFrame.minY - 1000)
+            let clock = ProcessInfo.processInfo.systemUptime + 3
+            floating.processPointer(at: insideHandle, now: clock)
+            floating.processPointer(at: insideHandle, now: clock + 0.3)
+            floatingChecks["hoverDelayPreventsAccidentalReveal"] = floating.edgeHidden
+            floating.processPointer(at: insideHandle, now: clock + 0.5)
+            floatingChecks["hoverRevealsAfterDelay"] = floating.expanded && !floating.edgeHidden
+            floating.processPointer(at: outside, now: clock + 0.7)
+            floating.processPointer(at: outside, now: clock + 1.3)
+            floatingChecks["revealGraceProtectsPointerTravel"] = floating.expanded
+            floating.processPointer(at: outside, now: clock + 1.6)
+            floating.processPointer(at: outside, now: clock + 2.2)
+            floatingChecks["pointerExitReturnsToHandle"] = floating.edgeHidden && !floating.expanded
+            floatingChecks["modeChangesKeepAnchor"] = floating.panel.frame == handleFrame
+            floating.setExpanded(true); floating.setPinned(true)
+            floating.processPointer(at: outside, now: clock + 10)
+            floating.processPointer(at: outside, now: clock + 11)
+            floatingChecks["pinnedPanelDoesNotAutoHide"] = floating.expanded && floating.pinned
+            floating.setExpanded(false)
+            floatingChecks["explicitCollapseClearsPin"] = !floating.pinned && floating.edgeHidden
+            floating.setExpanded(true)
+            floating.processPointer(at: outside, now: clock + 20, mouseDown: true)
+            floating.processPointer(at: outside, now: clock + 21, mouseDown: true)
+            floatingChecks["pressedMouseProtectsPanel"] = floating.expanded
+            let testMenu = NSMenu()
+            floating.menuWillOpen(testMenu)
+            floating.processPointer(at: outside, now: clock + 30)
+            floating.processPointer(at: outside, now: clock + 31)
+            floatingChecks["contextMenuProtectsPanel"] = floating.expanded
+            floating.menuDidClose(testMenu)
+            floating.processPointer(at: outside, now: clock + 32)
+            floating.processPointer(at: outside, now: clock + 33)
+            floatingChecks["menuCloseRestoresAutoHide"] = floating.edgeHidden
+            floating.setExpanded(true)
+            func findSearch(_ view: NSView) -> NSSearchField? {
+                if let field = view as? NSSearchField { return field }
+                return view.subviews.compactMap { findSearch($0) }.first
+            }
+            if let content = floating.panel.contentView, let field = findSearch(content) {
+                floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                floating.processPointer(at: outside, now: clock + 40)
+                floating.processPointer(at: outside, now: clock + 41)
+                floatingChecks["searchEditingProtectsPanel"] = floating.expanded && floating.panel.firstResponder is NSTextView
+                floating.panel.makeFirstResponder(nil)
+            } else { floatingChecks["searchEditingProtectsPanel"] = false }
+            floating.setExpanded(false); floating.setDock(.left)
+            floatingChecks["leftDockHasNarrowHandle"] = floating.edgeHidden && NSScreen.screens.contains { $0.visibleFrame.minX == floating.panel.frame.minX && $0.visibleFrame.contains(floating.panel.frame) }
+            floating.setDock(.none)
+            floatingChecks["freePositionUsesCompactEntry"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 140, height: 48)
+            floating.setExpanded(true)
+            floating.processPointer(at: outside, now: clock + 50)
+            floating.processPointer(at: outside, now: clock + 51)
+            floatingChecks["freePositionDoesNotAutoHide"] = floating.expanded
+            floating.setExpanded(false); floating.setDock(.right); floating.setAutoHide(false)
+            floatingChecks["autoHideCanBeDisabled"] = !floating.edgeHidden && floating.panel.frame.size == NSSize(width: 140, height: 48)
+            floating.setAutoHide(true)
             window.orderOut(nil)
             floatingChecks["independentOfMainWindow"] = floating.panel.isVisible && !window.isVisible
             floating.setVisible(false)
@@ -57,6 +116,8 @@ extension AppDelegate {
             floating.capturePreview(to: URL(fileURLWithPath: "/private/tmp/mendao-floating-test.png"))
             floatingChecks["previewRendered"] = FileManager.default.fileExists(atPath: "/private/tmp/mendao-floating-test.png")
             floating.setExpanded(false)
+            floating.capturePreview(to: URL(fileURLWithPath: "/private/tmp/mendao-hidden-test.png"))
+            floatingChecks["hiddenPreviewRendered"] = FileManager.default.fileExists(atPath: "/private/tmp/mendao-hidden-test.png")
         } else { floatingChecks["controllerCreated"] = false }
         window.makeKeyAndOrderFront(nil)
         var browserChecks: [String: Bool] = [:]

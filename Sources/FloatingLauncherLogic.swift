@@ -61,6 +61,7 @@ enum FloatingLauncherEdge: String {
 enum FloatingLauncherGeometry {
     static let width: CGFloat = 360
     static let headerHeight: CGFloat = 48
+    static let hiddenSize = CGSize(width: 20, height: 104)
 
     static func constrain(frame: CGRect, to screen: CGRect) -> CGRect {
         let bounds = validScreen(screen)
@@ -112,6 +113,23 @@ enum FloatingLauncherGeometry {
         let height = positive(size.height, fallback: headerHeight)
         let x = edge == .right ? frame.maxX - width : frame.minX
         return constrain(frame: CGRect(x: x, y: frame.maxY - height, width: width, height: height), to: screen)
+    }
+
+    /// A separate narrow window keeps the hidden launcher within its own display.
+    /// Retain the collapsed anchor for saving and expansion; a bottom-edge clamp may move this handle's top.
+    static func hiddenFrame(anchor: CGRect, edge: FloatingLauncherEdge, in screen: CGRect,
+                            size: CGSize = hiddenSize) -> CGRect {
+        let bounds = validScreen(screen)
+        let width = min(positive(size.width, fallback: hiddenSize.width), bounds.width)
+        let height = min(positive(size.height, fallback: hiddenSize.height), bounds.height)
+        let x: CGFloat
+        switch edge {
+        case .left: x = bounds.minX
+        case .right: x = bounds.maxX - width
+        case .none: x = anchor.minX
+        }
+        let top = anchor.maxY.isFinite && anchor.height.isFinite && anchor.height > 0 ? anchor.maxY : bounds.maxY
+        return constrain(frame: CGRect(x: x, y: top - height, width: width, height: height), to: bounds)
     }
 
     static func snap(frame: CGRect, to screen: CGRect, threshold: CGFloat = 24) -> (frame: CGRect, edge: FloatingLauncherEdge) {

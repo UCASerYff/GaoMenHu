@@ -54,11 +54,15 @@ struct PortalSettingsView: View {
                 }
                 Section("悬浮窗") {
                     Toggle("显示悬浮窗", isOn: Binding(get: { app.floatingLauncher?.isVisible ?? false }, set: { app.setFloatingLauncherVisible($0); model.refresh() }))
+                    Toggle("贴边时自动隐藏", isOn: Binding(get: { app.floatingLauncher?.autoHideEnabled ?? true }, set: { app.floatingLauncher?.setAutoHide($0); model.refresh() }))
+                    Picker("停靠位置", selection: Binding(get: { app.floatingLauncher?.dockEdge.rawValue ?? "right" }, set: { app.floatingLauncher?.setDock(FloatingLauncherEdge(rawValue: $0) ?? .right); model.refresh() })) {
+                        Text("左侧").tag("left"); Text("右侧").tag("right"); Text("自由浮动").tag("none")
+                    }
                     HStack {
                         Button("重置悬浮窗位置") { app.floatingLauncher?.resetPosition(); app.setFloatingLauncherVisible(true); model.refresh() }
                         Text("⌃⌘P 显示或隐藏").foregroundStyle(.secondary)
                     }
-                    Text("拖动顶部可移动，靠近屏幕左右边缘会吸附。展开后快速打开前 8 个网站，或搜索整个启动台；右键选择允许的浏览器。窗口位置与开关仅保存在本机。")
+                    Text("贴边收起为细条，悬停约 0.45 秒或点击展开，鼠标移出后自动收起。顶部图钉可固定展开；搜索、右键菜单与登录验证时保持展开。位置与开关仅保存在本机。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Section("账号库") {
