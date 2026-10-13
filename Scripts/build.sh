@@ -14,7 +14,7 @@ if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then TEST_FLAGS=(-D DEBUG_TESTING
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
   "$TEST_FLAGS[@]" "$PROJECT_DIR/Tests/UITesting.swift" "$PROJECT_DIR/Tests/NativeFeatureTests.swift" \
   "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
-  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/App.swift" \
+  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Sources/PortalIntegration.swift" "$PROJECT_DIR/Sources/App.swift" \
   -framework SwiftUI -framework AppKit -framework WebKit -framework Security -framework LocalAuthentication -framework Carbon -framework ImageIO \
   -o "$APP/Contents/MacOS/MenDao"
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
@@ -44,6 +44,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHumanReadableCopyright</key><string>搞门户</string>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>搞系列动作交接包</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>LSTypeIsPackage</key><true/>
+<key>LSItemContentTypes</key><array><string>com.gaoseries.action-package</string></array>
+</dict></array>
+<key>UTImportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>com.gaoseries.action-package</string>
+<key>UTTypeDescription</key><string>搞系列动作交接包</string>
+<key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>gaoaction</string></array></dict>
+</dict></array>
 </dict></plist>
 PLIST
 # Keep local extended metadata out of distributable files.
@@ -63,9 +76,8 @@ ln -s /Applications "$STAGING/disk/Applications"
 cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"
 xattr -cr "$STAGING/disk"
 hdiutil create -quiet -volname "搞门户 V$VERSION" -srcfolder "$STAGING/disk" -format UDZO "$STAGING/GaoMenHu-$VERSION.dmg"
-# Remove previous project release packages only after the new package succeeds.
-find "$PROJECT_DIR/Release" -maxdepth 1 -type f \( -name '搞门户-V*.dmg' -o -name '门道-V*.dmg' -o -name 'GaoMenHu-*.dmg' -o -name 'GaoMenHu-*.dmg.sha256' \) -delete
-find "$PROJECT_DIR/Release" -maxdepth 1 -type f -name '验证结果-V*.json' ! -name "验证结果-V$VERSION.json" -delete
+# The previous package is retained until installation and business verification
+# succeed. Cleanup belongs to the verified upgrade-finalization step.
 mv "$STAGING/GaoMenHu-$VERSION.dmg" "$PROJECT_DIR/Release/"
 (cd "$PROJECT_DIR/Release" && shasum -a 256 "GaoMenHu-$VERSION.dmg" > "GaoMenHu-$VERSION.dmg.sha256")
 print "完成：$PROJECT_DIR/Release/GaoMenHu-$VERSION.dmg"

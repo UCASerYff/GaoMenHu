@@ -30,3 +30,13 @@ swiftc -swift-version 5 -D DEBUG_TESTING -module-cache-path "$TEST_DIR/cache" "$
   "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/FullBackup.swift" \
   "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Tests/BackupRestoreTests.swift" -o "$TEST_DIR/backup-restore"
 "$TEST_DIR/backup-restore"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/GaoActionPackage.swift" \
+  "$PROJECT_DIR/Tests/GaoActionPackageTests.swift" -o "$TEST_DIR/gaoaction"
+"$TEST_DIR/gaoaction"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
+  "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" \
+  "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Tests/PortalActionsTests.swift" \
+  -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-actions"
+"$TEST_DIR/portal-actions"
+python3 "$PROJECT_DIR/Scripts/backup_verify.py" self-test
+

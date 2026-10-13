@@ -36,6 +36,7 @@ window.nativeReply = message => {
   if (value.ok || value.cancelled) entry.resolve(value);
   else entry.reject(new Error(value.error || value.message || '操作未完成，请重试。'));
 };
+let portalProposalRequestID = null;
 window.nativeEvent = message => {
   if (message.payload.state) updateState(message.payload.state);
   switch(message.event){
@@ -235,7 +236,7 @@ function openDialog(html,small=false){
   lastFocus=document.activeElement;$('dialog').className='dialog'+(small?' small':'');$('dialog').innerHTML=html;$('dialogOverlay').hidden=false;
   $('dialog').querySelectorAll('[data-close]').forEach(button=>button.onclick=closeDialog);setTimeout(()=>($('dialog').querySelector('input,button')||$('dialog')).focus(),30);
 }
-function closeDialog(){closeCrop();$('dialogOverlay').hidden=true;$('dialog').replaceChildren();draft=null;if(lastFocus?.isConnected)lastFocus.focus();}
+function closeDialog(){const requestID=portalProposalRequestID;portalProposalRequestID=null;closeCrop();$('dialogOverlay').hidden=true;$('dialog').replaceChildren();draft=null;if(lastFocus?.isConnected)lastFocus.focus();if(requestID)native('portalProposalCancelled',{requestID}).catch(()=>{});}
 function head(eyebrow,title,description){return '<div class="dialog-head"><div><h2>'+esc(title)+'</h2>'+(description?'<p class="description">'+esc(description)+'</p>':'')+'</div><button class="icon-button close" data-close aria-label="关闭">×</button></div>';}
 function confirmDialog(title,body,button,action){
   openDialog(head('MENDAO',title,'')+'<p class="confirm-body">'+esc(body)+'</p><div class="form-error" id="confirmError"></div><div class="dialog-actions"><button class="soft-button" data-close>取消</button><button class="primary-button" id="confirmAction">'+esc(button)+'</button></div>',true);
@@ -273,7 +274,7 @@ function showEditor(id){
     event.preventDefault();captureAccounts();draft.name=$('siteName').value.trim();draft.url=$('siteURL').value.trim();draft.aliases=$('siteAliases').value.trim();if(!/^[a-z]+:\/\//i.test(draft.url))draft.url='https://'+draft.url;
     if(!draft.allowedBrowsers.length){$('formError').textContent='请至少选择一个浏览器。';return;}
     $('saveSite').disabled=true;$('formError').textContent='';
-    try{const result=await native('saveSite',{site:draft});closeDialog();toast(result.warning||'网站已保存。');}catch(error){if($('formError'))$('formError').textContent=error.message;if($('saveSite'))$('saveSite').disabled=false;}
+    try{const result=await native('saveSite',{site:draft,portalRequestID:portalProposalRequestID});portalProposalRequestID=null;closeDialog();toast(result.warning||'网站已保存。');}catch(error){if($('formError'))$('formError').textContent=error.message;if($('saveSite'))$('saveSite').disabled=false;}
   };
   renderEditorIcon();renderBrowserOptions();renderAccounts();
 }
@@ -393,6 +394,16 @@ $('folderOverlay').addEventListener('dragover',event=>{if(drag&&event.target===$
 $('folderOverlay').addEventListener('drop',event=>{if(event.target===$('folderOverlay')){emptyDrop(event);closeFolder();}});
 let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(render,100);});
 // Available only in an explicitly launched ephemeral UI test instance.
+window.portalApplySearch=query=>{
+  if(!S||typeof query!=='string'||query.length>4096||!$('dialogOverlay').hidden||!$('cropOverlay').hidden)return false;
+  selectSection('launcher');$('search').value=query;page=0;searchIndex=0;render();$('search').focus();$('search').select();return true;
+};
+window.portalProposeSite=(url,title,requestID)=>{
+  if(!S||typeof url!=='string'||typeof title!=='string'||typeof requestID!=='string'||!$('dialogOverlay').hidden||!$('cropOverlay').hidden)return false;
+  showEditor();portalProposalRequestID=requestID;draft.url=url;draft.name=title;$('siteURL').value=url;$('siteName').value=title;renderEditorIcon();
+  if([...title].length>100)$('formError').textContent='原标题超过100字，请缩短网站名称后保存。';
+  return true;
+};
 window.mendaoTest={get state(){return S;},get draft(){return draft;},moveTile,showEditor,openFolder,showSettings,render,goToPage,get page(){return page;},get totalPages(){return totalPages;}};
 
 }

@@ -1,0 +1,40 @@
+{
+  "action": "ocr.files",
+  "createdAt": "2026-10-12T12:00:00Z",
+  "errorCode": "pageFailed",
+  "expiresAt": "2026-10-12T12:02:00Z",
+  "inReplyTo": "11111111-1111-4111-8111-000000000003",
+  "items": [
+    {
+      "byteCount": 6,
+      "id": "page1-text",
+      "relativePath": "payload/page1.txt",
+      "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "uti": "public.utf8-plain-text"
+    }
+  ],
+  "kind": "result",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "parameters": {},
+  "provenance": {
+    "pages": [
+      {
+        "page": 1,
+        "status": "completed"
+      },
+      {
+        "errorCode": "recognitionFailed",
+        "page": 2,
+        "status": "failed"
+      }
+    ],
+    "sourceItemID": "input-two-pages",
+    "sourceSHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "references": [],
+  "requestID": "11111111-1111-4111-8111-000000000003",
+  "schemaVersion": 1,
+  "sourceBundleID": "com.gaoseries.GaoJieTu",
+  "status": "partial",
+  "targetBundleID": "com.gaoseries.GaoActionFixture"
+}

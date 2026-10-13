@@ -1,0 +1,14 @@
+{
+  "action": "portal.focusSearch",
+  "createdAt": "2026-10-12T11:57:59Z",
+  "expiresAt": "2026-10-12T11:59:59Z",
+  "items": [],
+  "kind": "request",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "parameters": {},
+  "references": [],
+  "requestID": "11111111-1111-4111-8111-000000000005",
+  "schemaVersion": 1,
+  "sourceBundleID": "com.gaoseries.GaoActionFixture",
+  "targetBundleID": "cn.mendao.launcher"
+}

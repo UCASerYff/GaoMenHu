@@ -1,0 +1,30 @@
+{
+  "action": "storage.inspect",
+  "createdAt": "2026-10-12T12:00:00Z",
+  "expiresAt": "2026-10-12T12:02:00Z",
+  "items": [],
+  "kind": "request",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "parameters": {
+    "mode": "metadata"
+  },
+  "references": [
+    {
+      "declaredIdentity": {
+        "byteCount": null,
+        "device": null,
+        "inode": null,
+        "modifiedAt": null,
+        "volumeUUID": null
+      },
+      "displayName": "隔离测试目录",
+      "fileURL": "file:///private/tmp/gaoaction-fixture-directory/",
+      "id": "directory",
+      "kind": "directory"
+    }
+  ],
+  "requestID": "11111111-1111-4111-8111-000000000002",
+  "schemaVersion": 1,
+  "sourceBundleID": "com.gaoseries.GaoActionFixture",
+  "targetBundleID": "com.gaoseries.GaoJiLing"
+}

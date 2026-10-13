@@ -32,6 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var pendingLibraryChanges: [String: PendingLibraryChange] = [:]
     var searchKeyCache: [String: (String, String)] = [:]
     var launchFeedback: [String: String] = [:]
+    var externalLaunchCallbacks: [String: (PortalActionOutcome) -> Void] = [:]
+    var portalCoordinator: PortalExchangeCoordinator?
+    var portalOpenQueue: [URL] = []
+    var portalWebReady = false
     let resources = Bundle.main.resourceURL!
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.00" }
 
@@ -50,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         catch { store = LibraryStore(persistent: false); library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)" }
         applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
+        portalCoordinator = PortalExchangeCoordinator(app: self)
         floatingLauncher = FloatingLauncherController(app: self)
         floatingLauncher?.start()
         if !testMode {
@@ -146,6 +151,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         data.addItem(withTitle: "导出模块备份…", action: #selector(exportModuleBackup), keyEquivalent: "")
         data.addItem(withTitle: "恢复模块备份…", action: #selector(restoreModuleBackup), keyEquivalent: "")
         data.addItem(withTitle: "合并导入模块备份…", action: #selector(mergeModuleBackup), keyEquivalent: "")
+        data.addItem(.separator())
+        data.addItem(withTitle: "打开跨 App 交接包…", action: #selector(openPortalPackage), keyEquivalent: "")
+        data.addItem(withTitle: "查看交接结果…", action: #selector(showPortalResults), keyEquivalent: "")
+        data.addItem(withTitle: "导出授权的网站目录…", action: #selector(exportPortalSiteCatalog), keyEquivalent: "")
+        data.addItem(withTitle: "导出授权的场景目录…", action: #selector(exportPortalWorkspaceCatalog), keyEquivalent: "")
         NSApp.mainMenu = bar
     }
     func setupStatusItem() {
@@ -169,7 +179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
     @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); emit("search", [:]) }
     @objc func undoMenu() { web.evaluateJavaScript("window.mendaoUndo && window.mendaoUndo();", completionHandler: nil) }
-    @objc func lockVault() { vault?.lock(); launches.removeAll(); emit("locked", [:]) }
+    @objc func lockVault() {
+        vault?.lock(); launches.removeAll()
+        let callbacks = externalLaunchCallbacks; externalLaunchCallbacks.removeAll()
+        callbacks.values.forEach { $0(.failed("vault_locked")) }
+        emit("locked", [:])
+    }
     @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "搞门户", .applicationVersion: "V\(version)", .credits: NSAttributedString(string: "网站、账号，一点就到。\n网站启动台 · 浏览器选择 · 本地账号库")]) }
     @objc func settings() { openNativeSettings() }
     @objc func search() { showWindow(); emit("search", [:]) }
@@ -226,6 +241,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 guard visibleSiteIDs(next.tiles) == previous else { throw AppError.message("拖动时不能丢失网站。") }
                 try commitOrganization(next, reason: "调整排列前"); reply(id, ["ok": true, "state": state()])
             case "saveSite": saveSite(data, responseID: id)
+            case "portalProposalCancelled":
+                portalCoordinator?.proposalCancelled(data["requestID"] as? String)
+                reply(id, ["ok": true])
+            case "portalPrepareSelectedDownload":
+                guard let siteID = data["siteID"] as? String,
+                      let site = library.sites.first(where: { $0.id == siteID }) else { throw AppError.message("网站不存在。") }
+                portalCoordinator?.prepareSelectedDownload(site.url)
+                reply(id, ["ok": true])
             case "launch": launch(data, responseID: id)
             case "removeSite":
                 guard let siteID = data["siteID"] as? String else { throw AppError.message("网站不存在。") }
@@ -337,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 for account in old?.accounts ?? [] where !retained.contains(account.id) {
                     do { try self.vault.remove(id: account.id) } catch { cleanupFailed = true }
                 }
+                self.portalCoordinator?.proposalSaved(data["portalRequestID"] as? String, siteID: site.id)
                 self.reply(responseID, ["ok": true, "state": self.state(), "warning": cleanupFailed ? "网站已保存，但旧密码的钥匙串清理失败，请在系统钥匙串中处理。" : ""])
                 if site.icon == nil, site.iconSource != "custom" { self.fetchIcon(site) }
             } catch {
@@ -391,8 +415,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         floatingLauncher?.refresh()
     }
 
-    func launch(_ data: [String: Any], responseID: String?, completion: (([String: Any]) -> Void)? = nil) {
+    func launch(_ data: [String: Any], responseID: String?, completion: (([String: Any]) -> Void)? = nil,
+                opened: ((PortalActionOutcome) -> Void)? = nil) {
+        var outcomeSent = false
+        let finish: (PortalActionOutcome) -> Void = { outcome in
+            guard !outcomeSent else { return }; outcomeSent = true; opened?(outcome)
+        }
         let respond: ([String: Any]) -> Void = { value in
+            if value["ok"] as? Bool != true { finish(.failed("launch_rejected")) }
             if let completion { completion(value) }
             else if let responseID { self.reply(responseID, value) }
         }
@@ -400,12 +430,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let browserID = data["browser"] as? String ?? site.defaultBrowser
         do { try validateLaunch(site, browserID: browserID) }
         catch { respond(["ok": false, "error": error.localizedDescription]); return }
-        if testMode { respond(["ok": true, "message": "测试启动已验证。"]); return }
+        if testMode { respond(["ok": true, "message": "测试启动已验证。"]); finish(PortalActionOutcome(status: .completed, workflowState: .opened)); return }
         guard let browser = Browser.catalog.first(where: { $0.id == browserID }),
               let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID), let url = validWebURL(site.url) else { respond(["ok": false, "error": "浏览器未安装或网址无效。"]); return }
         let accountID = data["accountID"] as? String ?? site.defaultAccount
         let account = site.accounts.first(where: { $0.id == accountID })
         let perform = {
+            guard let current = self.library.sites.first(where: { $0.id == site.id }),
+                  current.url == site.url, current.allowedBrowsers == site.allowedBrowsers,
+                  current.defaultBrowser == site.defaultBrowser, current.profiles == site.profiles,
+                  current.accounts == site.accounts, current.defaultAccount == site.defaultAccount else {
+                finish(.failed("site_changed")); respond(["ok": false, "error": "网站配置已变化，请重新确认后打开。"]); return
+            }
             let available = self.activeClients().filter { $0.browser == browserID }
             let selectedProfile = site.profiles[browserID].flatMap { $0.isEmpty ? nil : $0 }
             // Recheck after authentication: connected profiles may have changed while the prompt was open.
@@ -415,12 +451,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let profile = selectedProfile ?? available.first?.id
             let requestID = UUID().uuidString
             if browser.supportsFill && (!available.isEmpty || needsFill) {
+                if opened != nil { self.externalLaunchCallbacks[requestID] = finish }
                 self.launches[requestID] = LaunchRequest(id: requestID, browser: browserID, profileID: profile, siteID: site.id,
                     accountID: account?.id, url: url.absoluteString, allowed: account.map { allowedOrigins(site: site, account: $0) } ?? [],
                     expires: Date().addingTimeInterval(300))
                 NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                     if error != nil { DispatchQueue.main.async {
                         self.launches.removeValue(forKey: requestID)
+                        self.externalLaunchCallbacks.removeValue(forKey: requestID)?(.failed("browser_launch_failed"))
                         self.emit("toast", ["message": "浏览器未能启动，请重新打开浏览器后重试。"])
                     } }
                 }
@@ -430,14 +468,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     self.launches.removeValue(forKey: requestID)
                     // Explicit profiles must never fall back to a different profile.
                     if selectedProfile != nil {
+                        self.externalLaunchCallbacks.removeValue(forKey: requestID)?(.failed("profile_unavailable"))
                         self.emit("toast", ["message": "指定的浏览器资料未响应，请打开它的搞门户助手并重新连接。"])
                     } else {
                         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                             DispatchQueue.main.async {
                                 self.recordWebsiteOpen(siteID: site.id, error: error)
+                                self.externalLaunchCallbacks.removeValue(forKey: requestID)?(error == nil ? PortalActionOutcome(status: .completed, workflowState: .opened) : .failed("browser_launch_failed"))
                                 self.emit("toast", ["message": error == nil ? "网页已打开，但助手未连接。请在浏览器中打开搞门户助手并重新连接后重试自动填充。" : "网页打开失败，请检查浏览器。"])
                             }
                         }
+                    }
+                }
+                if opened != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                        guard let callback = self.externalLaunchCallbacks.removeValue(forKey: requestID) else { return }
+                        self.launches.removeValue(forKey: requestID)
+                        callback(.failed("browser_open_unconfirmed"))
                     }
                 }
             } else {
@@ -445,6 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                     DispatchQueue.main.async {
                         self.recordWebsiteOpen(siteID: site.id, error: error)
+                        finish(error == nil ? PortalActionOutcome(status: .completed, workflowState: .opened) : .failed("browser_launch_failed"))
                         self.emit("toast", ["message": error == nil ? "已交给 \(browser.name) 打开 \(site.name)。" : "网页打开失败，请检查浏览器后重试。"])
                     }
                 }
@@ -452,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             }
         }
         if account?.hasPassword == true {
-            vault.authenticate("为 \(site.name) 填入你选择的账号") { ok, error in if ok { perform() } else { respond(["ok": false, "error": error ?? "已取消解锁。"] ) } }
+            vault.authenticate("为 \(site.name) 填入你选择的账号") { ok, error in if ok { perform() } else { finish(.cancelled); respond(["ok": false, "error": error ?? "已取消解锁。"] ) } }
         } else { perform() }
     }
 
@@ -477,6 +525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 return item.browser == browser && item.claimedProfile == nil && item.expires > Date() && (item.profileID == nil || item.profileID == profileID)
             }), var request = launches[key] {
                 if request.profileID == nil, activeClients().filter({ $0.browser == browser }).count > 1 {
+                    externalLaunchCallbacks.removeValue(forKey: key)?(.failed("profile_ambiguous"))
                     launches.removeValue(forKey: key); emit("toast", ["message": "多个浏览器资料已连接，请为网站指定资料。"])
                     return ["ok": true, "version": version]
                 }
@@ -495,6 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                   let status = data["status"] as? String, ["opened", "failed"].contains(status) else { return ["ok": false] }
             if status == "opened" {
                 guard let tabID = data["tabId"] as? Int, request.tabID == tabID else { return ["ok": false] }
+                externalLaunchCallbacks.removeValue(forKey: id)?(PortalActionOutcome(status: .completed, workflowState: .opened))
                 if !request.usageRecorded {
                     request.usageRecorded = true; launches[id] = request
                     recordWebsiteOpen(siteID: request.siteID)
@@ -512,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 } else { launches.removeValue(forKey: id) }
             } else {
                 if let bound = request.tabID, bound != data["tabId"] as? Int { return ["ok": false] }
+                externalLaunchCallbacks.removeValue(forKey: id)?(.failed("browser_launch_failed"))
                 reportLaunch(id, message: "浏览器未能完成打开，请从搞门户重试；仍失败时在助手中重新连接。")
                 launches.removeValue(forKey: id)
             }

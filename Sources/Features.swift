@@ -266,13 +266,10 @@ extension AppDelegate {
     }
 
     func validateLaunch(_ site: Website, browserID: String) throws {
-        guard site.allowedBrowsers.contains(browserID), let browser = Browser.catalog.first(where: { $0.id == browserID }),
-              (testMode || NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID) != nil), validWebURL(site.url) != nil else { throw AppError.message("\(site.name)：浏览器未安装或不在允许列表中。") }
-        let available = activeClients().filter { $0.browser == browserID }
-        if let selected = site.profiles[browserID], !selected.isEmpty, !available.contains(where: { $0.id == selected }) {
-            throw AppError.message("\(site.name)：指定浏览器资料尚未连接，请先打开该资料的搞门户助手。")
-        }
-        if site.profiles[browserID]?.isEmpty != false, available.count > 1 { throw AppError.message("\(site.name)：请先选择浏览器个人资料。") }
+        let installed = testMode ? Set(Browser.catalog.map(\.id)) : Set(installedBrowsers().map(\.id))
+        let profiles = Dictionary(grouping: activeClients(), by: \.browser).mapValues { Set($0.map(\.id)) }
+        _ = try PortalActionPlanner.siteLaunch(site, browserID: browserID,
+            runtime: PortalRuntime(installedBrowserIDs: installed, connectedProfiles: profiles))
     }
 
     func saveBrowserBookmark(_ data: [String: Any], browser: String, profileID: String) throws -> [String: Any] {

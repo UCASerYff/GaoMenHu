@@ -54,6 +54,7 @@ Backups/
 AutoBackups/
 用户数据备份/
 验证记录/
+TestResults/
 
 # Private attachments do not belong in this project
 *.pdf

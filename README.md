@@ -1,4 +1,4 @@
-# 搞门户 V1.13
+# 搞门户 V1.14
 
 macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排序、组合文件夹，并为每个网站指定浏览器和登录账号。
 
@@ -6,7 +6,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 
 ## 下载与安装
 
-从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.13.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
+从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.14.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
 
 1. 支持 macOS 13 或更高版本、Apple Silicon；当前未提供 Intel 版本。
 2. 打开 DMG，把 `搞门户.app` 拖入“应用程序”文件夹，然后启动。
@@ -16,7 +16,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 校验下载文件：
 
 ```sh
-shasum -a 256 -c GaoMenHu-1.13.dmg.sha256
+shasum -a 256 -c GaoMenHu-1.14.dmg.sha256
 ```
 
 ## 功能
@@ -33,6 +33,8 @@ shasum -a 256 -c GaoMenHu-1.13.dmg.sha256
 - 工作场景可一次打开多个网站，各自使用指定浏览器和账号。
 - 统一搞系列的原生侧栏风格、独立设置窗口、系统／浅色／深色外观。
 - 完整资料 ZIP 导出与校验恢复、JSON 模块备份、合并导入、恢复预览及本地自动快照。
+- 支持 GaoAction V1 跨 App 动作交接与目录包（.gaoaction），可由搞操作、搞桌面等调用已有网站、工作场景、聚焦搜索与建议新站；支持交接包手动打开、结果查看与最小授权目录安全导出。
+- 可选接入搞下载（GaoXiaZai），提供下载交接前网址隐私复核与敏感参数剔除，未安装时优雅降级并允许复制干净网址。
 
 完整操作方法见 [使用说明](使用说明.txt)。
 
@@ -85,7 +87,9 @@ shasum -a 256 -c GaoMenHu-1.13.dmg.sha256
 
 ## 版本
 
-版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.13。
+版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.14。
+
+V1.14：接入跨 App 动作交接契约 GaoAction V1，支持“搞操作”、“搞桌面”等兄弟应用通过 .gaoaction 目录包调用已有网站（portal.openSite）、工作场景（portal.openWorkspace）、聚焦搜索（portal.focusSearch）以及建议添加网站（portal.proposeSite）。严格限制外部动作参数，新增网站仅打开预填编辑界面由用户确认后写入，绝不静默改写数据库；密码与敏感凭据绝不导出或通过命令行传递。接入可选“搞下载”（com.gaoseries.GaoXiaZai）交接（portal.prepareDownload），支持用户选择网址隐私复核（可剔除查询参数与片段），未安装时优雅降级并允许复制干净网址。新增“数据”菜单下的交接包手动打开、结果查看与授权网站/场景最小目录安全导出。继承原有所有网站、布局快照与钥匙串密码。
 
 V1.13：吸附改为拖动过程中实时判断，靠近左右边缘 32 pt 内贴边，移离边缘恢复自由移动，松手直接保存当前位置。取消隐藏竖线的左右内缩，停靠时只保留朝内的圆角；展开面板的顶部、两侧和底部空白处均可拖动，搜索、网站点击和滚动保持原操作。拖动期间暂停收起与列表重排，延续原资料、位置和使用记录。
 

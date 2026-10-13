@@ -12,6 +12,11 @@ manifest = json.loads(manifest_file.read_text())
 major, minor = new.split(".")
 manifest["version"] = f"{int(major)}.{int(minor)}.0"
 manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+capabilities_file = root / "Resources" / "GaoCapabilities.json"
+if capabilities_file.exists():
+    caps = json.loads(capabilities_file.read_text())
+    caps["appVersion"] = new
+    capabilities_file.write_text(json.dumps(caps, ensure_ascii=False, indent=2) + "\n")
 manual = root / "使用说明.txt"
 text = manual.read_text()
 text = text.replace("搞门户 V" + old, "搞门户 V" + new)
