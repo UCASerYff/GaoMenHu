@@ -49,7 +49,7 @@ window.nativeEvent = message => {
     case 'locked':if(S){S.unlocked=false;renderLock();}break;
   }
 };
-function updateState(state){S=state;applyAppearance();$('version').textContent='V'+S.version;applyPreferences();render();renderLock();}
+function updateState(state){S=state;applyAppearance();$('version').textContent='V'+S.version;applyPreferences();render();renderLock();const notice=$('recoveryNotice');if(notice){notice.hidden=!S.recoveryRequired;notice.textContent=S.recoveryRequired?S.recoveryMessage:'';}$('addButton').disabled=!!S.recoveryRequired;$('manageButton').disabled=!!S.recoveryRequired;}
 function toast(message){if(!message)return;$('toast').textContent=message;$('toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),5200);}
 const siteById = id => S.library.sites.find(x=>x.id===id);
 const folderById = id => S.library.tiles.find(x=>x.kind==='folder'&&x.id===id);

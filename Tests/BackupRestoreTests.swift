@@ -188,6 +188,7 @@ import Darwin
         check("corrupt history refusal preserves every byte", try ownedFiles(corrupt) == corruptBytes)
 
         let fresh = LibraryStore(directory: root.appendingPathComponent("fresh"))
+        try fresh.save(.empty())
         let freshResult = try fresh.installBackup(payload(), current: .empty())
         check("first-time restore creates library", (try? fresh.load(defaultBrowsers: [])) == freshResult)
         check("first-time restore retains empty pre-restore snapshot", (try? fresh.snapshots().count) == 1)

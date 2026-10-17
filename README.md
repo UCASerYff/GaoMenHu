@@ -1,4 +1,4 @@
-# 搞门户 V1.14
+# 搞门户 V1.15
 
 macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排序、组合文件夹，并为每个网站指定浏览器和登录账号。
 
@@ -6,7 +6,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 
 ## 下载与安装
 
-从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.14.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
+从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.15.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
 
 1. 支持 macOS 13 或更高版本、Apple Silicon；当前未提供 Intel 版本。
 2. 打开 DMG，把 `搞门户.app` 拖入“应用程序”文件夹，然后启动。
@@ -16,7 +16,7 @@ macOS 网站启动器。把常用网站像 App 一样放进启动台，拖动排
 校验下载文件：
 
 ```sh
-shasum -a 256 -c GaoMenHu-1.14.dmg.sha256
+shasum -a 256 -c GaoMenHu-1.15.dmg.sha256
 ```
 
 ## 功能
@@ -83,11 +83,17 @@ shasum -a 256 -c GaoMenHu-1.14.dmg.sha256
 - `Scripts/`：构建、安装、版本递增和检查脚本。
 - `Tests/`：模型、导入恢复、图标、通信与界面测试，使用虚构测试数据。
 
-`Scripts/test.sh` 执行核心回归检查。UI 自检可通过 `Scripts/build.sh --app-only /private/tmp/GaoMenHu-test.app` 构建，再以 `--ui-test --self-test` 运行；自检使用隔离数据，正式包不含自检资源。`Tests/Content.cjs` 的浏览器表单测试另需 Playwright 和 Chrome。
+`Scripts/test.sh` 执行命令行单元检查，包含主库/账本丢失与事务中断的新定向复现，不启动应用或浏览器。默认不自动运行冒烟测试；界面、浏览器及跨 App 冷启动验证只有用户明确要求后才运行，不能由隔离测试推断已通过。正式包不含 UI 自检资源。`Tests/Content.cjs` 的浏览器表单测试另需 Playwright 和 Chrome，也不属于默认检查。
+
+图标的可恢复源是已提交的 `Assets/AppIcon.png`、`Scripts/MakeIcon.swift` 和 `Scripts/make_icns.py`。构建从 PNG 母版生成临时 ICNS 后放入 App，不依赖未跟踪的 `Assets/AppIcon.icns`。`AGENTS.md`、用户资料、备份和本地验证记录均不公开提交。
+
+资料保护与下载结果契约见 [恢复保护与下载回送](Docs/恢复保护与下载回送.md)。缺失或中断状态不会通过新建空库、空账本或清除历史解除保护。
 
 ## 版本
 
-版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.14。
+版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.15。
+
+V1.15：修复已有资料目录缺主库却被当作首次使用、账本遗失后重新接受旧 UUID 的问题。加入独立初始化证据、持久幂等水位、事务中断保护及明确恢复状态；有效旧主库和账本按原数据迁移，不生成默认空白替代品。补齐下载回送的请求关联、任务 ID 绑定、防重复、真实文件与摘要复核；只有用户确认后才接纳结果，不把打开窗口或任务接受当下载完成。无兼容下载提供方时保持明确不可用。图标直接从已提交母版重建，构建不依赖本地未跟踪资源。
 
 V1.14：接入跨 App 动作交接契约 GaoAction V1，支持“搞操作”、“搞桌面”等兄弟应用通过 .gaoaction 目录包调用已有网站（portal.openSite）、工作场景（portal.openWorkspace）、聚焦搜索（portal.focusSearch）以及建议添加网站（portal.proposeSite）。严格限制外部动作参数，新增网站仅打开预填编辑界面由用户确认后写入，绝不静默改写数据库；密码与敏感凭据绝不导出或通过命令行传递。接入可选“搞下载”（com.gaoseries.GaoXiaZai）交接（portal.prepareDownload），支持用户选择网址隐私复核（可剔除查询参数与片段），未安装时优雅降级并允许复制干净网址。新增“数据”菜单下的交接包手动打开、结果查看与授权网站/场景最小目录安全导出。继承原有所有网站、布局快照与钥匙串密码。
 

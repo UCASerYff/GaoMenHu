@@ -153,6 +153,7 @@ extension LibraryStore {
     private var snapshotDirectory: URL { directory.appendingPathComponent("Snapshots", isDirectory: true) }
 
     @discardableResult func checkpoint(_ library: Library, reason: String) throws -> LibrarySnapshot? {
+        if persistent { try requireWritable() }
         _ = try library.validated()
         let metadata = LibrarySnapshot(id: UUID().uuidString, createdAt: Date().timeIntervalSince1970,
                                        reason: String(reason.prefix(100)), siteCount: library.sites.count,

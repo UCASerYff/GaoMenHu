@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CoreFoundation
+import CryptoKit
 
 /// Errors deliberately contain a code and fixed UI wording, never request URLs,
 /// account details, profile paths, or arbitrary strings supplied by another app.
@@ -306,54 +307,137 @@ struct PortalRequestRecord: Codable, Equatable {
 
 enum PortalRequestReceipt { case new(PortalRequestRecord), repeated(PortalRequestRecord) }
 
-/// Private, bounded idempotency journal. This stores hashes and safe result codes,
-/// never full manifests, URL/query text, account data, or browser profile tokens.
-/// The caller serializes access on its main queue and calls beginExecution before
-/// any side effect. An executing entry recovered after a crash is never replayed.
+/// This evidence must live outside MenDao, Exchange, and Journal. Deleting an
+/// exchange folder must never make an old UUID look like a first installation.
+/// Tests inject an isolated store and never read or write the real preferences.
+protocol PortalLedgerEvidenceStore {
+    func read() throws -> Data?
+    func write(_ data: Data) throws
+}
+
+final class PortalLedgerPreferencesEvidence: PortalLedgerEvidenceStore {
+    private let defaults: UserDefaults
+    private let key = "GaoMenHu.PortalRequestLedgerEvidence.v1"
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    func read() throws -> Data? {
+        guard defaults.synchronize() else { throw PortalActionError.invalidLedger }
+        guard let object = defaults.object(forKey: key) else { return nil }
+        guard let data = object as? Data else { throw PortalActionError.invalidLedger }
+        return data
+    }
+    func write(_ data: Data) throws {
+        defaults.set(data, forKey: key)
+        guard defaults.synchronize(), defaults.data(forKey: key) == data else { throw PortalActionError.invalidLedger }
+    }
+}
+
+/// Private, bounded idempotency journal. A separate, durable generation and digest
+/// fence covers initialization, schema migration, every write, and crash recovery.
+/// An unfinished transaction blocks reception; it never creates an empty history.
+/// All source accesses are relative to a checked directory FD. The caller still
+/// serializes access on its main queue and persists beginExecution before effects.
 final class PortalRequestLedger {
-    private struct Envelope: Codable { let schemaVersion: Int; var records: [PortalRequestRecord] }
+    private struct Envelope: Codable {
+        let schemaVersion: Int
+        let ledgerID: String?
+        let generation: UInt64?
+        var records: [PortalRequestRecord]
+    }
+    private struct Evidence: Codable, Equatable {
+        let schemaVersion: Int
+        let ledgerID: String
+        let generation: UInt64
+        let phase: String
+        let ledgerSHA256: String
+    }
     let directory: URL
     let file: URL
-    private var records: [String: PortalRequestRecord]
+    private let evidence: PortalLedgerEvidenceStore
+    /// Deterministic, isolated fault injection. No request or external parameter
+    /// can install a checkpoint, and production callers always use the nil default.
+    private let checkpoint: ((String) throws -> Void)?
+    private var records: [String: PortalRequestRecord] = [:]
+    private var directoryFD: Int32 = -1
+    private var expected: Evidence?
+    private var usable = true
     static let maximumRecords = 10_000
+    private static let maximumBytes = 16 * 1_048_576
 
-    init(directory: URL, now: Date = Date()) throws {
+    init(directory: URL, now: Date = Date(), evidence: PortalLedgerEvidenceStore = PortalLedgerPreferencesEvidence(),
+         checkpoint: ((String) throws -> Void)? = nil) throws {
         self.directory = directory
         file = directory.appendingPathComponent("requests.json")
-        records = [:]
-        try Self.ensureDirectory(directory)
-        var info = stat()
-        if lstat(file.path, &info) == 0 {
-            guard (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(), info.st_nlink == 1,
-                  info.st_size <= 16 * 1_048_576, (info.st_mode & 0o077) == 0 else { throw PortalActionError.invalidLedger }
-            let handle = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard handle >= 0 else { throw PortalActionError.invalidLedger }
-            defer { close(handle) }
-            var opened = stat()
-            guard fstat(handle, &opened) == 0, opened.st_ino == info.st_ino, opened.st_dev == info.st_dev,
-                  opened.st_size == info.st_size else { throw PortalActionError.invalidLedger }
-            var data = Data(count: Int(opened.st_size))
-            let count = data.withUnsafeMutableBytes { buffer in Darwin.read(handle, buffer.baseAddress, buffer.count) }
-            guard count == data.count, let decoded = try? JSONDecoder().decode(Envelope.self, from: data),
-                  decoded.schemaVersion == 1, decoded.records.count <= Self.maximumRecords else { throw PortalActionError.invalidLedger }
-            for record in decoded.records {
-                guard Self.valid(record), records[record.requestID] == nil else { throw PortalActionError.invalidLedger }
-                records[record.requestID] = record
+        self.evidence = evidence
+        self.checkpoint = checkpoint
+        var initialized = false
+        defer { if !initialized, directoryFD >= 0 { close(directoryFD); directoryFD = -1 } }
+        do {
+            guard now.timeIntervalSince1970.isFinite else { throw PortalActionError.invalidLedger }
+            let external = try evidence.read().map(Self.decodeEvidence)
+            directoryFD = try Self.openDirectory(directory, create: false) ?? -1
+            if let external {
+                // Neither pending evidence nor missing folders/files can restart
+                // initialization. Even a matching staged file needs explicit repair.
+                guard external.phase == "ready", directoryFD >= 0 else { throw PortalActionError.invalidLedger }
+                let data = try readFile()
+                let decoded = try Self.decodeEnvelope(data)
+                guard decoded.schemaVersion == 2, decoded.ledgerID == external.ledgerID,
+                      decoded.generation == external.generation, Self.digest(data) == external.ledgerSHA256 else { throw PortalActionError.invalidLedger }
+                records = try Self.validatedRecords(decoded.records)
+                expected = external
+                try requireCurrent()
+            } else if directoryFD >= 0, try Self.entryExists(directoryFD, "requests.json") {
+                // A valid V1 ledger is the only supported evidence-less migration.
+                // A V2 file without its independent fence is not a fresh install.
+                let data = try readFile()
+                let decoded = try Self.decodeEnvelope(data)
+                guard decoded.schemaVersion == 1 else { throw PortalActionError.invalidLedger }
+                records = try Self.validatedRecords(decoded.records)
+                let id = UUID().uuidString.lowercased()
+                expected = Evidence(schemaVersion: 1, ledgerID: id, generation: 0, phase: "legacy", ledgerSHA256: Self.digest(data))
+                interruptExecuting(now: now)
+                try persist(records, operation: "migration", initializing: true)
+            } else {
+                // Even an empty existing V1 directory is ambiguous: it is
+                // indistinguishable from a completed ledger whose file was lost.
+                // Only an absent journal with no evidence/artifacts is first use.
+                guard directoryFD < 0 else { throw PortalActionError.invalidLedger }
+                try Self.rejectPriorExchangeArtifacts(directory)
+                expected = Evidence(schemaVersion: 1, ledgerID: UUID().uuidString.lowercased(), generation: 0,
+                                    phase: "new", ledgerSHA256: String(repeating: "0", count: 64))
+                try persist([:], operation: "initialization", initializing: true)
             }
-        } else if errno != ENOENT { throw PortalActionError.invalidLedger }
-        var recovered = false
-        for id in Array(records.keys) where records[id]?.state == .executing {
-            records[id]?.state = .failed; records[id]?.updatedAt = now
-            records[id]?.outcome = .failed("interrupted_execution")
-            recovered = true
+            if records.values.contains(where: { $0.state == .executing }) {
+                var recovered = records
+                for id in Array(recovered.keys) where recovered[id]?.state == .executing {
+                    var record = recovered[id]!
+                    record.state = .failed; record.updatedAt = max(now, record.updatedAt)
+                    record.outcome = .failed("interrupted_execution"); recovered[id] = record
+                }
+                try persist(recovered, operation: "recovery"); records = recovered
+            }
+            initialized = true
+        } catch {
+            usable = false
+            throw PortalActionError.invalidLedger
         }
-        if recovered { try persist(records) }
     }
 
-    func record(requestID: String) -> PortalRequestRecord? { records[requestID.lowercased()] }
-    var allRecords: [PortalRequestRecord] { records.values.sorted { $0.receivedAt > $1.receivedAt } }
+    deinit { if directoryFD >= 0 { close(directoryFD) } }
+
+    func verifyAvailability() throws { try requireCurrent() }
+
+    func record(requestID: String) -> PortalRequestRecord? {
+        guard (try? requireCurrent()) != nil else { return nil }
+        return records[requestID.lowercased()]
+    }
+    var allRecords: [PortalRequestRecord] {
+        guard (try? requireCurrent()) != nil else { return [] }
+        return records.values.sorted { $0.receivedAt > $1.receivedAt }
+    }
 
     func receive(requestID: String, fingerprint: String, action: String, now: Date = Date()) throws -> PortalRequestReceipt {
+        try requireCurrent()
         let id = requestID.lowercased()
         guard UUID(uuidString: id) != nil, Self.isSHA256(fingerprint), PortalActionPlanner.actionNames.contains(action), now.timeIntervalSince1970.isFinite else { throw PortalActionError.invalidParameters }
         if let existing = records[id] {
@@ -368,8 +452,7 @@ final class PortalRequestLedger {
         return .new(next)
     }
 
-    /// Call only after the visible, specific confirmation. Repeated approved or
-    /// received entries are displayed as records; they do not grant a new run.
+    /// Repeated approved or received records never grant an additional execution.
     @discardableResult func approve(requestID: String, now: Date = Date()) throws -> PortalRequestRecord {
         try transition(requestID, from: [.received], to: .approved, outcome: .awaitingUser, now: now)
     }
@@ -397,73 +480,279 @@ final class PortalRequestLedger {
     }
 
     private func transition(_ id: String, from: Set<PortalRequestState>, to: PortalRequestState, outcome: PortalActionOutcome, now: Date) throws -> PortalRequestRecord {
+        try requireCurrent()
         let key = id.lowercased()
         guard var record = records[key], from.contains(record.state), now.timeIntervalSince1970.isFinite,
-              now >= record.receivedAt, Self.validOutcome(outcome) else { throw PortalActionError.invalidTransition }
+              now >= record.updatedAt, Self.validOutcome(outcome) else { throw PortalActionError.invalidTransition }
         record.state = to; record.updatedAt = now; record.outcome = outcome
+        guard Self.valid(record) else { throw PortalActionError.invalidTransition }
         var updated = records; updated[key] = record
         try persist(updated); records = updated
         return record
     }
 
-    private func persist(_ value: [String: PortalRequestRecord]) throws {
-        try Self.ensureDirectory(directory)
-        if FileManager.default.fileExists(atPath: file.path) {
-            var info = stat()
-            guard lstat(file.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(),
-                  info.st_nlink == 1, (info.st_mode & 0o077) == 0 else { throw PortalActionError.invalidLedger }
+    private func interruptExecuting(now: Date) {
+        for id in Array(records.keys) where records[id]?.state == .executing {
+            var record = records[id]!
+            record.state = .failed; record.updatedAt = max(now, record.updatedAt)
+            record.outcome = .failed("interrupted_execution"); records[id] = record
         }
+    }
+
+    private func requireCurrent() throws {
+        do {
+            guard usable, let expected, expected.phase == "ready", directoryFD >= 0,
+                  let current = try evidence.read().map(Self.decodeEvidence), current == expected else { throw PortalActionError.invalidLedger }
+            try requireDirectoryIdentity()
+            guard Self.digest(try readFile()) == expected.ledgerSHA256 else { throw PortalActionError.invalidLedger }
+        } catch {
+            usable = false
+            throw PortalActionError.invalidLedger
+        }
+    }
+
+    private func persist(_ value: [String: PortalRequestRecord], operation: String = "write", initializing: Bool = false) throws {
+        var locked = false
+        defer { if locked { flock(directoryFD, LOCK_UN) } }
+        do {
+            guard usable, let previous = expected, previous.generation < UInt64.max else { throw PortalActionError.invalidLedger }
+            if directoryFD >= 0 {
+                guard flock(directoryFD, LOCK_EX | LOCK_NB) == 0 else { throw PortalActionError.invalidLedger }
+                locked = true
+            }
+            if !initializing { try requireCurrent() }
+            else if previous.phase == "legacy" {
+                guard try evidence.read() == nil else { throw PortalActionError.invalidLedger }
+                try requireDirectoryIdentity()
+                guard Self.digest(try readFile()) == previous.ledgerSHA256 else { throw PortalActionError.invalidLedger }
+            } else {
+                guard previous.phase == "new", try evidence.read() == nil else { throw PortalActionError.invalidLedger }
+                if directoryFD >= 0, try Self.hasEntries(directoryFD) { throw PortalActionError.invalidLedger }
+            }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(Envelope(schemaVersion: 2, ledgerID: previous.ledgerID,
+                generation: previous.generation + 1, records: value.values.sorted { $0.requestID < $1.requestID }))
+            guard data.count <= Self.maximumBytes else { throw PortalActionError.ledgerFull }
+            let pending = Evidence(schemaVersion: 1, ledgerID: previous.ledgerID, generation: previous.generation + 1,
+                                   phase: operation, ledgerSHA256: Self.digest(data))
+            try saveEvidence(pending)
+            try checkpoint?(operation + ".prepared")
+            if directoryFD < 0 { directoryFD = try Self.openDirectory(directory, create: true) ?? -1 }
+            if !locked {
+                guard directoryFD >= 0, flock(directoryFD, LOCK_EX | LOCK_NB) == 0 else { throw PortalActionError.invalidLedger }
+                locked = true
+            }
+            guard let currentFence = try evidence.read().map(Self.decodeEvidence), currentFence == pending else { throw PortalActionError.invalidLedger }
+            try requireDirectoryIdentity()
+            let staging = ".requests-" + UUID().uuidString.lowercased()
+            let descriptor = openat(directoryFD, staging, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard descriptor >= 0 else { throw PortalActionError.invalidLedger }
+            defer { close(descriptor); unlinkat(directoryFD, staging, 0) }
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    let written = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if written < 0 && errno == EINTR { continue }
+                    guard written > 0 else { throw PortalActionError.invalidLedger }
+                    offset += written
+                }
+            }
+            guard fsync(descriptor) == 0 else { throw PortalActionError.invalidLedger }
+            try checkpoint?(operation + ".staged")
+            try requireDirectoryIdentity()
+            if previous.phase == "new" {
+                guard !(try Self.entryExists(directoryFD, "requests.json")) else { throw PortalActionError.invalidLedger }
+            } else {
+                guard Self.digest(try readFile()) == previous.ledgerSHA256 else { throw PortalActionError.invalidLedger }
+            }
+            guard renameat(directoryFD, staging, directoryFD, "requests.json") == 0 else { throw PortalActionError.invalidLedger }
+            try checkpoint?(operation + ".renamed")
+            guard fsync(directoryFD) == 0 else { throw PortalActionError.invalidLedger }
+            try checkpoint?(operation + ".synced")
+            try requireDirectoryIdentity()
+            guard try readFile() == data else { throw PortalActionError.invalidLedger }
+            let ready = Evidence(schemaVersion: pending.schemaVersion, ledgerID: pending.ledgerID,
+                                 generation: pending.generation, phase: "ready", ledgerSHA256: pending.ledgerSHA256)
+            try saveEvidence(ready)
+            try checkpoint?(operation + ".committed")
+            expected = ready
+        } catch {
+            // The object is also fenced after errors. Keeping an older in-memory
+            // dictionary alive cannot bypass an interrupted on-disk transaction.
+            usable = false
+            throw (error as? PortalActionError) ?? PortalActionError.invalidLedger
+        }
+    }
+
+    private func saveEvidence(_ value: Evidence) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(Envelope(schemaVersion: 1, records: value.values.sorted { $0.requestID < $1.requestID }))
-        guard data.count <= 16 * 1_048_576 else { throw PortalActionError.ledgerFull }
-        let staging = directory.appendingPathComponent(".requests-" + UUID().uuidString)
-        let descriptor = open(staging.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else { throw PortalActionError.invalidLedger }
-        defer { close(descriptor); try? FileManager.default.removeItem(at: staging) }
-        var offset = 0
-        try data.withUnsafeBytes { bytes in
+        let data = try encoder.encode(value)
+        try evidence.write(data)
+        guard try evidence.read() == data else { throw PortalActionError.invalidLedger }
+    }
+
+    private func requireDirectoryIdentity() throws {
+        guard directoryFD >= 0, let current = try Self.openDirectory(directory, create: false) else { throw PortalActionError.invalidLedger }
+        defer { close(current) }
+        var oldInfo = stat(), currentInfo = stat()
+        guard fstat(directoryFD, &oldInfo) == 0, fstat(current, &currentInfo) == 0,
+              oldInfo.st_ino == currentInfo.st_ino, oldInfo.st_dev == currentInfo.st_dev else { throw PortalActionError.invalidLedger }
+    }
+
+    private func readFile() throws -> Data {
+        var info = stat()
+        guard directoryFD >= 0, fstatat(directoryFD, "requests.json", &info, AT_SYMLINK_NOFOLLOW) == 0,
+              Self.privateFile(info) else { throw PortalActionError.invalidLedger }
+        let handle = openat(directoryFD, "requests.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard handle >= 0 else { throw PortalActionError.invalidLedger }
+        defer { close(handle) }
+        var opened = stat()
+        guard fstat(handle, &opened) == 0, Self.privateFile(opened), opened.st_ino == info.st_ino,
+              opened.st_dev == info.st_dev, opened.st_size == info.st_size else { throw PortalActionError.invalidLedger }
+        var data = Data(count: Int(opened.st_size))
+        try data.withUnsafeMutableBytes { bytes in
+            var offset = 0
             while offset < bytes.count {
-                let written = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                if written < 0 && errno == EINTR { continue }
-                guard written > 0 else { throw PortalActionError.invalidLedger }
-                offset += written
+                let amount = Darwin.read(handle, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if amount < 0 && errno == EINTR { continue }
+                guard amount > 0 else { throw PortalActionError.invalidLedger }
+                offset += amount
             }
         }
-        guard fsync(descriptor) == 0, rename(staging.path, file.path) == 0 else { throw PortalActionError.invalidLedger }
-        let directoryDescriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard directoryDescriptor >= 0 else { throw PortalActionError.invalidLedger }
-        defer { close(directoryDescriptor) }
-        guard fsync(directoryDescriptor) == 0 else { throw PortalActionError.invalidLedger }
+        var after = stat()
+        guard fstat(handle, &after) == 0, Self.privateFile(after), after.st_ino == opened.st_ino,
+              after.st_dev == opened.st_dev, after.st_size == opened.st_size,
+              after.st_mtimespec.tv_sec == opened.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == opened.st_mtimespec.tv_nsec,
+              after.st_ctimespec.tv_sec == opened.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == opened.st_ctimespec.tv_nsec else { throw PortalActionError.invalidLedger }
+        return data
     }
 
-    private static func ensureDirectory(_ directory: URL) throws {
-        // Reject symlinks in every existing ancestor, not only the final component.
-        // Keep the actual absolute spelling: on macOS standardizedFileURL can
-        // abbreviate an existing /private/tmp path through the /tmp symlink.
-        var cursor = directory
-        while cursor.path != "/" {
-            var info = stat()
-            if lstat(cursor.path, &info) == 0 {
-                guard (info.st_mode & S_IFMT) == S_IFDIR else { throw PortalActionError.invalidLedger }
-            } else if errno != ENOENT { throw PortalActionError.invalidLedger }
-            cursor.deleteLastPathComponent()
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        var info = stat()
-        guard lstat(directory.path, &info) == 0, info.st_uid == getuid(), (info.st_mode & 0o077) == 0 else { throw PortalActionError.invalidLedger }
+    private static func privateFile(_ info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFREG && info.st_uid == getuid() && info.st_nlink == 1
+            && info.st_size > 0 && info.st_size <= maximumBytes && (info.st_mode & 0o7777) == 0o600
     }
+    private static func entryExists(_ descriptor: Int32, _ name: String) throws -> Bool {
+        var info = stat()
+        if fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { return true }
+        guard errno == ENOENT else { throw PortalActionError.invalidLedger }
+        return false
+    }
+    private static func hasEntries(_ descriptor: Int32) throws -> Bool {
+        let copied = dup(descriptor)
+        guard copied >= 0 else { throw PortalActionError.invalidLedger }
+        guard let stream = fdopendir(copied) else { close(copied); throw PortalActionError.invalidLedger }
+        defer { closedir(stream) }
+        rewinddir(stream)
+        errno = 0
+        while let entry = readdir(stream) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
+            }
+            if name != ".", name != ".." { return true }
+        }
+        guard errno == 0 else { throw PortalActionError.invalidLedger }
+        return false
+    }
+
+    /// Walk without following any symlink, including parent components. Creation
+    /// is allowed only after the independent pending fence was durably recorded.
+    private static func openDirectory(_ url: URL, create: Bool) throws -> Int32? {
+        guard url.isFileURL, url.path.hasPrefix("/"), url.path != "/" else { throw PortalActionError.invalidLedger }
+        let components = url.path.split(separator: "/").map(String.init)
+        guard !components.contains("."), !components.contains("..") else { throw PortalActionError.invalidLedger }
+        var current = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard current >= 0 else { throw PortalActionError.invalidLedger }
+        do {
+            for (index, component) in components.enumerated() {
+                var prior = stat()
+                if fstatat(current, component, &prior, AT_SYMLINK_NOFOLLOW) != 0 {
+                    guard errno == ENOENT else { throw PortalActionError.invalidLedger }
+                    if !create { close(current); return nil }
+                    guard mkdirat(current, component, 0o700) == 0,
+                          fstatat(current, component, &prior, AT_SYMLINK_NOFOLLOW) == 0 else { throw PortalActionError.invalidLedger }
+                }
+                guard (prior.st_mode & S_IFMT) == S_IFDIR else { throw PortalActionError.invalidLedger }
+                let next = openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard next >= 0 else { throw PortalActionError.invalidLedger }
+                var opened = stat()
+                guard fstat(next, &opened) == 0, opened.st_ino == prior.st_ino, opened.st_dev == prior.st_dev,
+                      index != components.count - 1 || (opened.st_uid == getuid() && (opened.st_mode & 0o7777) == 0o700) else {
+                    close(next); throw PortalActionError.invalidLedger
+                }
+                close(current); current = next
+            }
+            return current
+        } catch { close(current); throw PortalActionError.invalidLedger }
+    }
+
+    private static func rejectPriorExchangeArtifacts(_ directory: URL) throws {
+        // V1 wrote contexts before dispatch. Retained contexts/receipts are enough
+        // to make a missing legacy ledger ambiguous, even before V2 evidence exists.
+        guard directory.lastPathComponent == "Journal" else { return }
+        let parent = directory.deletingLastPathComponent()
+        guard let descriptor = try openDirectory(parent, create: false) else { return }
+        defer { close(descriptor) }
+        for name in ["Contexts", "Incoming", "Outgoing"] where try entryExists(descriptor, name) {
+            throw PortalActionError.invalidLedger
+        }
+    }
+
+    private static func decodeEvidence(_ data: Data) throws -> Evidence {
+        guard data.count <= 4096, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(raw.keys) == ["schemaVersion", "ledgerID", "generation", "phase", "ledgerSHA256"],
+              let value = try? JSONDecoder().decode(Evidence.self, from: data), value.schemaVersion == 1,
+              UUID(uuidString: value.ledgerID) != nil, value.ledgerID == value.ledgerID.lowercased(),
+              isSHA256(value.ledgerSHA256), ["ready", "initialization", "migration", "write", "recovery"].contains(value.phase),
+              value.generation > 0 else { throw PortalActionError.invalidLedger }
+        return value
+    }
+    private static func decodeEnvelope(_ data: Data) throws -> Envelope {
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = try? JSONDecoder().decode(Envelope.self, from: data), value.schemaVersion == 1 || value.schemaVersion == 2,
+              Set(raw.keys) == (value.schemaVersion == 1 ? ["schemaVersion", "records"] : ["schemaVersion", "ledgerID", "generation", "records"]),
+              value.schemaVersion == 1 || (value.ledgerID.flatMap(UUID.init(uuidString:)) != nil && value.ledgerID == value.ledgerID?.lowercased() && (value.generation ?? 0) > 0),
+              value.records.count <= maximumRecords else { throw PortalActionError.invalidLedger }
+        return value
+    }
+    private static func validatedRecords(_ values: [PortalRequestRecord]) throws -> [String: PortalRequestRecord] {
+        var result: [String: PortalRequestRecord] = [:]
+        for record in values {
+            guard valid(record), result[record.requestID] == nil else { throw PortalActionError.invalidLedger }
+            result[record.requestID] = record
+        }
+        return result
+    }
+    private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
     private static func valid(_ record: PortalRequestRecord) -> Bool {
-        UUID(uuidString: record.requestID) != nil && record.requestID == record.requestID.lowercased() && isSHA256(record.fingerprint)
-        && PortalActionPlanner.actionNames.contains(record.action) && record.receivedAt.timeIntervalSince1970.isFinite
-        && record.updatedAt.timeIntervalSince1970.isFinite && record.updatedAt >= record.receivedAt && validOutcome(record.outcome)
+        guard UUID(uuidString: record.requestID) != nil, record.requestID == record.requestID.lowercased(), isSHA256(record.fingerprint),
+              PortalActionPlanner.actionNames.contains(record.action), record.receivedAt.timeIntervalSince1970.isFinite,
+              record.updatedAt.timeIntervalSince1970.isFinite, record.updatedAt >= record.receivedAt, validOutcome(record.outcome) else { return false }
+        switch record.state {
+        case .received, .approved: return record.outcome == .awaitingUser
+        case .executing: return record.outcome.status == .pending && [.awaitingUser, .accepted].contains(record.outcome.workflowState)
+        case .completed: return [.completed, .partial, .pending].contains(record.outcome.status)
+        case .cancelled: return record.outcome.status == .cancelled
+        case .failed: return [.failed, .unsupported].contains(record.outcome.status)
+        }
     }
     private static func validOutcome(_ outcome: PortalActionOutcome) -> Bool {
         func code(_ value: String?) -> Bool {
             guard let value else { return true }
             return !value.isEmpty && value.utf8.count <= 80 && value.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 95 }
         }
-        return code(outcome.errorCode) && (outcome.sites?.count ?? 0) <= 20
+        let pair: Bool
+        switch outcome.status {
+        case .pending: pair = [.awaitingUser, .accepted, .handedOff].contains(outcome.workflowState)
+        case .completed: pair = outcome.workflowState == .opened
+        case .partial: pair = [.opened, .accepted].contains(outcome.workflowState)
+        case .cancelled: pair = outcome.workflowState == .cancelled
+        case .failed: pair = outcome.workflowState == .failed
+        case .unsupported: pair = outcome.workflowState == .unsupported
+        }
+        return pair && code(outcome.errorCode) && (outcome.sites?.count ?? 0) <= 20
             && (outcome.sites ?? []).allSatisfy { !$0.siteID.isEmpty && $0.siteID.count <= 256 && code($0.errorCode) }
     }
     private static func isSHA256(_ value: String) -> Bool {

@@ -1,6 +1,12 @@
 import Foundation
 import Darwin
 
+private final class ActionTestEvidence: PortalLedgerEvidenceStore {
+    var value: Data?
+    func read() throws -> Data? { value }
+    func write(_ data: Data) throws { value = data }
+}
+
 @main struct PortalActionsTests {
     static func main() throws {
         var count = 0
@@ -135,7 +141,8 @@ import Darwin
         let temporary = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("mendao-portal-actions-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: temporary) }
-        let ledger = try PortalRequestLedger(directory: temporary.appendingPathComponent("ledger"), now: now)
+        let evidence = ActionTestEvidence()
+        let ledger = try PortalRequestLedger(directory: temporary.appendingPathComponent("ledger"), now: now, evidence: evidence)
         if case .new(let record) = try ledger.receive(requestID: id, fingerprint: hash, action: "portal.openSite", now: now) {
             check("new request starts awaiting visible confirmation", record.state == .received && record.outcome == .awaitingUser)
         } else { fatalError("Expected new request") }
@@ -154,7 +161,7 @@ import Darwin
         _ = try ledger.finish(requestID: id, outcome: completed, now: now)
         rejects("completed request cannot execute twice", code: "invalid_request_transition") { _ = try ledger.beginExecution(requestID: id, now: now) }
         rejects("completed request cannot be reapproved", code: "invalid_request_transition") { _ = try ledger.approve(requestID: id, now: now) }
-        let reloaded = try PortalRequestLedger(directory: ledger.directory, now: now)
+        let reloaded = try PortalRequestLedger(directory: ledger.directory, now: now, evidence: evidence)
         if case .repeated(let record) = try reloaded.receive(requestID: id, fingerprint: hash, action: "portal.openSite", now: now) {
             check("completed repeat after relaunch returns original result", record.state == .completed && record.outcome == completed)
         } else { fatalError("Expected persisted repeated request") }
@@ -168,9 +175,9 @@ import Darwin
         _ = try reloaded.approve(requestID: interruptedID, now: now)
         _ = try reloaded.beginExecution(requestID: interruptedID, now: now)
         _ = try reloaded.markAwaitingUser(requestID: interruptedID, now: now)
-        let recovered = try PortalRequestLedger(directory: ledger.directory, now: now.addingTimeInterval(1))
+        let recovered = try PortalRequestLedger(directory: ledger.directory, now: now.addingTimeInterval(1), evidence: evidence)
         check("crash in editor never replays side effect", recovered.record(requestID: interruptedID)?.state == .failed && recovered.record(requestID: interruptedID)?.outcome.errorCode == "interrupted_execution")
-        let again = try PortalRequestLedger(directory: ledger.directory, now: now.addingTimeInterval(2))
+        let again = try PortalRequestLedger(directory: ledger.directory, now: now.addingTimeInterval(2), evidence: evidence)
         check("crash recovery persisted", again.record(requestID: interruptedID)?.outcome.errorCode == "interrupted_execution")
         let cancelledID = UUID().uuidString
         _ = try again.receive(requestID: cancelledID, fingerprint: hash, action: "portal.focusSearch", now: now)
@@ -189,18 +196,18 @@ import Darwin
         check("ledger history includes only real records", again.allRecords.count == 5)
         let intact = try Data(contentsOf: ledger.file)
         try Data("{malformed".utf8).write(to: ledger.file)
-        rejects("corrupt ledger not treated as empty", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now) }
+        rejects("corrupt ledger not treated as empty", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now, evidence: evidence) }
         check("corrupt ledger retained unchanged", try Data(contentsOf: ledger.file) == Data("{malformed".utf8))
         try intact.write(to: ledger.file)
         let symbolic = temporary.appendingPathComponent("symbolic")
         try FileManager.default.createSymbolicLink(at: symbolic, withDestinationURL: ledger.directory)
-        rejects("ledger symlink directory rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: symbolic, now: now) }
+        rejects("ledger symlink directory rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: symbolic, now: now, evidence: evidence) }
         let hardLink = temporary.appendingPathComponent("hardlink")
         check("create isolated hardlink fixture", link(ledger.file.path, hardLink.path) == 0)
-        rejects("hardlinked ledger rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now) }
+        rejects("hardlinked ledger rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now, evidence: evidence) }
         try FileManager.default.removeItem(at: hardLink)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: ledger.file.path)
-        rejects("public ledger rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now) }
+        rejects("public ledger rejected", code: "invalid_request_ledger") { _ = try PortalRequestLedger(directory: ledger.directory, now: now, evidence: evidence) }
 
         let opened = PortalSiteOutcome(siteID: "seed-0", workflowState: .opened, errorCode: nil)
         let failed = PortalSiteOutcome(siteID: "seed-1", workflowState: .failed, errorCode: "browser_open_failed")

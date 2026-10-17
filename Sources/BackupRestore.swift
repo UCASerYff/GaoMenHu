@@ -14,6 +14,7 @@ extension LibraryStore {
     /// A pre-restore snapshot is always retained; other local/imported snapshots
     /// share the remaining nine slots, newest first. Local IDs win collisions.
     func installBackup(_ payload: FullBackup.Payload, current: Library) throws -> Library {
+        if persistent { try requireWritable() }
         guard payload.manifest.appID == FullBackup.appID, payload.manifest.format == 1,
               payload.snapshots.count <= FullBackup.maximumSnapshots else {
             throw RestoreFiles.failure("完整资料身份或快照数量无效。")
@@ -62,6 +63,7 @@ extension LibraryStore {
         }
         if !persistent { transientSnapshots = snapshots; return restored }
         try RestoreFiles.commit(library: bytes, snapshots: snapshots, baseline: baseline, directory: directory, expected: current)
+        try adoptCommittedLibrary(restored)
         return restored
     }
 }

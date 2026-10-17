@@ -26,5 +26,6 @@ manual.write_text(text)
 readme = root / "README.md"
 text = readme.read_text().replace("# 搞门户 V" + old, "# 搞门户 V" + new)
 text = text.replace("GaoMenHu-" + old + ".dmg", "GaoMenHu-" + new + ".dmg")
+text = text.replace("当前版本 V" + old, "当前版本 V" + new)
 readme.write_text(text)
 print(f"搞门户 V{old} → V{new}")

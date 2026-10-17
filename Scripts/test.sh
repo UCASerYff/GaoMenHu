@@ -38,5 +38,18 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sourc
   "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Tests/PortalActionsTests.swift" \
   -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-actions"
 "$TEST_DIR/portal-actions"
+swiftc -swift-version 5 -D DEBUG_TESTING -module-cache-path "$TEST_DIR/cache" \
+  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Tests/LibraryInitializationTests.swift" -o "$TEST_DIR/library-initialization"
+"$TEST_DIR/library-initialization"
+swiftc -swift-version 5 -D DEBUG_TESTING -module-cache-path "$TEST_DIR/cache" \
+  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/PortalActions.swift" \
+  "$PROJECT_DIR/Tests/PortalLedgerRecoveryTests.swift" -o "$TEST_DIR/portal-ledger-recovery"
+"$TEST_DIR/portal-ledger-recovery"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" \
+  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
+  "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" \
+  "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Tests/PortalDownloadResultsTests.swift" \
+  -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-download-results"
+"$TEST_DIR/portal-download-results"
 python3 "$PROJECT_DIR/Scripts/backup_verify.py" self-test
 

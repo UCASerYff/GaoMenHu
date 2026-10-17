@@ -187,6 +187,7 @@ extension AppDelegate: NSToolbarDelegate {
         NSWorkspace.shared.open(store.directory)
     }
     @objc func exportModuleBackup() {
+        guard testMode || store.isWritable else { settingsModel?.status = "资料处于恢复保护状态，不能导出空白界面作为模块备份。原资料保持不变。"; return }
         guard settingsModel?.busy != true else { return }
         openNativeSettings()
         let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "搞门户-模块备份.json"
@@ -195,6 +196,7 @@ extension AppDelegate: NSToolbarDelegate {
             defer { self.settingsModel?.busy = false }
             guard result == .OK, let url = panel.url else { return }
             do {
+                try self.store.requireWritable()
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 try encoder.encode(self.library).write(to: url, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -203,6 +205,7 @@ extension AppDelegate: NSToolbarDelegate {
         }
     }
     @objc func exportFullBackup() {
+        guard testMode || store.isWritable else { settingsModel?.status = "主库处于恢复保护状态，不能把空白界面导出为资料。原文件仍在原目录。"; return }
         guard settingsModel?.busy != true else { return }
         openNativeSettings()
         let panel = NSSavePanel(); panel.allowedContentTypes = [.zip]; panel.nameFieldStringValue = FullBackup.defaultFilename
@@ -210,6 +213,7 @@ extension AppDelegate: NSToolbarDelegate {
         panel.beginSheetModal(for: settingsWindow!) { result in
             guard result == .OK, let url = panel.url else { self.settingsModel?.busy = false; return }
             do {
+                try self.store.requireWritable()
                 // Capture current library; strictly read/validate every snapshot off the UI thread.
                 let library = self.library, version = self.version
                 let snapshotDirectory = self.store.persistent ? self.store.directory.appendingPathComponent("Snapshots", isDirectory: true) : nil
@@ -234,7 +238,7 @@ extension AppDelegate: NSToolbarDelegate {
     @objc func restoreFullBackup() {
         guard settingsModel?.busy != true else { return }
         openNativeSettings()
-        guard testMode || store.persistent else { settingsModel?.status = "当前处于只读模式，原资料已保留；请先解决数据读取问题再恢复。"; return }
+        guard testMode || (store.persistent && store.isWritable) else { settingsModel?.status = "当前处于恢复保护模式，原资料已保留；请先检查主库及初始化证据，再恢复已核验的备份。"; return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip]; panel.allowsMultipleSelection = false
         settingsModel?.busy = true
         panel.beginSheetModal(for: settingsWindow!) { result in

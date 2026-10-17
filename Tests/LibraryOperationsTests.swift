@@ -108,6 +108,7 @@ import Foundation
         check("workspace limited to 20 sites", (try? bad.validated()) == nil)
 
         let store = LibraryStore(directory: temporary.appendingPathComponent("real"))
+        try store.save(current)
         for index in 0..<12 { _ = try store.checkpoint(current, reason: "Operation \(index)") }
         let snapshots = try store.snapshots()
         check("ten snapshot retention", snapshots.count == 10)

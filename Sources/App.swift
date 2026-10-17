@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var window: NSWindow!
     var web: WKWebView!
     var library: Library = .empty() { didSet {
-        if store?.persistent == true { launchHistory.prune(siteIDs: Set(library.sites.map(\.id))) }
+        if store?.persistent == true, store?.isWritable == true { launchHistory.prune(siteIDs: Set(library.sites.map(\.id))) }
         floatingLauncher?.refresh()
     } }
     var store: LibraryStore!
@@ -50,14 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         var loadError: String?
         do {
             library = try store.load(defaultBrowsers: installedBrowsers().map { $0.id })
-            if !testMode && !FileManager.default.fileExists(atPath: store.file.path) { try store.save(library) }
         }
-        catch { store = LibraryStore(persistent: false); library = .empty(); loadError = "已有数据读取失败，暂时进入只读空白界面。原始数据已保留。\n\(error.localizedDescription)" }
+        catch { library = .empty(); loadError = "已有数据读取失败，已进入恢复保护状态并停止资料写入。原始数据、快照、附件和钥匙串已保留。\n\(error.localizedDescription)" }
         applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
         portalCoordinator = PortalExchangeCoordinator(app: self)
-        floatingLauncher = FloatingLauncherController(app: self)
-        floatingLauncher?.start()
-        if !testMode {
+        if testMode || store.isWritable {
+            floatingLauncher = FloatingLauncherController(app: self)
+            floatingLauncher?.start()
+        }
+        if !testMode && store.isWritable {
             do {
                 try registerNativeHosts()
                 let bridge = BridgeServer(expectedHostPath: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/MenDaoBridge").path)
@@ -115,8 +116,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window.contentView = web
         window.collectionBehavior = [.fullScreenPrimary]
         let frameName = testMode ? "MenDao.Test" : "MenDao.Main"
-        window.setFrameAutosaveName(frameName)
-        if !window.setFrameUsingName(frameName) { window.center() }
+        if testMode || store.isWritable {
+            window.setFrameAutosaveName(frameName)
+            if !window.setFrameUsingName(frameName) { window.center() }
+        } else { window.center() }
         web.loadFileURL(resources.appendingPathComponent("index.html"), allowingReadAccessTo: resources)
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
@@ -205,6 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func state() -> [String: Any] {
         let value = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(library))) ?? [:]
         return ["library": value, "version": version, "unlocked": vault.unlocked,
+                "recoveryRequired": !testMode && !store.isWritable,
+                "recoveryMessage": "资料恢复保护：主库缺失、不可读或初始化未完成。没有生成默认网站，也没有覆盖原资料；请保留原目录和备份，先核验并恢复完整主库。",
                 "browsers": Browser.catalog.map { browser -> [String: Any] in
                     ["id": browser.id, "name": browser.name, "installed": installedBrowsers().contains(browser), "supportsFill": browser.supportsFill]
                 }, "profiles": activeClients().map { ["id": $0.id, "browser": $0.browser, "label": $0.label] },
@@ -230,8 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard message.frameInfo.isMainFrame, message.frameInfo.request.url?.isFileURL == true,
               let body = message.body as? [String: Any], let id = body["id"] as? String, let action = body["action"] as? String else { return }
         let data = body["data"] as? [String: Any] ?? [:]
+        if !testMode && !store.isWritable && !["state", "lock", "openSettings", "quit"].contains(action) {
+            reply(id, ["ok": false, "error": "当前处于资料恢复保护状态，未执行写入或启动。原文件仍保留，请先恢复已核验的完整资料。"])
+            return
+        }
         lastInteraction = Date()
         do {
+            if !testMode && !["state", "lock", "openSettings", "quit"].contains(action) { try store.requireWritable() }
             switch action {
             case "state": reply(id, ["ok": true, "state": state()])
             case "layout":
@@ -313,6 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let perform = {
             var staged: [String] = []
             do {
+                try self.store.requireWritable()
                 var object = siteObject
                 var accounts = object["accounts"] as? [[String: Any]] ?? []
                 var passwords: [String: String] = [:]
@@ -381,6 +392,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         vault.authenticate("删除搞门户保存的网站账号") { ok, error in
             guard ok else { self.reply(responseID, ["ok": false, "error": error ?? "已取消。"]); return }
             do {
+                try self.store.requireWritable()
+                guard let index = self.library.sites.firstIndex(where: { $0.id == siteID }),
+                      self.library.sites[index].accounts.contains(where: { $0.id == accountID }) else {
+                    throw AppError.message("认证期间账号或网站发生变化，未删除任何凭据。")
+                }
                 var next = self.library
                 next.sites[index].accounts.removeAll { $0.id == accountID }
                 if next.sites[index].defaultAccount == accountID { next.sites[index].defaultAccount = next.sites[index].accounts.first?.id }
@@ -662,6 +678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         panel.beginSheetModal(for: window) { result in
             guard result == .OK, let url = panel.url else { self.reply(responseID, ["ok": false, "cancelled": true]); return }
             do {
+                try self.store.requireWritable()
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 try encoder.encode(self.library).write(to: url, options: .atomic)
                 self.reply(responseID, ["ok": true, "message": "已导出网站、排列和账号信息。密码留在本机钥匙串，未导出。"])
