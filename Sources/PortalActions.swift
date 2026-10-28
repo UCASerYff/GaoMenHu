@@ -33,6 +33,56 @@ struct PortalRuntime {
     var connectedProfiles: [String: Set<String>]
 }
 
+enum PortalIncomingRoute: Equatable { case request, downloadResult }
+
+/// Each package kind must consult only its own durable history. A missing old
+/// action ledger cannot authorize an action, or disable an independently known
+/// download result. The closures perform the current on-disk evidence checks.
+enum PortalExchangeRouting {
+    static func route(kind: String, inReplyTo: String?,
+                      requireRequestLedger: () throws -> Void,
+                      requireDownloadRequest: (String) throws -> Void) throws -> PortalIncomingRoute {
+        switch kind {
+        case "request":
+            try requireRequestLedger()
+            return .request
+        case "result":
+            guard let reply = inReplyTo, UUID(uuidString: reply) != nil else {
+                throw PortalActionError(code: "unmatched_download_result", message: "下载结果缺少有效的原请求编号，未接纳文件。")
+            }
+            try requireDownloadRequest(reply.lowercased())
+            return .downloadResult
+        default: throw PortalActionError.invalidParameters
+        }
+    }
+}
+
+struct PortalExchangeHistoryAvailability {
+    let requestsReadable: Bool
+    let downloadsReadable: Bool
+    var restrictions: [String] {
+        var values: [String] = []
+        if !requestsReadable {
+            values.append("网站动作历史恢复受限：账本或独立证据不可用，已停止读取和执行。原历史保持不变，不能解释为没有记录。")
+        }
+        if !downloadsReadable {
+            values.append("下载交接历史恢复受限：账本或独立证据不可用，已停止发送和接收。原历史保持不变，不能解释为没有结果。")
+        }
+        return values
+    }
+    var emptyMessage: String {
+        guard !restrictions.isEmpty else { return "还没有跨 App 交接记录。" }
+        var values = restrictions
+        if requestsReadable { values.append("可读取的网站动作历史当前没有记录。") }
+        if downloadsReadable { values.append("可读取的下载交接历史当前没有记录。") }
+        values.append("请核对并恢复受限类别的完整账本与对应独立证据。")
+        return values.joined(separator: "\n\n")
+    }
+    var readableHistoryNotice: String {
+        restrictions.isEmpty ? "" : "\n\n" + restrictions.joined(separator: "\n\n") + "\n\n下方仅列出可核验的历史。"
+    }
+}
+
 struct PortalSiteLaunch: Equatable {
     let siteID: String
     let browserID: String

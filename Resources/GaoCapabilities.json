@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bundleID": "cn.mendao.launcher",
-  "appVersion": "1.15",
+  "appVersion": "1.16",
   "actions": [
     {
       "action": "portal.openSite",

@@ -4,13 +4,31 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(cat "$PROJECT_DIR/VERSION" | tr -d '\n')"
 BUILD_NUM="$(print "$VERSION" | tr -d '.')"
 if [[ ! "$VERSION" =~ '^[0-9]+\.[0-9]{2}$' ]]; then print -u2 "VERSION 格式必须为 1.00"; exit 1; fi
-STAGING="$(mktemp -d /private/tmp/mendao-build.XXXXXX)"
-trap 'rm -rf "$STAGING"' EXIT
+TEST_FLAGS=()
+if (( $# > 0 )); then
+  if (( $# != 2 )) || [[ "$1" != "--app-only" ]]; then print -u2 "用法：build.sh [--app-only /绝对路径/容器.noindex/测试.app]"; exit 1; fi
+  # Resolve and check the destination before compiling or creating any App.
+  DEST="$(python3 - "$PROJECT_DIR/Scripts/backup_verify.py" "$2" <<'PY'
+import runpy
+import sys
+from pathlib import Path
+try:
+    helpers = runpy.run_path(sys.argv[1], run_name="gaomenhu_build_paths")
+    print(helpers["validate_build_destination"](Path(sys.argv[2])))
+except (RuntimeError, OSError, ValueError) as error:
+    print(str(error) if isinstance(error, RuntimeError) else "测试构建目标无效。", file=sys.stderr)
+    sys.exit(1)
+PY
+)"
+  TEST_FLAGS=(-D DEBUG_TESTING)
+fi
+STAGING_ROOT="$(mktemp -d /private/tmp/mendao-build.XXXXXX)"
+trap 'rm -rf "$STAGING_ROOT"' EXIT
+STAGING="$STAGING_ROOT/Build.noindex"
+mkdir -m 700 "$STAGING"
 APP="$STAGING/搞门户.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 export CLANG_MODULE_CACHE_PATH="$STAGING/module-cache"
-TEST_FLAGS=()
-if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then TEST_FLAGS=(-D DEBUG_TESTING); fi
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
   "$TEST_FLAGS[@]" "$PROJECT_DIR/Tests/UITesting.swift" "$PROJECT_DIR/Tests/NativeFeatureTests.swift" \
   "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
@@ -65,12 +83,12 @@ codesign --force --sign - --identifier cn.mendao.bridge "$APP/Contents/MacOS/Men
 codesign --force --sign - --identifier cn.mendao.launcher "$APP"
 codesign --verify --strict "$APP"
 if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then
-  DEST="$2"
   ditto "$APP" "$DEST"
   print "APP=$DEST"
   exit 0
 fi
 mkdir -p "$PROJECT_DIR/Release" "$STAGING/disk"
+: > "$STAGING/disk/.metadata_never_index"
 ditto "$APP" "$STAGING/disk/搞门户.app"
 ln -s /Applications "$STAGING/disk/Applications"
 cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"

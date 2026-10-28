@@ -30,7 +30,6 @@ final class PortalExchangeCoordinator {
             do { ledger = try PortalRequestLedger(directory: directory.appendingPathComponent("Journal")) }
             catch { app.emit("toast", ["message": "交接记录不可读，跨 App 动作已停用；原记录保持不变。"] ) }
             do {
-                guard ledger != nil else { throw PortalDownloadJournal.invalid }
                 downloadJournal = try PortalDownloadJournal(directory: directory.appendingPathComponent("Downloads"))
             }
             catch { app.emit("toast", ["message": "下载交接记录不可读，下载发送与回送已停用；原记录保持不变。"]) }
@@ -49,18 +48,29 @@ final class PortalExchangeCoordinator {
         else { try validateRequest(manifest) }
     }
 
+    /// Called on the main queue immediately before the codec copies payloads,
+    /// and again before consuming its private copy. Never repairs either ledger.
+    private func authorizeIncoming(_ manifest: GaoActionManifest) throws -> PortalIncomingRoute {
+        guard app.store.persistent, app.store.isWritable, !app.testMode else { throw PortalActionError.invalidLedger }
+        try app.store.requireWritable()
+        try Self.validateIncoming(manifest)
+        return try PortalExchangeRouting.route(kind: manifest.kind, inReplyTo: manifest.inReplyTo,
+            requireRequestLedger: {
+                guard let ledger = self.ledger else { throw PortalActionError.invalidLedger }
+                try ledger.verifyAvailability()
+            }, requireDownloadRequest: { reply in
+                guard let journal = self.downloadJournal else { throw PortalDownloadJournal.invalid }
+                try journal.verifyAvailability()
+                guard journal.allRecords.contains(where: { $0.requestID == reply }) else { throw PortalDownloadJournal.mismatch }
+            })
+    }
+
     func drain() {
         guard app.portalWebReady, !busy, !app.portalOpenQueue.isEmpty else { return }
         let url = app.portalOpenQueue.removeFirst()
-        guard let ledger, app.store.persistent, app.store.isWritable, !app.testMode else {
-            app.showError("当前资料或交接记录不可用，已停止外部动作。请先检查原资料。")
+        guard app.store.persistent, app.store.isWritable, !app.testMode else {
+            app.showError("当前资料不可用，已停止外部动作。请先检查原资料。")
             return
-        }
-        do { try ledger.verifyAvailability() }
-        catch { app.showError("交接账本已变化，原历史保留，已停止接收。"); return }
-        var knownDownloadRequests: Set<String> = []
-        if let downloadJournal, (try? downloadJournal.verifyAvailability()) != nil {
-            knownDownloadRequests = Set(downloadJournal.allRecords.map(\.requestID))
         }
         busy = true
         worker.async {
@@ -70,18 +80,27 @@ final class PortalExchangeCoordinator {
                 let received = try GaoActionPackage.receive(at: url,
                     stagingRoot: self.directory.appendingPathComponent("Incoming"),
                     targetBundleID: "cn.mendao.launcher", validateAction: { manifest in
-                        try Self.validateIncoming(manifest)
-                        if manifest.kind == "result" {
-                            guard let reply = manifest.inReplyTo?.lowercased(), knownDownloadRequests.contains(reply) else { throw PortalDownloadJournal.mismatch }
-                        }
+                        // Journal objects stay on the main queue; the FD codec
+                        // waits for a fresh kind-specific gate before copying.
+                        _ = try DispatchQueue.main.sync { try self.authorizeIncoming(manifest) }
                     })
                 DispatchQueue.main.async {
-                    if received.manifest.kind == "result" { self.reviewDownloadResult(received) }
-                    else { self.review(received, ledger: ledger) }
+                    do {
+                        switch try self.authorizeIncoming(received.manifest) {
+                        case .downloadResult: self.reviewDownloadResult(received)
+                        case .request:
+                            guard let ledger = self.ledger else { throw PortalActionError.invalidLedger }
+                            self.review(received, ledger: ledger)
+                        }
+                    } catch {
+                        try? FileManager.default.removeItem(at: received.packageURL)
+                        self.app.showError((error as? PortalActionError)?.message ?? "交接记录已变化，未执行本次动作或接纳文件。")
+                        self.releaseQueue()
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.app.showError("交接包未通过安全检查或无法读取。请检查版本、有效期与权限，再使用“打开跨 App 交接包”选择原包。")
+                    self.app.showError((error as? PortalActionError)?.message ?? "交接包未通过安全检查或无法读取。请检查版本、有效期与权限，再使用“打开跨 App 交接包”选择原包。")
                     self.releaseQueue()
                 }
             }
@@ -97,6 +116,8 @@ final class PortalExchangeCoordinator {
         let manifest = received.manifest
         let id = manifest.requestID.lowercased()
         do {
+            try app.store.requireWritable()
+            try ledger.verifyAvailability()
             let receipt = try ledger.receive(requestID: id, fingerprint: received.manifestSHA256, action: manifest.action)
             if case .repeated(let previous) = receipt {
                 // A duplicate only displays its original state. It never runs the action again.
@@ -119,6 +140,8 @@ final class PortalExchangeCoordinator {
                     guard response == .alertFirstButtonReturn else {
                         _ = try ledger.cancel(requestID: id); self.releaseQueue(); return
                     }
+                    try self.app.store.requireWritable()
+                    try ledger.verifyAvailability()
                     let fresh = try PortalActionPlanner.plan(action: manifest.action,
                         parameters: manifest.parameters.mapValues(\.foundationValue), library: self.app.library, runtime: self.runtime)
                     guard fresh == plan else { throw PortalActionError(code: "input_changed", message: "复核期间网站或浏览器资料发生变化，请重新发起请求。") }
@@ -249,30 +272,59 @@ final class PortalExchangeCoordinator {
     }
 
     func showResults() {
-        guard let ledger else {
-            app.showError("交接账本处于恢复保护状态，不能把缺失历史解释为没有记录。原目录保持不变；请核对并恢复完整账本与对应独立证据。")
+        var records: [PortalRequestRecord] = []
+        var downloads: [PortalDownloadRequestRecord] = []
+        var requestsReadable = false
+        var downloadsReadable = false
+        if let ledger {
+            do {
+                try ledger.verifyAvailability()
+                let snapshot = ledger.allRecords
+                try ledger.verifyAvailability()
+                records = snapshot; requestsReadable = true
+            }
+            catch { /* This category remains explicitly unavailable below. */ }
+        }
+        if let downloadJournal {
+            do {
+                try downloadJournal.verifyAvailability()
+                let snapshot = downloadJournal.allRecords
+                try downloadJournal.verifyAvailability()
+                downloads = snapshot; downloadsReadable = true
+            }
+            catch { /* This category remains explicitly unavailable below. */ }
+        }
+        let availability = PortalExchangeHistoryAvailability(requestsReadable: requestsReadable, downloadsReadable: downloadsReadable)
+        guard !records.isEmpty || !downloads.isEmpty else {
+            app.showError(availability.emptyMessage)
             return
         }
-        do { try ledger.verifyAvailability() }
-        catch { app.showError("交接账本或独立证据已变化，已停止读取结果。请保留原文件并恢复已核验的完整历史。"); return }
-        if let downloadJournal {
-            do { try downloadJournal.verifyAvailability() }
-            catch { app.showError("下载交接历史处于恢复保护状态，不能将其解释为没有结果。原文件保持不变。"); return }
-        }
-        let records = ledger.allRecords
-        let downloads = downloadJournal?.allRecords ?? []
-        guard !records.isEmpty || !downloads.isEmpty else { app.showError("还没有跨 App 交接记录。") ; return }
         guard app.window.attachedSheet == nil else { return }
         let alert = NSAlert(); alert.messageText = "交接结果"
         alert.informativeText = "重复请求只显示原结果。下载交接、任务接受与实际文件结果分别记录；不会自动打开文件。"
+            + availability.readableHistoryNotice
         let choices = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
         for record in records { choices.addItem(withTitle: record.action + " · " + record.outcome.status.rawValue + " · " + record.requestID.prefix(8)) }
         for record in downloads { choices.addItem(withTitle: "downloads.prepare · " + (record.results.last?.status ?? "等待接收方复核") + " · " + record.requestID.prefix(8)) }
         alert.accessoryView = choices; alert.addButton(withTitle: "查看所选"); alert.addButton(withTitle: "取消")
         if alert.runModal() == .alertFirstButtonReturn {
             let index = choices.indexOfSelectedItem
-            if index < records.count { showOutcome(records[index]) }
-            else { showDownloadOutcome(downloads[index - records.count]) }
+            do {
+                if records.indices.contains(index) {
+                    guard let ledger else { throw PortalActionError.invalidLedger }
+                    try ledger.verifyAvailability()
+                    guard let current = ledger.record(requestID: records[index].requestID) else { throw PortalActionError.invalidLedger }
+                    showOutcome(current)
+                } else {
+                    let downloadIndex = index - records.count
+                    guard downloads.indices.contains(downloadIndex), let downloadJournal else { throw PortalDownloadJournal.invalid }
+                    try downloadJournal.verifyAvailability()
+                    guard let current = downloadJournal.allRecords.first(where: { $0.requestID == downloads[downloadIndex].requestID }) else { throw PortalDownloadJournal.invalid }
+                    showDownloadOutcome(current)
+                }
+            } catch {
+                app.showError((error as? PortalActionError)?.message ?? "所选类别的交接历史已变化，已停止读取。原文件保持不变。")
+            }
         }
     }
     private func reviewDownloadResult(_ received: GaoActionReceivedPackage) {
@@ -288,6 +340,8 @@ final class PortalExchangeCoordinator {
         }
         do {
             guard app.store.isWritable, let downloadJournal else { throw PortalDownloadJournal.invalid }
+            try app.store.requireWritable()
+            try downloadJournal.verifyAvailability()
             switch try downloadJournal.receive(received) {
             case .received(let record, _):
                 // The private validated copy remains separate from user downloads.
@@ -349,15 +403,19 @@ final class PortalExchangeCoordinator {
     }
 
     func prepareSelectedDownload(_ raw: String) {
-        guard app.store.isWritable, downloadJournal != nil else { app.showError("资料或下载交接记录不可用，未发送网址。") ; return }
+        guard app.store.isWritable, let downloadJournal else { app.showError("资料或下载交接记录不可用，未发送网址。") ; return }
         guard !busy else { app.emit("toast", ["message": "请先完成当前交接复核。"]); return }
         do {
+            try app.store.requireWritable()
+            try downloadJournal.verifyAvailability()
             guard case .prepareDownload(let urls) = try PortalActionPlanner.plan(action: "portal.prepareDownload", parameters: ["urls": [raw]], library: app.library, runtime: runtime) else { return }
             busy = true; reviewDownload(urls) { outcome in self.app.emit("toast", ["message": self.outcomeText(outcome)]); self.releaseQueue() }
-        } catch { app.showError("该网址不适合交接。只接受不含账号密码的 HTTP 或 HTTPS 网址。") }
+        } catch { app.showError((error as? PortalActionError)?.message ?? "资料或网址未通过核验，未发送本次网址。") }
     }
     private func reviewDownload(_ urls: [PortalDownloadURL], parentRequestID: String? = nil, completion: @escaping (PortalActionOutcome) -> Void) {
         guard app.store.isWritable, let downloadJournal else { completion(.failed("download_journal_unavailable")); return }
+        do { try app.store.requireWritable(); try downloadJournal.verifyAvailability() }
+        catch { completion(.failed("download_journal_unavailable")); return }
         var selected = urls.map(\.url)
         if urls.contains(where: \.requiresPrivacyReview) {
             let alert = NSAlert(); alert.messageText = "网址包含查询参数或片段"
@@ -390,6 +448,8 @@ final class PortalExchangeCoordinator {
         alert.accessoryView = options; alert.addButton(withTitle: "交给搞下载"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { completion(.cancelled); return }
         do {
+            try app.store.requireWritable()
+            try downloadJournal.verifyAvailability()
             var parameters: [String: GaoJSONValue] = ["urls": .array(selected.map(GaoJSONValue.string))]
             if options.indexOfSelectedItem > 0 { parameters["mediaType"] = .string(media[options.indexOfSelectedItem - 1]) }
             let manifest = try makeManifest(kind: "request", target: PortalDownloadProviderCapability.bundleID, action: "downloads.prepare", parameters: parameters)

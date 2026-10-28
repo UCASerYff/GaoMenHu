@@ -21,7 +21,7 @@ const palette = ['#D97757','#248977','#537CE6','#35384B','#ED83A7','#AC83C8','#C
 function native(action, data = {}) {
   return new Promise((resolve,reject) => {
     const id = String(++serial);
-    const timeout = setTimeout(() => {waiters.delete(id); reject(new Error('操作超时，请重试。'));}, ['launch','saveSite','unlock','launchWorkspace','deleteAccount','chooseIcon','previewBackup','export'].includes(action)?120000:15000);
+    const timeout = setTimeout(() => {waiters.delete(id); reject(new Error('操作超时，请重试。'));}, ['launch','saveSite','unlock','launchWorkspace','deleteAccount','chooseIcon','previewBackup','export','portalPrepareSelectedDownload'].includes(action)?120000:15000);
     waiters.set(id, {resolve,reject,timeout});
     if (window.webkit?.messageHandlers?.mendao) window.webkit.messageHandlers.mendao.postMessage({id,action,data});
     else {clearTimeout(timeout);waiters.delete(id);reject(new Error('请在搞门户 App 中打开此页面。'));}
@@ -228,7 +228,7 @@ function contextMenu(event,tile){
     const label=document.createElement('div');label.className='menu-label';label.textContent='使用浏览器';menu.append(label);
     site.allowedBrowsers.forEach(id=>row((S.browsers.find(b=>b.id===id)?.name||id)+(site.defaultBrowser===id?' · 默认':''),()=>launch(site.id,id)));
     if(site.accounts.length>1){const label2=document.createElement('div');label2.className='menu-label';label2.textContent='使用账号';menu.append(label2);site.accounts.forEach(a=>row(a.label||a.username||'未命名账号',()=>launch(site.id,null,a.id)));}
-    menu.append(document.createElement('hr'));row('重新获取清晰图标',()=>native('refreshIcon',{siteID:site.id}).then(r=>toast(r.message)).catch(e=>toast(e.message)));row('选择并批量整理',()=>{selectionMode=true;selectedSites.add(site.id);render();});row('编辑网站与账号…',()=>showEditor(site.id));row('移除网站入口…',()=>removeSite(site),'danger');
+    menu.append(document.createElement('hr'));row('交给搞下载复核…',()=>native('portalPrepareSelectedDownload',{siteID:site.id}).catch(e=>toast(e.message)));row('重新获取清晰图标',()=>native('refreshIcon',{siteID:site.id}).then(r=>toast(r.message)).catch(e=>toast(e.message)));row('选择并批量整理',()=>{selectionMode=true;selectedSites.add(site.id);render();});row('编辑网站与账号…',()=>showEditor(site.id));row('移除网站入口…',()=>removeSite(site),'danger');
   }
   menu.hidden=false;const rect=menu.getBoundingClientRect();menu.style.left=Math.min(event.clientX,innerWidth-rect.width-12)+'px';menu.style.top=Math.min(event.clientY,innerHeight-rect.height-12)+'px';
 }

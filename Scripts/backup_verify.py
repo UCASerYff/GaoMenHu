@@ -79,6 +79,22 @@ def directory(path):
             require(stat.S_ISDIR(ancestor.lstat().st_mode), "资料或备份路径包含符号链接或非目录。")
 
 
+def has_noindex_container(path):
+    """Check real, existing containers rather than a lexical or symlink name."""
+    resolved = path.resolve()
+    return any(parent.name.endswith(".noindex") and parent.is_dir() and not parent.is_symlink()
+               for parent in (resolved, *resolved.parents))
+
+
+def validate_build_destination(path):
+    require(path.is_absolute() and path.suffix == ".app", "测试 App 必须使用绝对 .app 路径。")
+    require(not path.exists() and not path.is_symlink(), "测试 App 目标已存在，停止覆盖。")
+    resolved = path.resolve()
+    directory(resolved.parent)
+    require(has_noindex_container(resolved.parent), "测试 App 必须位于预先创建的真实 .noindex 容器内。")
+    return resolved
+
+
 def file_tree(path):
     directory(path)
     require(path.is_dir(), "原资料目录缺失，不能当作空白覆盖。")
@@ -276,7 +292,7 @@ def snapshot(home=Path.home(), backup_root=BACKUPS, keychain=True):
     directory(backup_root)
     backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(backup_root, 0o700)
-    destination = backup_root / ("升级-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + str(uuid.uuid4()))
+    destination = backup_root / ("升级-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + str(uuid.uuid4()) + ".noindex")
     destination.mkdir(mode=0o700)
     for name in dirs:
         (destination / "MenDao" / name).mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -302,9 +318,24 @@ def load_state(backup, backup_root=BACKUPS):
     require(backup.parent == backup_root and backup.name.startswith("升级-"), "只允许处理本项目拥有的升级备份。")
     state = json.loads(regular_bytes(backup / "state.json"))
     require(state.get("format") == 1 and state.get("appID") == APP_ID, "升级备份标识不符。")
+    require(state.get("phase") in ("backedUp", "replacing", "installed", "acceptanceFailed", "rollingBack", "rolledBack", "finalized"),
+            "升级备份阶段无效或过新。")
     names = state.get("oldApplications")
     require(isinstance(names, list) and all(name in APP_NAMES for name in names)
             and len(names) == len(set(names)), "旧程序暂存清单无效。")
+    if "rollbackApplications" in state:
+        require(isinstance(state["rollbackApplications"], dict)
+                and set(state["rollbackApplications"]) == set(names), "旧程序恢复收据无效。")
+    if "failedApplicationPath" in state:
+        require(state["failedApplicationPath"] == "FailedApplication.noindex/搞门户.app", "失败程序暂存路径无效。")
+    if state["phase"] == "rollingBack":
+        transaction = state.get("rollbackTransaction")
+        require(isinstance(transaction, dict) and transaction.get("format") == 1
+                and transaction.get("fromPhase") in ("replacing", "installed", "acceptanceFailed", "finalized")
+                and isinstance(transaction.get("oldApplications"), dict)
+                and set(transaction["oldApplications"]) == set(names)
+                and type(transaction.get("retireCurrent")) is bool,
+                "回滚事务收据缺失或无效；保留当前程序和备份。")
     return state
 
 
@@ -312,6 +343,15 @@ def update_state(backup, state):
     temp = backup / (".state-" + str(uuid.uuid4()))
     private_write(temp, json.dumps(state, ensure_ascii=False, indent=2).encode())
     os.replace(temp, backup / "state.json")
+    sync_directory(backup)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def only_icon_cache_changed(original, current):
@@ -400,32 +440,117 @@ def run_checked(arguments):
     subprocess.run(arguments, check=True)
 
 
-def rollback(backup, no_open=False):
+def application_record(path):
+    info = app_info(path)
+    require(isinstance(info.get("CFBundleShortVersionString"), str)
+            and isinstance(info.get("CFBundleVersion"), str), "程序版本信息无效。")
+    run_checked(["/usr/bin/codesign", "--verify", "--strict", str(path)])
+    files, dirs = file_tree(path)
+    return {"version": info["CFBundleShortVersionString"], "build": info["CFBundleVersion"],
+            "files": {name: digest(data) for name, data in files.items()}, "directories": dirs}
+
+
+def rollback(backup, no_open=False, checkpoint=None):
     state = load_state(backup)
-    require(state["phase"] in ("replacing", "installed", "acceptanceFailed"), "此备份没有待回滚的安装。")
+    require(state["phase"] in ("replacing", "installed", "acceptanceFailed", "finalized", "rollingBack"), "此备份没有待回滚的安装。")
     old_names = state["oldApplications"]
-    require(set(old_names).issubset(APP_NAMES) and len(old_names) == len(set(old_names)), "旧程序记录无效。")
+    require(old_names and set(old_names).issubset(APP_NAMES) and len(old_names) == len(set(old_names)), "旧程序记录无效。")
+    current = APPLICATIONS / "搞门户.app"
+    failed_container = backup / "FailedApplication.noindex"
+    failed = failed_container / "搞门户.app"
+    if state["phase"] != "rollingBack":
+        finalized = state["phase"] == "finalized"
+        if finalized:
+            require(isinstance(state.get("rollbackApplications"), dict), "此旧收据没有保留可核验的程序回滚副本。")
+            current_info = app_info(current)
+            require(current_info.get("CFBundleShortVersionString") == state.get("newVersion")
+                    and current_info.get("CFBundleVersion") == state.get("newBuild"), "当前安装已变化，不能回滚这份已验收记录。")
+        records = {}
+        for name in old_names:
+            previous = backup / "PreviousApplications" / name
+            original = APPLICATIONS / name
+            if previous.exists():
+                candidate = previous
+            else:
+                # Only the pre-rename phase may still have an old App at its
+                # install path. Never infer an old App from a finalized new one.
+                require(state["phase"] == "replacing", "旧程序回滚副本缺失，保留当前程序并停止回滚。")
+                candidate = original
+                info = app_info(candidate)
+                require((info.get("CFBundleShortVersionString"), info.get("CFBundleVersion"))
+                        != (state.get("newVersion"), state.get("newBuild")), "旧程序身份不明确，不能把当前新版当作旧版。")
+            records[name] = application_record(candidate)
+            if finalized:
+                require(records[name] == state["rollbackApplications"].get(name), "旧程序内容与验收恢复收据不符，停止回滚。")
+        retire_current = current.exists() and ("搞门户.app" not in old_names
+                          or (backup / "PreviousApplications/搞门户.app").exists())
+        retired_record = None
+        if retire_current:
+            retired_record = application_record(current)
+            require((retired_record["version"], retired_record["build"])
+                    == (state.get("newVersion"), state.get("newBuild")), "当前安装已变化，不能暂存未知版本。")
+            require(not failed_container.exists() and not failed_container.is_symlink(), "已存在失败程序副本，停止重复回滚。")
+        # Commit and fsync the complete recovery plan before either App moves.
+        state["rollbackTransaction"] = {"format": 1, "fromPhase": state["phase"],
+                                        "oldApplications": records, "retireCurrent": retire_current,
+                                        "retiredApplication": retired_record}
+        if retire_current:
+            state["failedApplicationPath"] = "FailedApplication.noindex/搞门户.app"
+        state["phase"] = "rollingBack"
+        update_state(backup, state)
+
+    transaction = state["rollbackTransaction"]
+    records = transaction["oldApplications"]
+    retire_current = transaction["retireCurrent"]
+    retired_record = transaction.get("retiredApplication")
+    require((retire_current and isinstance(retired_record, dict)
+             and state.get("failedApplicationPath") == "FailedApplication.noindex/搞门户.app")
+            or (not retire_current and retired_record is None), "回滚事务中的新版程序收据无效。")
+    # A fresh process accepts either the still-backed-up old App or the exact old
+    # App already restored by an interrupted attempt, never merely a bundle ID.
     for name in old_names:
         previous = backup / "PreviousApplications" / name
         original = APPLICATIONS / name
-        candidate = previous if previous.exists() else original
-        app_info(candidate)
-        run_checked(["/usr/bin/codesign", "--verify", "--strict", str(candidate)])
+        if previous.exists():
+            require(application_record(previous) == records.get(name), "旧程序回滚副本与事务摘要不符。")
+        else:
+            require(original.exists() and application_record(original) == records.get(name), "回滚事务中的旧程序缺失或已变化。")
+    if retire_current:
+        if failed.exists():
+            require(application_record(failed) == retired_record, "已暂存的新版程序与回滚事务不符。")
+            if current.exists():
+                require("搞门户.app" in records and application_record(current) == records["搞门户.app"],
+                        "当前程序不是该事务已恢复的旧版本。")
+        else:
+            require(current.exists() and application_record(current) == retired_record,
+                    "回滚事务缺少可核验的新版程序。")
+            if failed_container.exists() or failed_container.is_symlink():
+                directory(failed_container)
+                require(not any(failed_container.iterdir()), "回滚暂存容器内容不明确。")
     stop_owned_processes()
-    current = APPLICATIONS / "搞门户.app"
-    # A crash during the first rename may leave the original at its old path.
-    # It is only the new version if its saved previous copy already exists.
-    if current.exists() and ("搞门户.app" not in old_names or (backup / "PreviousApplications/搞门户.app").exists()):
-        app_info(current)
-        failed = backup / "FailedApplication.app"
-        require(not failed.exists(), "已存在失败程序副本，停止重复回滚。")
-        shutil.move(str(current), failed)
+    if retire_current and not failed.exists():
+        if not failed_container.exists():
+            failed_container.mkdir(mode=0o700)
+            sync_directory(backup)
+        require(current.stat().st_dev == failed_container.stat().st_dev, "无法原子暂存失败程序，保留当前程序。")
+        require(application_record(current) == retired_record, "等待退出期间当前程序已变化，保留该程序并停止回滚。")
+        os.rename(current, failed)
+        sync_directory(APPLICATIONS)
+        sync_directory(failed_container)
+        if checkpoint:
+            checkpoint("afterCurrentRetired")
     for name in old_names:
         source = backup / "PreviousApplications" / name
         destination = APPLICATIONS / name
-        if source.exists():
-            require(not destination.exists(), "回滚目的地已存在，已停止覆盖。")
+        if destination.exists():
+            require(application_record(destination) == records.get(name), "回滚目的地与旧程序摘要不符，停止覆盖。")
+        else:
+            require(source.exists() and application_record(source) == records.get(name), "回滚源程序缺失或已变化。")
             os.rename(source, destination)
+            sync_directory(source.parent)
+            sync_directory(APPLICATIONS)
+            if checkpoint:
+                checkpoint("afterOldRestored")
     state["phase"] = "rolledBack"
     update_state(backup, state)
     # Never overwrite user data automatically: preserve both current files and
@@ -438,23 +563,27 @@ def rollback(backup, no_open=False):
 def finalize(backup, allowed_preferences=(), allow_icon_cache_updates=False):
     state = load_state(backup)
     require(state["phase"] == "installed", "没有待验收的新版本。")
+    require(state["oldApplications"], "缺少旧程序备份清单，不能完成验收。")
     info = app_info(APPLICATIONS / "搞门户.app")
     require(info["CFBundleShortVersionString"] == state["newVersion"] and info["CFBundleVersion"] == state["newBuild"], "安装版本与待验收记录不符。")
     run_checked(["/usr/bin/codesign", "--verify", "--strict", str(APPLICATIONS / "搞门户.app")])
     checked = verify(backup, allowed_preferences=allowed_preferences, allow_icon_cache_updates=allow_icon_cache_updates)
-    # Explicit finalize is the operator's acceptance after real business/UI QA.
+    # Acceptance retires the old installation, but preserves a verified program
+    # backup. Never rename a historical receipt/container merely to hide its App.
+    records = {}
     for name in state["oldApplications"]:
         old = backup / "PreviousApplications" / name
-        app_info(old)
-        shutil.rmtree(old)
-    (backup / "PreviousApplications").rmdir()
+        require(has_noindex_container(old.parent), "旧程序备份缺少 .noindex 保护；请先核对恢复路径，不能删除回滚副本。")
+        records[name] = application_record(old)
     state["phase"] = "finalized"
+    state["rollbackApplications"] = records
     state["dataVerification"] = checked["dataVerification"]
     state["acceptedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     update_state(backup, state)
 
 
-def install(no_open=False):
+def install(no_open=False, home=None):
+    home = Path.home() if home is None else home
     version = (ROOT / "VERSION").read_text().strip()
     package = ROOT / "Release" / ("GaoMenHu-" + version + ".dmg")
     checksum = regular_bytes(package.with_suffix(".dmg.sha256")).decode().split()
@@ -473,10 +602,11 @@ def install(no_open=False):
         for path in BACKUPS.iterdir():
             if path.is_dir() and path.name.startswith("升级-"):
                 previous = load_state(path)
-                require(previous.get("phase") not in ("replacing", "installed", "acceptanceFailed"), "已有升级待验收或回滚，请先处理现有安全备份。")
-    with tempfile.TemporaryDirectory(prefix="mendao-install-", dir="/private/tmp") as mount:
+                require(previous.get("phase") not in ("replacing", "installed", "acceptanceFailed", "rollingBack"), "已有升级待验收或回滚，请先处理现有安全备份。")
+    with tempfile.TemporaryDirectory(prefix="mendao-install-", suffix=".noindex", dir="/private/tmp") as mount, \
+            tempfile.TemporaryDirectory(prefix=".GaoMenHu-install-", suffix=".noindex", dir=APPLICATIONS) as staging:
         backup = None
-        staged = APPLICATIONS / (".GaoMenHu-install-" + str(uuid.uuid4()) + ".app")
+        staged = Path(staging) / "搞门户.app"
         mounted, replaced = False, False
         try:
             run_checked(["/usr/bin/hdiutil", "attach", "-quiet", "-readonly", "-nobrowse", "-mountpoint", mount, str(package)])
@@ -489,11 +619,11 @@ def install(no_open=False):
             run_checked(["/usr/bin/ditto", str(source), str(staged)])
             app_info(staged)
             run_checked(["/usr/bin/codesign", "--verify", "--strict", str(staged)])
-            files, _ = file_tree(Path.home() / "Library/Application Support/MenDao")
+            files, _ = file_tree(home / "Library/Application Support/MenDao")
             require("library.json" in files, "原网站库缺失，停止升级。")
             validate_library(files["library.json"])
             preferences()
-            native_hosts(Path.home())
+            native_hosts(home)
             stop_owned_processes()
             backup = snapshot()
             previous = backup / "PreviousApplications"
@@ -522,16 +652,15 @@ def install(no_open=False):
                 rollback(backup, no_open=True)
             raise
         finally:
-            if staged.exists():
-                app_info(staged)
-                shutil.rmtree(staged)
+            # The unique private .noindex TemporaryDirectory also removes a
+            # partial ditto result that has not yet acquired an Info.plist.
             if mounted:
                 run_checked(["/usr/bin/hdiutil", "detach", "-quiet", mount])
 
 
 def self_test():
     """Isolated filesystem/state-machine tests; no real apps, settings or UI."""
-    global preferences, APPLICATIONS, BACKUPS, load_state, run_checked, stop_owned_processes, verify
+    global preferences, APPLICATIONS, BACKUPS, ROOT, load_state, run_checked, stop_owned_processes, verify, snapshot
     import copy
     import socket
     checks = 0
@@ -573,7 +702,24 @@ def self_test():
     changed["sites"][0].update(iconSource="custom", icon="changed")
     ok(not only_icon_cache_changed(encoded, json.dumps(changed).encode()))
     with tempfile.TemporaryDirectory(prefix="mendao-upgrade-", dir="/private/tmp") as temp:
-        root = Path(temp).resolve()
+        # Even fixture bundles acquire the product bundle ID only after their
+        # non-indexed parent has been created.
+        outer = Path(temp).resolve()
+        root = outer / "Fixtures.noindex"
+        root.mkdir(mode=0o700)
+        ok(validate_build_destination(root / "Target.app") == root / "Target.app")
+        rejects(lambda: validate_build_destination(outer / "Unindexed.app"))
+        rejects(lambda: validate_build_destination(Path("relative.noindex/Target.app")))
+        rejects(lambda: validate_build_destination(root / "WrongExtension"))
+        (root / "Existing.app").mkdir()
+        rejects(lambda: validate_build_destination(root / "Existing.app"))
+        (root / "Alias.app").symlink_to(root / "Missing.app")
+        rejects(lambda: validate_build_destination(root / "Alias.app"))
+        (outer / "Plain").mkdir()
+        (outer / "Pretend.noindex").symlink_to(outer / "Plain", target_is_directory=True)
+        rejects(lambda: validate_build_destination(outer / "Pretend.noindex/Target.app"))
+        (outer / "Not.noindex-extra").mkdir()
+        rejects(lambda: validate_build_destination(outer / "Not.noindex-extra/Target.app"))
         home = root / "h"
         data = home / "Library/Application Support/MenDao"
         data.mkdir(parents=True, mode=0o700)
@@ -587,6 +733,15 @@ def self_test():
         try:
             backup = snapshot(home, backup_root, keychain=False)
             state = verify(backup, home, backup_root, keychain=False)
+            ok(backup.name.endswith(".noindex") and state["format"] == 1)
+            ok(has_noindex_container(backup / "PreviousApplications"))
+            # Legacy format-1 names and their relative paths remain readable;
+            # this only renames an owned fixture, never a real receipt.
+            receipt_before_rename = load_state(backup, backup_root)
+            legacy = backup.with_name(backup.name.removesuffix(".noindex"))
+            backup.rename(legacy)
+            ok(load_state(legacy, backup_root) == receipt_before_rename)
+            legacy.rename(backup)
             ok(state["dataVerification"]["originalFileHashesUnchanged"])
             ok("bridge.sock" not in state["files"])
             ok((backup.stat().st_mode & 0o777) == 0o700)
@@ -632,15 +787,51 @@ def self_test():
         # Signature checks and process handling are stubs, not live acceptance.
         APPLICATIONS = root / "Applications"
         APPLICATIONS.mkdir()
-        real_load, real_verify = load_state, verify
+        real_load, real_verify, real_snapshot = load_state, verify, snapshot
         load_state = lambda path, _root=None: real_load(path, backup_root)
-        verify = lambda path, **kw: real_verify(path, home, backup_root, keychain=False, **kw)
-        run_checked = lambda arguments: None
-        stop_owned_processes = lambda: None
+
+        def fixture_verify(path, fixture_home=home, fixture_backup_root=backup_root,
+                           allowed_preferences=(), keychain=False, allow_icon_cache_updates=False):
+            assert fixture_home == home and fixture_backup_root == backup_root and not keychain
+            return real_verify(path, home, backup_root, allowed_preferences,
+                               keychain=False, allow_icon_cache_updates=allow_icon_cache_updates)
+
+        verify = fixture_verify
+        commands, stops = [], []
+        run_checked = lambda arguments: commands.append(arguments)
+        stop_owned_processes = lambda: stops.append(True)
 
         def fake_app(path, version):
+            assert has_noindex_container(path.parent)
             private_write(path / "Contents/Info.plist", plistlib.dumps({"CFBundleIdentifier": APP_ID, "CFBundleExecutable": "MenDao",
                                                                        "CFBundleShortVersionString": version, "CFBundleVersion": version.replace(".", "")}))
+            private_write(path / "Contents/MacOS/MenDao", b"non-executable fixture " + version.encode())
+
+        def remove_fixture_app(path):
+            app_info(path)
+            assert has_noindex_container(path.parent)
+            shutil.rmtree(path)
+
+        def swap_fixture_version(path, version):
+            info_path = path / "Contents/Info.plist"
+            value = plistlib.loads(info_path.read_bytes())
+            value.update(CFBundleShortVersionString=version, CFBundleVersion=version.replace(".", ""))
+            info_path.write_bytes(plistlib.dumps(value))
+
+        def upgrade_fixture(phase="installed", old_in_backup=True, current_version="1.14"):
+            if (APPLICATIONS / "搞门户.app").exists():
+                remove_fixture_app(APPLICATIONS / "搞门户.app")
+            path = real_snapshot(home, backup_root, keychain=False)
+            previous = path / "PreviousApplications"
+            previous.mkdir()
+            if old_in_backup:
+                fake_app(previous / "搞门户.app", "1.13")
+            if current_version is not None:
+                fake_app(APPLICATIONS / "搞门户.app", current_version)
+            value = load_state(path)
+            value.update(phase=phase, oldApplications=["搞门户.app"], newVersion="1.14", newBuild="114")
+            update_state(path, value)
+            return path
 
         previous = backup / "PreviousApplications"
         previous.mkdir()
@@ -651,18 +842,272 @@ def self_test():
         update_state(backup, state)
         rollback(backup, no_open=True)
         ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.13")
-        ok(app_info(backup / "FailedApplication.app")["CFBundleShortVersionString"] == "1.14")
+        failed = backup / load_state(backup)["failedApplicationPath"]
+        ok(app_info(failed)["CFBundleShortVersionString"] == "1.14")
+        ok(has_noindex_container(failed.parent))
         ok((data / "library.json").read_bytes() == encoded)
         rejects(lambda: rollback(backup, no_open=True))
-        shutil.rmtree(APPLICATIONS / "搞门户.app")
-        fake_app(previous / "搞门户.app", "1.13")
-        fake_app(APPLICATIONS / "搞门户.app", "1.14")
-        state.update(phase="installed")
-        update_state(backup, state)
-        finalize(backup)
-        ok(load_state(backup)["phase"] == "finalized")
-        ok(not previous.exists() and (backup / "MenDao/library.json").exists())
+
+        accepted = upgrade_fixture()
+        original_program = application_record(accepted / "PreviousApplications/搞门户.app")
+        finalize(accepted)
+        accepted_state = load_state(accepted)
+        ok(accepted_state["phase"] == "finalized")
+        ok(accepted_state["rollbackApplications"] == {"搞门户.app": original_program})
+        ok((accepted / "PreviousApplications/搞门户.app").is_dir() and (accepted / "MenDao/library.json").exists())
         ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.14")
+        ok(any(cmd[-1] == str(accepted / "PreviousApplications/搞门户.app") and cmd[:3] == ["/usr/bin/codesign", "--verify", "--strict"] for cmd in commands))
+
+        old_app = accepted / "PreviousApplications/搞门户.app"
+        held = accepted / "Held.noindex"
+        held.mkdir()
+        old_app.rename(held / "搞门户.app")
+        stop_count = len(stops)
+        rejects(lambda: rollback(accepted, no_open=True))
+        ok(len(stops) == stop_count and app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.14")
+        (held / "搞门户.app").rename(old_app)
+        executable = old_app / "Contents/MacOS/MenDao"
+        saved_executable = executable.read_bytes()
+        executable.write_bytes(saved_executable + b"tampered")
+        rejects(lambda: rollback(accepted, no_open=True))
+        ok(len(stops) == stop_count)
+        executable.write_bytes(saved_executable)
+        swap_fixture_version(APPLICATIONS / "搞门户.app", "1.15")
+        rejects(lambda: rollback(accepted, no_open=True))
+        ok(len(stops) == stop_count and old_app.is_dir())
+        swap_fixture_version(APPLICATIONS / "搞门户.app", "1.14")
+        prior_runner = run_checked
+
+        def reject_old_signature(arguments):
+            if arguments[-1] == str(old_app):
+                raise RuntimeError("fixture signature rejected")
+            prior_runner(arguments)
+
+        run_checked = reject_old_signature
+        rejects(lambda: rollback(accepted, no_open=True))
+        ok(len(stops) == stop_count)
+        run_checked = prior_runner
+
+        # The process-stop wait is an external interaction boundary: a user or a
+        # separate installer may replace the canonical App while we wait.
+        prior_stop = stop_owned_processes
+
+        def replace_during_stop():
+            prior_stop()
+            remove_fixture_app(APPLICATIONS / "搞门户.app")
+            fake_app(APPLICATIONS / "搞门户.app", "1.15")
+
+        stop_owned_processes = replace_during_stop
+        rejects(lambda: rollback(accepted, no_open=True))
+        ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.15"
+           and not (accepted / "FailedApplication.noindex/搞门户.app").exists()
+           and application_record(old_app) == original_program
+           and load_state(accepted)["phase"] == "rollingBack"
+           and (data / "library.json").read_bytes() == encoded)
+        stop_owned_processes = prior_stop
+        remove_fixture_app(APPLICATIONS / "搞门户.app")
+        fake_app(APPLICATIONS / "搞门户.app", "1.14")
+        rollback(accepted, no_open=True)
+        ok(load_state(accepted)["phase"] == "rolledBack")
+        ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.13")
+        ok(app_info(accepted / load_state(accepted)["failedApplicationPath"])["CFBundleShortVersionString"] == "1.14")
+        ok((data / "library.json").read_bytes() == encoded)
+
+        # Simulate a process dying at each App-rename boundary. The resumer is a
+        # genuinely new Python process with fresh module globals, reading only
+        # the durable transaction receipt and these isolated fixture bundles.
+        class FixtureCrash(BaseException):
+            pass
+
+        fresh_process = r'''
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+module = runpy.run_path(sys.argv[1], run_name="gaomenhu_fresh_recovery_fixture")
+scope = module["rollback"].__globals__
+applications, backup_root, backup, fixture_root = map(Path, sys.argv[2:])
+assert fixture_root.name == "Fixtures.noindex" and fixture_root.is_dir()
+assert applications.is_relative_to(fixture_root) and backup.is_relative_to(fixture_root)
+real_load = scope["load_state"]
+scope["APPLICATIONS"] = applications
+scope["load_state"] = lambda path: real_load(path, backup_root)
+signatures, renames = [], []
+def signature_stub(arguments):
+    assert arguments[:3] == ["/usr/bin/codesign", "--verify", "--strict"] and len(arguments) == 4
+    assert Path(arguments[-1]).is_relative_to(fixture_root)
+    signatures.append(arguments[-1])
+scope["run_checked"] = signature_stub
+scope["stop_owned_processes"] = lambda: None
+def forbidden_private_access(*args, **kwargs):
+    raise AssertionError("fresh recovery process accessed private preferences, hosts, keychain, or snapshot")
+for name in ("preferences", "native_hosts", "keychain_metadata", "snapshot"):
+    scope[name] = forbidden_private_access
+before = scope["load_state"](backup)
+assert before["phase"] == "rollingBack" and before["rollbackTransaction"]["fromPhase"] == "finalized"
+real_rename = os.rename
+def fixture_rename(source, destination):
+    assert Path(source).is_relative_to(fixture_root) and Path(destination).is_relative_to(fixture_root)
+    renames.append([str(source), str(destination)])
+    return real_rename(source, destination)
+os.rename = fixture_rename
+try:
+    module["rollback"](backup, no_open=True)
+finally:
+    os.rename = real_rename
+after = scope["load_state"](backup)
+assert after["phase"] == "rolledBack" and signatures
+print(json.dumps({"reloadedPhase": before["phase"], "finalPhase": after["phase"],
+                  "appRenameCount": len(renames), "signatureChecks": len(signatures)}))
+'''
+        for point in ("afterCurrentRetired", "afterOldRestored"):
+            interrupted = upgrade_fixture()
+            finalize(interrupted)
+            expected_old = load_state(interrupted)["rollbackApplications"]["搞门户.app"]
+
+            def crash_at_boundary(name):
+                if name == point:
+                    raise FixtureCrash()
+
+            try:
+                rollback(interrupted, no_open=True, checkpoint=crash_at_boundary)
+            except FixtureCrash:
+                pass
+            else:
+                raise AssertionError("fixture did not interrupt the requested atomic point")
+            pending = load_state(interrupted)
+            ok(pending["phase"] == "rollingBack")
+            ok(pending["rollbackTransaction"]["oldApplications"] == {"搞门户.app": expected_old})
+            ok((interrupted / "FailedApplication.noindex/搞门户.app").is_dir())
+            if point == "afterCurrentRetired":
+                ok(not (APPLICATIONS / "搞门户.app").exists())
+                ok((interrupted / "PreviousApplications/搞门户.app").is_dir())
+            else:
+                ok(application_record(APPLICATIONS / "搞门户.app") == expected_old)
+                ok(not (interrupted / "PreviousApplications/搞门户.app").exists())
+            child = subprocess.run([sys.executable, "-B", "-c", fresh_process, str(Path(__file__).resolve()),
+                                    str(APPLICATIONS), str(backup_root), str(interrupted), str(root)],
+                                   capture_output=True, text=True)
+            require(child.returncode == 0, "隔离新进程回滚重入检查失败：" + child.stderr)
+            resumed = json.loads(child.stdout)
+            ok(resumed["reloadedPhase"] == "rollingBack" and resumed["finalPhase"] == "rolledBack")
+            ok(resumed["appRenameCount"] == (1 if point == "afterCurrentRetired" else 0))
+            ok(application_record(APPLICATIONS / "搞门户.app") == expected_old)
+            ok(load_state(interrupted)["phase"] == "rolledBack")
+            ok((data / "library.json").read_bytes() == encoded)
+
+        # Receipts produced before rollback retention have no authenticated old
+        # program after finalization. Do not invent one from the current App.
+        historical = upgrade_fixture(old_in_backup=False)
+        historical_state = load_state(historical)
+        historical_state["phase"] = "finalized"
+        update_state(historical, historical_state)
+        rejects(lambda: rollback(historical, no_open=True))
+        ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.14")
+        missing = upgrade_fixture(old_in_backup=False)
+        rejects(lambda: rollback(missing, no_open=True))
+        ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.14")
+
+        # Both interruption points around the old-program rename remain
+        # recoverable, while a missing old backup plus an installed new App fails.
+        before_rename = upgrade_fixture(phase="replacing", old_in_backup=False, current_version="1.13")
+        rollback(before_rename, no_open=True)
+        ok(load_state(before_rename)["phase"] == "rolledBack")
+        ok(not (before_rename / "FailedApplication.noindex").exists())
+        after_rename = upgrade_fixture(phase="replacing", current_version=None)
+        rollback(after_rename, no_open=True)
+        ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.13")
+        ambiguous = upgrade_fixture(phase="replacing", old_in_backup=False)
+        rejects(lambda: rollback(ambiguous, no_open=True))
+        ok(load_state(ambiguous)["phase"] == "replacing")
+
+        # Test the actual installer orchestration with owned non-executable App
+        # fixtures. No hdiutil, codesign, process signal, or open call is executed.
+        # Existing independently prepared pending fixtures are closed for this
+        # orchestration test only, without touching their data or program copies.
+        for path in (missing, ambiguous):
+            value = load_state(path)
+            value["phase"] = "backedUp"
+            update_state(path, value)
+        ROOT = root / "Project"
+        ROOT.mkdir()
+        private_write(ROOT / "VERSION", b"1.14\n")
+        package = ROOT / "Release/GaoMenHu-1.14.dmg"
+        private_write(package, b"not a real disk image")
+        private_write(package.with_suffix(".dmg.sha256"), (digest(package.read_bytes()) + "  " + package.name + "\n").encode())
+        BACKUPS = backup_root
+        snapshot = lambda: real_snapshot(home, backup_root, keychain=False)
+        mount_paths, stage_paths = [], []
+        fault = {"point": None, "fired": False}
+        original_rename = os.rename
+
+        def fixture_command(arguments):
+            commands.append(arguments)
+            if arguments[:2] == ["/usr/bin/hdiutil", "attach"]:
+                mount = Path(arguments[arguments.index("-mountpoint") + 1])
+                assert mount.is_dir() and mount.name.endswith(".noindex")
+                mount_paths.append(mount)
+                fake_app(mount / "搞门户.app", "1.14")
+            elif arguments[0] == "/usr/bin/ditto":
+                source, target = map(Path, arguments[1:])
+                assert target.parent.is_dir() and target.parent.name.endswith(".noindex")
+                assert has_noindex_container(source.parent) and has_noindex_container(target.parent)
+                stage_paths.append(target.parent)
+                if fault["point"] == "partial-ditto":
+                    (target / "Contents").mkdir(parents=True)
+                    fault["fired"] = True
+                    raise RuntimeError("fixture partial copy")
+                shutil.copytree(source, target)
+            elif arguments[:2] == ["/usr/bin/hdiutil", "detach"]:
+                mount = Path(arguments[-1])
+                remove_fixture_app(mount / "搞门户.app")
+            elif arguments[0] == "/usr/bin/codesign":
+                if fault["point"] == "installed-signature" and not fault["fired"]:
+                    target = Path(arguments[-1])
+                    if target == APPLICATIONS / "搞门户.app" and app_info(target)["CFBundleShortVersionString"] == "1.14":
+                        fault["fired"] = True
+                        raise RuntimeError("fixture post-replace signature failure")
+            else:
+                raise AssertionError("unexpected external command in fixture")
+
+        def fixture_rename(source, destination):
+            if fault["point"] == "new-rename" and not fault["fired"] and Path(source).parent in stage_paths:
+                fault["fired"] = True
+                raise OSError("fixture interrupted new-program rename")
+            return original_rename(source, destination)
+
+        run_checked = fixture_command
+        os.rename = fixture_rename
+        try:
+            for point in ("partial-ditto", "new-rename", "installed-signature", None):
+                remove_fixture_app(APPLICATIONS / "搞门户.app")
+                fake_app(APPLICATIONS / "搞门户.app", "1.13")
+                fault.update(point=point, fired=False)
+                old_backups = set(backup_root.iterdir())
+                if point is not None:
+                    rejects(lambda: install(no_open=True, home=home))
+                    ok(fault["fired"])
+                    ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.13")
+                else:
+                    install(no_open=True, home=home)
+                    ok(app_info(APPLICATIONS / "搞门户.app")["CFBundleShortVersionString"] == "1.14")
+                new_backups = set(backup_root.iterdir()) - old_backups
+                if point == "partial-ditto":
+                    ok(not new_backups)
+                else:
+                    ok(len(new_backups) == 1)
+                    latest = new_backups.pop()
+                    ok(latest.name.endswith(".noindex"))
+                    ok(load_state(latest)["phase"] == ("installed" if point is None else "rolledBack"))
+                    ok((latest / "MenDao/library.json").read_bytes() == encoded)
+                    if point is None:
+                        finalize(latest)
+                        ok((latest / "PreviousApplications/搞门户.app").is_dir())
+                ok(all(not p.exists() for p in stage_paths + mount_paths))
+                ok((data / "library.json").read_bytes() == encoded)
+        finally:
+            os.rename = original_rename
     print("Upgrade safety: " + str(checks) + " isolated checks passed; no real apps or private data changed.")
 
 
@@ -691,7 +1136,7 @@ def main():
                           "dataVerification": state["dataVerification"]}, ensure_ascii=False))
     elif args.finalize:
         finalize(args.finalize, args.allow_preference_key, args.allow_icon_cache_updates)
-        print("升级验收完成；已删除旧程序副本，资料安全备份保留。")
+        print("升级验收完成；旧程序已退役，完整资料与可核验的程序回滚备份保留在 .noindex 容器。")
     elif args.rollback:
         rollback(args.rollback, args.no_open)
         print("已恢复旧程序；当前资料与安全备份均保留。")

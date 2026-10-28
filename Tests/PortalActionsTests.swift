@@ -135,6 +135,72 @@ private final class ActionTestEvidence: PortalLedgerEvidenceStore {
         rejects("provider headers not compatible", code: "download_provider_incompatible") { _ = try capability(caps) }
         check("absent provider message honest", PortalDownloadProviderCapability.unavailable.code == "download_provider_unavailable")
 
+        let downloadReply = "ABCDEF12-3456-4789-8ABC-DEF123456789"
+        var routeChecks: [String] = []
+        check("request consults only action history", try PortalExchangeRouting.route(kind: "request", inReplyTo: nil,
+            requireRequestLedger: { routeChecks.append("request") },
+            requireDownloadRequest: { _ in fatalError("request must not use download history") }) == .request)
+        check("request gate actually ran", routeChecks == ["request"])
+        routeChecks = []
+        check("known result does not consult missing action history", try PortalExchangeRouting.route(kind: "result", inReplyTo: downloadReply,
+            requireRequestLedger: { throw PortalActionError.invalidLedger },
+            requireDownloadRequest: { routeChecks.append($0) }) == .downloadResult)
+        check("result correlation is canonical", routeChecks == [downloadReply.lowercased()])
+        for invalidReply: String? in [nil, "", "not-a-request", " " + downloadReply] {
+            rejects("invalid result correlation rejected before either history", code: "unmatched_download_result") {
+                _ = try PortalExchangeRouting.route(kind: "result", inReplyTo: invalidReply,
+                    requireRequestLedger: { fatalError("invalid result must not consult action history") },
+                    requireDownloadRequest: { _ in fatalError("invalid correlation must not reach download history") })
+            }
+        }
+        rejects("unknown package kind cannot select a history", code: "invalid_parameters") {
+            _ = try PortalExchangeRouting.route(kind: "invented", inReplyTo: downloadReply,
+                requireRequestLedger: { fatalError("unknown kind must not reach action history") },
+                requireDownloadRequest: { _ in fatalError("unknown kind must not reach download history") })
+        }
+        rejects("missing action history never falls back to downloads", code: "invalid_request_ledger") {
+            _ = try PortalExchangeRouting.route(kind: "request", inReplyTo: nil,
+                requireRequestLedger: { throw PortalActionError.invalidLedger },
+                requireDownloadRequest: { _ in fatalError("missing action history cannot authorize via downloads") })
+        }
+        let unavailableDownloads = PortalActionError(code: "download_unavailable", message: "unavailable")
+        rejects("missing download history never falls back to action ledger", code: "download_unavailable") {
+            _ = try PortalExchangeRouting.route(kind: "result", inReplyTo: downloadReply,
+                requireRequestLedger: { fatalError("result must not fall back to old action history") },
+                requireDownloadRequest: { _ in throw unavailableDownloads })
+        }
+        let unknownDownload = PortalActionError(code: "unmatched_download_result", message: "unknown")
+        rejects("unknown outgoing request does not pass available download history", code: "unmatched_download_result") {
+            _ = try PortalExchangeRouting.route(kind: "result", inReplyTo: downloadReply,
+                requireRequestLedger: { fatalError("unknown result must not consult old action history") },
+                requireDownloadRequest: { _ in throw unknownDownload })
+        }
+        var currentDownloadHistory = true
+        let currentGate = { (reply: String) throws -> Void in
+            guard currentDownloadHistory else { throw unavailableDownloads }
+            guard reply == downloadReply.lowercased() else { throw unknownDownload }
+        }
+        check("copy gate permits independently known result", try PortalExchangeRouting.route(kind: "result", inReplyTo: downloadReply,
+            requireRequestLedger: { throw PortalActionError.invalidLedger }, requireDownloadRequest: currentGate) == .downloadResult)
+        currentDownloadHistory = false
+        rejects("consumption rechecks changed download history", code: "download_unavailable") {
+            _ = try PortalExchangeRouting.route(kind: "result", inReplyTo: downloadReply,
+                requireRequestLedger: { throw PortalActionError.invalidLedger }, requireDownloadRequest: currentGate)
+        }
+
+        let oldUnavailable = PortalExchangeHistoryAvailability(requestsReadable: false, downloadsReadable: true)
+        check("missing old history explicitly identified", oldUnavailable.restrictions.count == 1 && oldUnavailable.emptyMessage.contains("网站动作历史恢复受限"))
+        check("available empty download history separately described", oldUnavailable.emptyMessage.contains("可读取的下载交接历史当前没有记录。") && !oldUnavailable.emptyMessage.contains("可读取的网站动作历史当前没有记录。"))
+        check("download choices may remain visible with old recovery notice", oldUnavailable.readableHistoryNotice.contains("下方仅列出可核验的历史。"))
+        let downloadUnavailable = PortalExchangeHistoryAvailability(requestsReadable: true, downloadsReadable: false)
+        check("missing download history explicitly identified", downloadUnavailable.restrictions.count == 1 && downloadUnavailable.emptyMessage.contains("下载交接历史恢复受限"))
+        check("available empty action history separately described", downloadUnavailable.emptyMessage.contains("可读取的网站动作历史当前没有记录。") && !downloadUnavailable.emptyMessage.contains("可读取的下载交接历史当前没有记录。"))
+        let neitherReadable = PortalExchangeHistoryAvailability(requestsReadable: false, downloadsReadable: false)
+        check("both unavailable histories are never called empty", neitherReadable.restrictions.count == 2 && !neitherReadable.emptyMessage.contains("当前没有记录。") && neitherReadable.emptyMessage.contains("不能解释为没有记录"))
+        let bothReadable = PortalExchangeHistoryAvailability(requestsReadable: true, downloadsReadable: true)
+        check("genuinely empty readable histories retain empty state", bothReadable.restrictions.isEmpty && bothReadable.emptyMessage == "还没有跨 App 交接记录。")
+        check("readable history has no false recovery warning", bothReadable.readableHistoryNotice.isEmpty)
+
         let now = Date(timeIntervalSince1970: 1_760_270_400)
         let id = "11111111-1111-4111-8111-000000000004"
         let hash = String(repeating: "a", count: 64)

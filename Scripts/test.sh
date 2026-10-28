@@ -51,5 +51,11 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" \
   "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Tests/PortalDownloadResultsTests.swift" \
   -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-download-results"
 "$TEST_DIR/portal-download-results"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" \
+  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
+  "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" \
+  "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Tests/PortalExchangeRoutingTests.swift" \
+  -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-exchange-routing"
+"$TEST_DIR/portal-exchange-routing"
 python3 "$PROJECT_DIR/Scripts/backup_verify.py" self-test
 
