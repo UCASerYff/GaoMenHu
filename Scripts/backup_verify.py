@@ -370,7 +370,50 @@ def only_icon_cache_changed(original, current):
     return first == second
 
 
-def verify(backup, home=Path.home(), backup_root=BACKUPS, allowed_preferences=(), keychain=True, allow_icon_cache_updates=False):
+def accepted_account_additions(original, current, site_ids, allow_icon_cache_updates=False):
+    """Recognize only explicit, append-only account additions on existing sites.
+
+    This does not authorize new data on its own. Finalization also requires an
+    independently verified snapshot of every current file and keychain reference.
+    """
+    first, second = json.loads(original), json.loads(current)
+    old_counts, _ = validate_library(original)
+    new_counts, _ = validate_library(current)
+    selected = set(site_ids)
+    require(selected and len(selected) == len(site_ids)
+            and selected.issubset({site["id"] for site in first["sites"]}),
+            "请明确指定原来已存在且实际新增账号的网站。")
+    require(len(first["sites"]) == len(second["sites"]), "网站数量改变，不能按新增账号验收。")
+    additions = 0
+    for old, new in zip(first["sites"], second["sites"]):
+        require(old["id"] == new["id"], "网站或顺序改变，不能按新增账号验收。")
+        if old["id"] not in selected:
+            continue
+        previous = old["accounts"]
+        current_accounts = new["accounts"]
+        require(len(current_accounts) > len(previous) and current_accounts[:len(previous)] == previous,
+                "仅允许在指定网站追加账号，原账号不得修改、删除或重排。")
+        added = current_accounts[len(previous):]
+        additions += len(added)
+        old_default, new_default = old.get("defaultAccount"), new.get("defaultAccount")
+        require((old_default is not None and new_default == old_default)
+                or (old_default is None and new_default in [account["id"] for account in added]),
+                "默认账号的改变不属于此次明确新增。")
+        new["accounts"] = previous
+        if "defaultAccount" in old:
+            new["defaultAccount"] = old["defaultAccount"]
+        else:
+            new.pop("defaultAccount", None)
+    same = (only_icon_cache_changed(json.dumps(first).encode(), json.dumps(second).encode())
+            if allow_icon_cache_updates else first == second)
+    require(same and additions > 0
+            and new_counts == {**old_counts, "accounts": old_counts["accounts"] + additions},
+            "存在新增账号以外的资料变更，保留备份并停止验收。")
+    return additions
+
+
+def verify(backup, home=Path.home(), backup_root=BACKUPS, allowed_preferences=(), keychain=True,
+           allow_icon_cache_updates=False, _accepted_account_sites=()):
     state = load_state(backup, backup_root)
     saved, saved_dirs = file_tree(backup / "MenDao")
     require({name: digest(data) for name, data in saved.items()} == state["files"] and saved_dirs == state["directories"], "安全备份已损坏，已停止更新。")
@@ -378,10 +421,21 @@ def verify(backup, home=Path.home(), backup_root=BACKUPS, allowed_preferences=()
     changed = [name for name, value in state["files"].items() if name not in files or digest(files[name]) != value]
     icon_only = (changed == ["library.json"] and "library.json" in files and
                  allow_icon_cache_updates and only_icon_cache_changed(saved["library.json"], files["library.json"]))
-    require((not changed or icon_only)
+    added_accounts = 0
+    if _accepted_account_sites:
+        require(changed == ["library.json"], "原资料/附件出现新增账号以外的变化，已停止验收。")
+        added_accounts = accepted_account_additions(saved["library.json"], files["library.json"],
+                                                    _accepted_account_sites, allow_icon_cache_updates)
+    require((not changed or icon_only or added_accounts)
             and set(state["directories"]).issubset(dirs), "原资料/附件内容改变或缺失，保留备份并停止验收。")
     counts, account_ids = validate_library(files["library.json"])
-    require(counts == state["counts"], "资料数量或引用发生变化，已停止验收。")
+    require(counts == {**state["counts"], "accounts": state["counts"]["accounts"] + added_accounts},
+            "资料数量或引用发生变化，已停止验收。")
+    if added_accounts:
+        # Existing credentials remain checked against the original receipt;
+        # all current references were separately checked by the fresh snapshot.
+        old_counts, account_ids = validate_library(saved["library.json"])
+        require(old_counts == state["counts"], "原资料数量与原备份收据不符。")
     original_preferences = regular_bytes(backup / "preferences.plist")
     require(digest(original_preferences) == state["preferencesSHA256"], "设置备份校验失败。")
     _, current = preferences()
@@ -402,6 +456,8 @@ def verify(backup, home=Path.home(), backup_root=BACKUPS, allowed_preferences=()
     require(check == state["keychain"], "钥匙串属性可用性发生变化；未读取/覆盖任何密码。")
     state["dataVerification"] = {"originalFileHashesUnchanged": not changed, "onlyNonCustomIconCacheChanged": bool(icon_only),
                                  "libraryContentAndBindingsPreserved": True, "allowedPreferenceKeys": list(allowed_preferences)}
+    if added_accounts:
+        state["dataVerification"]["explicitlyAcceptedNewAccounts"] = added_accounts
     return state
 
 
@@ -560,14 +616,47 @@ def rollback(backup, no_open=False, checkpoint=None):
         run_checked(["/usr/bin/open", str(APPLICATIONS / old_names[0])])
 
 
-def finalize(backup, allowed_preferences=(), allow_icon_cache_updates=False):
+def verify_exact_current_snapshot(backup):
+    current = load_state(backup)
+    require(current["phase"] == "backedUp" and not current["oldApplications"], "当前资料备份阶段无效。")
+    # No exemptions: this snapshot must describe every current file, setting
+    # and credential reference, rather than merely preserving an old subset.
+    fresh = verify(backup)
+    files, dirs = file_tree(Path.home() / "Library/Application Support/MenDao")
+    require({name: digest(data) for name, data in files.items()} == current["files"]
+            and dirs == current["directories"], "当前完整资料备份与当前文件不一致。")
+    _, current_preferences = preferences()
+    require(plistlib.loads(regular_bytes(backup / "preferences.plist")) == current_preferences,
+            "当前完整资料备份与当前设置不一致。")
+    references = fresh["keychain"]
+    require(references.get("unavailable") == 0
+            and references.get("available") == references.get("passwordReferences"),
+            "当前完整备份中有不可用的钥匙串引用，不能完成验收。")
+    receipt = regular_bytes(backup / "state.json")
+    require(json.loads(receipt) == current, "当前完整备份收据正在变化，已停止验收。")
+    return {"path": str(backup), "stateSHA256": digest(receipt), "counts": current["counts"]}
+
+
+def finalize(backup, allowed_preferences=(), allow_icon_cache_updates=False,
+             accepted_data_backup=None, accepted_account_site_ids=()):
     state = load_state(backup)
     require(state["phase"] == "installed", "没有待验收的新版本。")
     require(state["oldApplications"], "缺少旧程序备份清单，不能完成验收。")
     info = app_info(APPLICATIONS / "搞门户.app")
     require(info["CFBundleShortVersionString"] == state["newVersion"] and info["CFBundleVersion"] == state["newBuild"], "安装版本与待验收记录不符。")
     run_checked(["/usr/bin/codesign", "--verify", "--strict", str(APPLICATIONS / "搞门户.app")])
-    checked = verify(backup, allowed_preferences=allowed_preferences, allow_icon_cache_updates=allow_icon_cache_updates)
+    require(bool(accepted_data_backup) == bool(accepted_account_site_ids),
+            "新增账号验收必须同时指定当前完整备份和确切网站编号。")
+    acceptance = None
+    if accepted_data_backup is not None:
+        require(accepted_data_backup != backup, "必须使用独立的当前完整资料备份。")
+        acceptance = verify_exact_current_snapshot(accepted_data_backup)
+        checked = verify(backup, allowed_preferences=allowed_preferences,
+                         allow_icon_cache_updates=allow_icon_cache_updates,
+                         _accepted_account_sites=accepted_account_site_ids)
+        acceptance["newAccounts"] = checked["dataVerification"]["explicitlyAcceptedNewAccounts"]
+    else:
+        checked = verify(backup, allowed_preferences=allowed_preferences, allow_icon_cache_updates=allow_icon_cache_updates)
     # Acceptance retires the old installation, but preserves a verified program
     # backup. Never rename a historical receipt/container merely to hide its App.
     records = {}
@@ -575,9 +664,18 @@ def finalize(backup, allowed_preferences=(), allow_icon_cache_updates=False):
         old = backup / "PreviousApplications" / name
         require(has_noindex_container(old.parent), "旧程序备份缺少 .noindex 保护；请先核对恢复路径，不能删除回滚副本。")
         records[name] = application_record(old)
+    if acceptance is not None:
+        # The original-data comparison and signature checks can take time.
+        # Rebind the final decision to the exact fresh snapshot after that wait;
+        # another valid appended account is still unaccepted if not backed up.
+        final_snapshot = verify_exact_current_snapshot(accepted_data_backup)
+        require(final_snapshot == {key: acceptance[key] for key in final_snapshot},
+                "验收期间当前完整备份发生变化，已停止验收。")
     state["phase"] = "finalized"
     state["rollbackApplications"] = records
     state["dataVerification"] = checked["dataVerification"]
+    if acceptance is not None:
+        state["acceptedDataBackup"] = acceptance
     state["acceptedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     update_state(backup, state)
 
@@ -1120,8 +1218,12 @@ def main():
     parser.add_argument("--backup", type=Path)
     parser.add_argument("--allow-preference-key", action="append", default=[])
     parser.add_argument("--allow-icon-cache-updates", action="store_true")
+    parser.add_argument("--accepted-data-backup", type=Path)
+    parser.add_argument("--accepted-account-site-id", action="append", default=[])
     args = parser.parse_args()
     require(not (args.finalize and args.rollback), "不能同时验收和回滚。")
+    require(not (args.accepted_data_backup or args.accepted_account_site_id)
+            or (args.command == "install" and args.finalize), "新增账号验收参数仅用于完成现有升级验收。")
     if args.command == "self-test":
         self_test()
     elif args.command == "backup":
@@ -1135,7 +1237,8 @@ def main():
         print(json.dumps({"verified": True, "counts": state["counts"], "snapshots": state["snapshots"], "keychain": state["keychain"],
                           "dataVerification": state["dataVerification"]}, ensure_ascii=False))
     elif args.finalize:
-        finalize(args.finalize, args.allow_preference_key, args.allow_icon_cache_updates)
+        finalize(args.finalize, args.allow_preference_key, args.allow_icon_cache_updates,
+                 args.accepted_data_backup, args.accepted_account_site_id)
         print("升级验收完成；旧程序已退役，完整资料与可核验的程序回滚备份保留在 .noindex 容器。")
     elif args.rollback:
         rollback(args.rollback, args.no_open)
