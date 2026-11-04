@@ -251,7 +251,7 @@ struct UserExposedSiteCatalog: Codable, Equatable {
 }
 
 struct PortalDownloadProviderCapability: Equatable {
-    static let bundleID = "com.gaoseries.GaoXiaZai"
+    static let bundleID = "cn.mendao.launcher"
     let appVersion: String
     let supportedMediaTypes: Set<String>
 

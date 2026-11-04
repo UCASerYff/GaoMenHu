@@ -49,7 +49,7 @@ final class PortalDownloadDefaultsEvidence: PortalDownloadEvidenceStore {
 /// Any missing/corrupt/interrupted evidence blocks receipt, rather than forgetting IDs.
 final class PortalDownloadJournal {
     static let sourceBundleID = "cn.mendao.launcher"
-    static let targetBundleID = "com.gaoseries.GaoXiaZai"
+    static let targetBundleID = "cn.mendao.launcher"
     static let action = "downloads.prepare"
     static let invalid = PortalActionError(code: "invalid_download_journal", message: "下载交接记录缺失、已变化或恢复未完成，已停止接收；请保留原资料并恢复备份。")
     static let mismatch = PortalActionError(code: "unmatched_download_result", message: "下载结果与已发送请求或已确认任务不匹配，未接纳文件。")

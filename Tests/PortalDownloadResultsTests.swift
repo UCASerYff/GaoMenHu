@@ -29,11 +29,11 @@ private final class MemoryDownloadEvidence: PortalDownloadEvidenceStore {
         defer { try? FileManager.default.removeItem(at: root) }
         func path(_ name: String) -> URL { root.appendingPathComponent(name) }
         func outgoing(_ id: String = UUID().uuidString) throws -> GaoActionManifest {
-            GaoActionManifest(kind: "request", requestID: id, sourceBundleID: "cn.mendao.launcher", targetBundleID: "com.gaoseries.GaoXiaZai", action: "downloads.prepare",
+            GaoActionManifest(kind: "request", requestID: id, sourceBundleID: "cn.mendao.launcher", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
                 createdAt: GaoActionPackage.iso8601(now), expiresAt: GaoActionPackage.iso8601(now.addingTimeInterval(120)), nonce: try GaoActionPackage.randomNonce(), items: [], references: [], parameters: ["urls": .array([.string("https://example.test/personal?credential=must-not-persist")])])
         }
         func result(_ request: GaoActionManifest, status: String = "pending", tasks: [String] = ["task-1"], time: Date = now.addingTimeInterval(10)) throws -> GaoActionManifest {
-            var value = GaoActionManifest(kind: "result", requestID: UUID().uuidString, sourceBundleID: "com.gaoseries.GaoXiaZai", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
+            var value = GaoActionManifest(kind: "result", requestID: UUID().uuidString, sourceBundleID: "cn.mendao.launcher", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
                 createdAt: GaoActionPackage.iso8601(time), expiresAt: GaoActionPackage.iso8601(time.addingTimeInterval(120)), nonce: try GaoActionPackage.randomNonce(), items: [], references: [], parameters: [:])
             value.inReplyTo = request.requestID
             value.status = status; value.provenance = ["workflowState": .string(status == "pending" ? "accepted" : status), "taskIDs": .array(tasks.map(GaoJSONValue.string))]

@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var launchFeedback: [String: String] = [:]
     var externalLaunchCallbacks: [String: (PortalActionOutcome) -> Void] = [:]
     var portalCoordinator: PortalExchangeCoordinator?
+    var downloadWindowController: PortalDownloadWindowController?
+    var mailWindowController: PortalMailWindowController?
     var portalOpenQueue: [URL] = []
     var portalWebReady = false
     let resources = Bundle.main.resourceURL!
@@ -58,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             floatingLauncher = FloatingLauncherController(app: self)
             floatingLauncher?.start()
         }
+        restoreMailFloatingIfRequested()
         if !testMode && store.isWritable {
             do {
                 try registerNativeHosts()
@@ -143,6 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let viewRoot = NSMenuItem(); bar.addItem(viewRoot); let view = NSMenu(title: "显示"); viewRoot.submenu = view
         view.addItem(withTitle: "搜索网站", action: #selector(search), keyEquivalent: "f")
         view.addItem(withTitle: "添加网站", action: #selector(addSite), keyEquivalent: "n")
+        let downloads = view.addItem(withTitle: "下载中心…", action: #selector(openDownloads), keyEquivalent: "d"); downloads.keyEquivalentModifierMask = [.command, .shift]; downloads.target = self
+        let mail = view.addItem(withTitle: "邮件…", action: #selector(openMail), keyEquivalent: "m"); mail.keyEquivalentModifierMask = [.command, .shift]; mail.target = self
         let full = view.addItem(withTitle: "切换全屏", action: #selector(fullscreen), keyEquivalent: "f"); full.keyEquivalentModifierMask = [.command, .control]
         let sidebar = view.addItem(withTitle: "显示或隐藏侧栏", action: #selector(toggleSidebar), keyEquivalent: "s"); sidebar.keyEquivalentModifierMask = [.command, .control]
         let floating = view.addItem(withTitle: "显示或隐藏悬浮窗", action: #selector(toggleFloatingLauncher), keyEquivalent: "p")
@@ -159,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         data.addItem(withTitle: "查看交接结果…", action: #selector(showPortalResults), keyEquivalent: "")
         data.addItem(withTitle: "导出授权的网站目录…", action: #selector(exportPortalSiteCatalog), keyEquivalent: "")
         data.addItem(withTitle: "导出授权的场景目录…", action: #selector(exportPortalWorkspaceCatalog), keyEquivalent: "")
+        setupMailMenu(in: bar)
         NSApp.mainMenu = bar
     }
     func setupStatusItem() {
@@ -181,7 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x4D44414F, id: 1), GetApplicationEventTarget(), 0, &hotkey)
     }
     @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); emit("search", [:]) }
-    @objc func undoMenu() { web.evaluateJavaScript("window.mendaoUndo && window.mendaoUndo();", completionHandler: nil) }
+    @objc func undoMenu() {
+        if mailWindowController?.ownsKeyWindow == true {
+            NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+        } else { web.evaluateJavaScript("window.mendaoUndo && window.mendaoUndo();", completionHandler: nil) }
+    }
     @objc func lockVault() {
         vault?.lock(); launches.removeAll()
         let callbacks = externalLaunchCallbacks; externalLaunchCallbacks.removeAll()
@@ -189,18 +199,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         emit("locked", [:])
     }
     @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "搞门户", .applicationVersion: "V\(version)", .credits: NSAttributedString(string: "网站、账号，一点就到。\n网站启动台 · 浏览器选择 · 本地账号库")]) }
-    @objc func settings() { openNativeSettings() }
-    @objc func search() { showWindow(); emit("search", [:]) }
-    @objc func addSite() { showWindow(); emit("addSite", [:]) }
+    @objc func settings() {
+        if mailWindowController?.ownsKeyWindow == true { openMailSettings() }
+        else { openNativeSettings() }
+    }
+    @objc func search() {
+        if mailWindowController?.ownsKeyWindow == true {
+            mailWindowController?.present()
+            NotificationCenter.default.post(name: .mailFocusSearch, object: nil)
+        } else { showWindow(); emit("search", [:]) }
+    }
+    @objc func addSite() {
+        if mailWindowController?.ownsKeyWindow == true { mailCompose() }
+        else { showWindow(); emit("addSite", [:]) }
+    }
     @objc func fullscreen() { window.toggleFullScreen(nil) }
     @objc func toggleFloatingLauncher() { floatingLauncher?.toggle(); settingsModel?.refresh() }
     func setFloatingLauncherVisible(_ visible: Bool) { floatingLauncher?.setVisible(visible); settingsModel?.refresh() }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let mailFocused = mailWindowController?.ownsKeyWindow == true
+        if menuItem.action == #selector(addSite) { menuItem.title = mailFocused ? "写邮件" : "添加网站" }
+        if menuItem.action == #selector(search) { menuItem.title = mailFocused ? "搜索邮件" : "搜索网站" }
+        if menuItem.action == #selector(settings) { menuItem.title = mailFocused ? "邮件设置…" : "设置…" }
+        if menuItem.action == #selector(toggleMailFloating) { menuItem.state = mailWindowController?.floating.isVisible == true ? .on : .off }
+        if menuItem.action == #selector(mailSynchronize) {
+            guard let mail = mailWindowController?.store else { return false }
+            return mail.busy.isEmpty && mail.library.accounts.contains { $0.enabled && mail.isHostConnectionAuthorized(accountID: $0.id) }
+        }
         if menuItem.action == #selector(toggleFloatingLauncher) { menuItem.state = floatingLauncher?.isVisible == true ? .on : .off }
         return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if mailWindowController?.retainDraftBeforeClosing() == false { return .terminateCancel }
+        mailWindowController?.store.prepareForApplicationExit()
+        guard let downloads = downloadWindowController?.coordinator else { return .terminateNow }
+        Task { @MainActor in downloads.shutdown { NSApp.reply(toApplicationShouldTerminate: true) } }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) { floatingLauncher?.stop(); timer?.invalidate(); server?.stop(); if let hotkey { UnregisterEventHotKey(hotkey) } }
 
     func installedBrowsers() -> [Browser] { Browser.catalog.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil } }
@@ -254,6 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             case "portalProposalCancelled":
                 portalCoordinator?.proposalCancelled(data["requestID"] as? String)
                 reply(id, ["ok": true])
+            case "openDownloads": openDownloads(); reply(id, ["ok": true])
+            case "openMail": openMail(); reply(id, ["ok": true])
             case "portalPrepareSelectedDownload":
                 guard let siteID = data["siteID"] as? String,
                       let site = library.sites.first(where: { $0.id == siteID }) else { throw AppError.message("网站不存在。") }

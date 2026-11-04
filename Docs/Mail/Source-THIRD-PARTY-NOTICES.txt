@@ -1,0 +1,18 @@
+搞邮件 V1.10
+
+本程序使用 macOS 提供的 Swift、Foundation、AppKit、SwiftUI、WebKit、Security、Network、UserNotifications 等系统框架，以及系统 libcurl；未打包第三方运行时或邮箱服务商的应用凭据。
+系统框架和 libcurl 的权利归各自权利人所有，系统版本随 macOS 提供。
+
+curl / libcurl: https://curl.se/docs/copyright.html
+COPYRIGHT AND PERMISSION NOTICE
+Copyright (c) 1996 - 2026, Daniel Stenberg, <daniel@haxx.se>, and many contributors, see the THANKS file.
+
+All rights reserved.
+
+Permission to use, copy, modify, and distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall not be used in advertising or otherwise to promote the sale, use or other dealings in this Software without prior written authorization of the copyright holder.
+
+本项目图标由图像生成工具依照同系列风格生成，设计记录位于 Assets/IconDesign.txt。

@@ -46,7 +46,7 @@ private final class RoutingDownloadEvidence: PortalDownloadEvidenceStore {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let requestID = UUID().uuidString.lowercased()
         let outgoing = GaoActionManifest(kind: "request", requestID: requestID,
-            sourceBundleID: "cn.mendao.launcher", targetBundleID: "com.gaoseries.GaoXiaZai", action: "downloads.prepare",
+            sourceBundleID: "cn.mendao.launcher", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
             createdAt: GaoActionPackage.iso8601(now), expiresAt: GaoActionPackage.iso8601(now.addingTimeInterval(120)),
             nonce: try GaoActionPackage.randomNonce(), items: [], references: [], parameters: ["urls": .array([.string("https://example.test/public-file")])])
         try downloads.register(outgoing, now: now)
@@ -69,7 +69,7 @@ private final class RoutingDownloadEvidence: PortalDownloadEvidenceStore {
         let incoming = exchange.appendingPathComponent("Incoming", isDirectory: true)
         func pending() throws -> GaoActionManifest {
             var value = GaoActionManifest(kind: "result", requestID: UUID().uuidString.lowercased(),
-                sourceBundleID: "com.gaoseries.GaoXiaZai", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
+                sourceBundleID: "cn.mendao.launcher", targetBundleID: "cn.mendao.launcher", action: "downloads.prepare",
                 createdAt: GaoActionPackage.iso8601(now.addingTimeInterval(1)), expiresAt: GaoActionPackage.iso8601(now.addingTimeInterval(121)),
                 nonce: try GaoActionPackage.randomNonce(), items: [], references: [], parameters: [:])
             value.inReplyTo = requestID; value.status = "pending"

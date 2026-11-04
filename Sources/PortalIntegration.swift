@@ -66,8 +66,20 @@ final class PortalExchangeCoordinator {
     }
 
     func drain() {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard app.portalWebReady, !busy, !app.portalOpenQueue.isEmpty else { return }
         let url = app.portalOpenQueue.removeFirst()
+        do {
+            if try PortalDownloadIngress.isDownloadPackage(url) {
+                MainActor.assumeIsolated { app.receiveEmbeddedDownloadPackage(url) }
+                drain()
+                return
+            }
+        } catch {
+            app.showError("无法安全读取交接清单；原包保留，未创建下载或执行网站动作。")
+            drain()
+            return
+        }
         guard app.store.persistent, app.store.isWritable, !app.testMode else {
             app.showError("当前资料不可用，已停止外部动作。请先检查原资料。")
             return
@@ -403,19 +415,19 @@ final class PortalExchangeCoordinator {
     }
 
     func prepareSelectedDownload(_ raw: String) {
-        guard app.store.isWritable, let downloadJournal else { app.showError("资料或下载交接记录不可用，未发送网址。") ; return }
+        guard app.store.isWritable else { app.showError("资料不可用，未准备下载。") ; return }
         guard !busy else { app.emit("toast", ["message": "请先完成当前交接复核。"]); return }
         do {
             try app.store.requireWritable()
-            try downloadJournal.verifyAvailability()
             guard case .prepareDownload(let urls) = try PortalActionPlanner.plan(action: "portal.prepareDownload", parameters: ["urls": [raw]], library: app.library, runtime: runtime) else { return }
             busy = true; reviewDownload(urls) { outcome in self.app.emit("toast", ["message": self.outcomeText(outcome)]); self.releaseQueue() }
         } catch { app.showError((error as? PortalActionError)?.message ?? "资料或网址未通过核验，未发送本次网址。") }
     }
     private func reviewDownload(_ urls: [PortalDownloadURL], parentRequestID: String? = nil, completion: @escaping (PortalActionOutcome) -> Void) {
-        guard app.store.isWritable, let downloadJournal else { completion(.failed("download_journal_unavailable")); return }
-        do { try app.store.requireWritable(); try downloadJournal.verifyAvailability() }
-        catch { completion(.failed("download_journal_unavailable")); return }
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard app.store.isWritable else { completion(.failed("downloads_unavailable")); return }
+        do { try app.store.requireWritable() }
+        catch { completion(.failed("downloads_unavailable")); return }
         var selected = urls.map(\.url)
         if urls.contains(where: \.requiresPrivacyReview) {
             let alert = NSAlert(); alert.messageText = "网址包含查询参数或片段"
@@ -427,38 +439,9 @@ final class PortalExchangeCoordinator {
             default: completion(.cancelled); return
             }
         }
-        guard let target = compatibleApp(bundleID: PortalDownloadProviderCapability.bundleID, requireCapability: true),
-              let bundle = Bundle(url: target), let resource = bundle.url(forResource: "GaoCapabilities", withExtension: "json"),
-              let data = try? Data(contentsOf: resource),
-              let capability = try? PortalDownloadProviderCapability.validated(data: data, installedBundleID: bundle.bundleIdentifier ?? ""),
-              capability.appVersion == bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
-            let alert = NSAlert(); alert.messageText = "搞下载尚不可用"
-            alert.informativeText = "尚未找到实际安装且兼容的 downloads.prepare 提供方。不会创建下载任务；可复制本次已复核的网址。\n\n" + selected.joined(separator: "\n")
-            alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "复制本次网址")
-            if alert.runModal() == .alertSecondButtonReturn {
-                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selected.joined(separator: "\n"), forType: .string)
-            }
-            completion(PortalActionOutcome(status: .unsupported, workflowState: .unsupported, errorCode: "download_provider_unavailable")); return
-        }
-        let alert = NSAlert(); alert.messageText = "交给搞下载复核"
-        alert.informativeText = "仅发送本次网址。目标会再次复核，不表示已经开始或完成下载。\n\n" + selected.joined(separator: "\n")
-        let options = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
-        options.addItem(withTitle: "接收方可见默认")
-        let media = capability.supportedMediaTypes.sorted(); media.forEach { options.addItem(withTitle: $0) }
-        alert.accessoryView = options; alert.addButton(withTitle: "交给搞下载"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { completion(.cancelled); return }
-        do {
-            try app.store.requireWritable()
-            try downloadJournal.verifyAvailability()
-            var parameters: [String: GaoJSONValue] = ["urls": .array(selected.map(GaoJSONValue.string))]
-            if options.indexOfSelectedItem > 0 { parameters["mediaType"] = .string(media[options.indexOfSelectedItem - 1]) }
-            let manifest = try makeManifest(kind: "request", target: PortalDownloadProviderCapability.bundleID, action: "downloads.prepare", parameters: parameters)
-            let package = try writeOutgoing(manifest)
-            try downloadJournal.register(manifest, parentRequestID: parentRequestID)
-            openPackage(package, in: target) { ok in
-                completion(ok ? PortalActionOutcome(status: .pending, workflowState: .handedOff) : .failed("download_handoff_failed"))
-            }
-        } catch { completion(.failed("download_handoff_failed")) }
+        // This adapter already serializes native reviews on the main queue.
+        // Preserve synchronous queue ordering when entering the actor-bound UI.
+        MainActor.assumeIsolated { app.prepareEmbeddedDownload(urls: selected, parentRequestID: parentRequestID, completion: completion) }
     }
     private func compatibleApp(bundleID: String, requireCapability: Bool) -> URL? {
         guard let found = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }

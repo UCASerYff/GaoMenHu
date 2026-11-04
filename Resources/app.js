@@ -228,7 +228,7 @@ function contextMenu(event,tile){
     const label=document.createElement('div');label.className='menu-label';label.textContent='使用浏览器';menu.append(label);
     site.allowedBrowsers.forEach(id=>row((S.browsers.find(b=>b.id===id)?.name||id)+(site.defaultBrowser===id?' · 默认':''),()=>launch(site.id,id)));
     if(site.accounts.length>1){const label2=document.createElement('div');label2.className='menu-label';label2.textContent='使用账号';menu.append(label2);site.accounts.forEach(a=>row(a.label||a.username||'未命名账号',()=>launch(site.id,null,a.id)));}
-    menu.append(document.createElement('hr'));row('交给搞下载复核…',()=>native('portalPrepareSelectedDownload',{siteID:site.id}).catch(e=>toast(e.message)));row('重新获取清晰图标',()=>native('refreshIcon',{siteID:site.id}).then(r=>toast(r.message)).catch(e=>toast(e.message)));row('选择并批量整理',()=>{selectionMode=true;selectedSites.add(site.id);render();});row('编辑网站与账号…',()=>showEditor(site.id));row('移除网站入口…',()=>removeSite(site),'danger');
+    menu.append(document.createElement('hr'));row('在下载中心复核…',()=>native('portalPrepareSelectedDownload',{siteID:site.id}).catch(e=>toast(e.message)));row('重新获取清晰图标',()=>native('refreshIcon',{siteID:site.id}).then(r=>toast(r.message)).catch(e=>toast(e.message)));row('选择并批量整理',()=>{selectionMode=true;selectedSites.add(site.id);render();});row('编辑网站与账号…',()=>showEditor(site.id));row('移除网站入口…',()=>removeSite(site),'danger');
   }
   menu.hidden=false;const rect=menu.getBoundingClientRect();menu.style.left=Math.min(event.clientX,innerWidth-rect.width-12)+'px';menu.style.top=Math.min(event.clientY,innerHeight-rect.height-12)+'px';
 }
@@ -356,6 +356,8 @@ function openSettingsPage(page){
 }
 function initializeLauncher(){
 $('searchSymbol').innerHTML=svg('search');$('dragSymbol').innerHTML=svg('drag');$('vaultSymbol').innerHTML=svg('vault');$('fullButton').innerHTML=svg('full');$('settingsSymbol').innerHTML=svg('settings');$('launcherSymbol').innerHTML=svg('launcher');$('workspacesSymbol').innerHTML=svg('workspaces');
+$('downloadsButton').onclick=()=>native('openDownloads').catch(e=>toast(e.message));
+$('mailButton').onclick=()=>native('openMail').catch(e=>toast(e.message));
 $('addButton').onclick=()=>activeSection==='workspaces'?showWorkspaceEditor():showEditor();$('settingsButton').onclick=showSettings;$('vaultButton').onclick=()=>selectSection('vault');$('launcherButton').onclick=()=>selectSection('launcher');$('fullButton').onclick=()=>native('fullscreen').catch(e=>toast(e.message));
 $('lockButton').onclick=async()=>{try{await native(S.unlocked?'lock':'unlock');toast(S.unlocked?'账号库已解锁，5 分钟后自动锁定。':'账号库已锁定。');}catch(error){toast(error.message);}};
 $('search').oninput=()=>{page=0;searchIndex=0;render();};$('search').addEventListener('keydown',handleSearchKey);$('folderClose').onclick=closeFolder;$('folderTitle').onclick=()=>renameFolder(folderID);

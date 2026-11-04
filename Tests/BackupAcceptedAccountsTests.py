@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import tempfile
@@ -111,12 +112,25 @@ with tempfile.TemporaryDirectory(prefix="mendao-account-acceptance-", suffix=".n
     upgrade.preferences = lambda: (plistlib.dumps(prefs), copy.deepcopy(prefs))
     upgrade.keychain_metadata = metadata
     upgrade.APPLICATIONS = apps
+    upgrade.BACKUPS = backups
 
     def signature(arguments):
-        assert arguments[:3] == ["/usr/bin/codesign", "--verify", "--strict"]
-        assert Path(arguments[3]).is_relative_to(root) and upgrade.has_noindex_container(Path(arguments[3]).parent)
+        if arguments[0] == upgrade.APP_LSREGISTER:
+            assert arguments[1] in ("-f", "-u") and Path(arguments[2]).is_relative_to(root)
+        else:
+            assert arguments[:3] == ["/usr/bin/codesign", "--verify", "--strict"]
+            assert Path(arguments[3]).is_relative_to(root) and upgrade.has_noindex_container(Path(arguments[3]).parent)
 
     upgrade.run_checked = signature
+    def registration_view():
+        # New registration parsing is checked separately; this fixture must not
+        # start querying the real user's LaunchServices database.
+        path = apps / "搞门户.app"
+        record = upgrade.application_record(path)
+        return [{"identifier": upgrade.APP_ID, "path": str(path),
+                 "inode": record["metadataTree"]["."]["ino"],
+                 "executableInode": record["metadataTree"]["Contents/MacOS/MenDao"]["ino"]}]
+    upgrade.query_application_registration = registration_view
 
     def fake_app(path, version, build):
         upgrade.private_write(path / "Contents/Info.plist", plistlib.dumps({"CFBundleIdentifier": upgrade.APP_ID,
@@ -132,6 +146,13 @@ with tempfile.TemporaryDirectory(prefix="mendao-account-acceptance-", suffix=".n
         old_state = upgrade.load_state(old_backup)
         old_state.update(phase="installed", oldApplications=["搞门户.app"], newVersion="1.16", newBuild="116")
         upgrade.update_state(old_backup, old_state)
+        stage = apps / ".GaoMenHu-install-acceptance.noindex"
+        stage.mkdir(mode=0o700)
+        os.rename(apps / "搞门户.app", stage / "搞门户.app")
+        os.rename(old_backup / "PreviousApplications/搞门户.app", apps / "搞门户.app")
+        upgrade.bind_application_safety(old_backup, {"搞门户.app": apps / "搞门户.app"}, stage / "搞门户.app")
+        upgrade.move_application_original(old_backup, "old:搞门户.app", old_backup / "PreviousApplications/搞门户.app")
+        upgrade.move_application_original(old_backup, "new", apps / "搞门户.app")
         old_program = upgrade.application_record(old_backup / "PreviousApplications/搞门户.app")
         (data / "library.json").write_bytes(encoded(added))
         current_backup = upgrade.snapshot(home, backups)

@@ -64,6 +64,17 @@ struct PortalSettingsView: View {
                     Text("所有位置均收起为竖线，悬停约 0.45 秒或点击展开。鼠标移出实际窗口约 0.15 秒收起，点击其他位置立即收起；展开时可拖动顶部、两侧和底部空白处，靠近侧边 32 点内实时吸附，移开恢复自由移动；中文组词、右键菜单与登录验证时暂缓收起。窗口高度随网站数量调整，位置与显示开关仅保存在本机。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+                Section("下载中心") {
+                    Button("打开下载队列…") { app.openDownloads() }
+                    Text("HTTP / HTTPS 文件直链；复核保存目录后传输。暂停与恢复会核验原目录、片段摘要及资源版本，退出后不会继续下载。原下载目录需要在搞门户重新授权。")
+                        .foregroundStyle(.secondary)
+                }
+                Section("邮件") {
+                    Button("打开邮件…") { app.openMail() }
+                    Button("邮件设置…") { app.openMailSettings() }
+                    Text("在原生窗口中管理收件箱、身份、草稿与关联平台。首次只显示缓存；连接邮箱须明确确认并由系统授权读取原钥匙串凭据。")
+                        .foregroundStyle(.secondary)
+                }
                 Section("账号库") {
                     HStack {
                         Text(app.vault.unlocked ? "已解锁" : "已锁定")
@@ -85,7 +96,7 @@ struct PortalSettingsView: View {
             }.formStyle(.grouped).tabItem { Text("外观") }
             Form {
                 Section("完整资料") {
-                    Text("包含网站、账号信息、图标、文件夹、工作场景、外观设置与恢复快照。密码留在系统钥匙串，浏览器 Cookie 不包含在备份中。")
+                    Text("此网站备份包含网站、账号信息、图标、文件夹、工作场景、外观与恢复快照。下载队列、邮件资料、附件、目录授权和交换事务需使用完整升级备份保留；密码留在系统钥匙串，浏览器 Cookie 不包含在备份中。")
                     Button("导出完整资料…") { app.exportFullBackup() }
                     Button("从完整资料恢复…") { app.restoreFullBackup() }
                     if model.busy { ProgressView().controlSize(.small) }
@@ -145,7 +156,11 @@ extension AppDelegate: NSToolbarDelegate {
         item.target = self; item.action = id.rawValue == "sidebar" ? #selector(toggleSidebar) : #selector(addSite)
         return item
     }
-    @objc func toggleSidebar() { emit("toggleSidebar", [:]) }
+    @objc func toggleSidebar() {
+        if mailWindowController?.ownsKeyWindow == true {
+            NotificationCenter.default.post(name: .mailToggleSidebar, object: nil)
+        } else { emit("toggleSidebar", [:]) }
+    }
     func openNativeSettings() {
         if settingsWindow == nil {
             let model = PortalSettingsModel(app: self); settingsModel = model

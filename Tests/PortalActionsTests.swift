@@ -112,9 +112,9 @@ private final class ActionTestEvidence: PortalLedgerEvidenceStore {
         rejects("catalog stale selection rejected", code: "site_not_found") { _ = try UserExposedSiteCatalog(library: secured, authorizedSiteIDs: ["missing"]) }
 
         let downloadParameters: [String: Any] = ["type": "object", "properties": ["urls": ["type": "array", "minItems": 1, "maxItems": 32, "items": ["type": "string", "format": "uri"]], "mediaType": ["type": "string", "enum": ["file", "video"]]], "required": ["urls"], "additionalProperties": false]
-        let validCapability: [String: Any] = ["schemaVersion": 1, "bundleID": "com.gaoseries.GaoXiaZai", "appVersion": "1.00", "actions": [["action": "downloads.prepare", "parameters": downloadParameters, "items": ["maxCount": 0], "references": ["maxCount": 0]]]]
+        let validCapability: [String: Any] = ["schemaVersion": 1, "bundleID": "cn.mendao.launcher", "appVersion": "1.00", "actions": [["action": "downloads.prepare", "parameters": downloadParameters, "items": ["maxCount": 0], "references": ["maxCount": 0]]]]
         func capability(_ object: [String: Any]) throws -> PortalDownloadProviderCapability {
-            try .validated(data: JSONSerialization.data(withJSONObject: object), installedBundleID: "com.gaoseries.GaoXiaZai")
+            try .validated(data: JSONSerialization.data(withJSONObject: object), installedBundleID: "cn.mendao.launcher")
         }
         check("matching installed provider supports only declared options", try capability(validCapability).supportedMediaTypes == ["file", "video"])
         var caps = validCapability; caps["schemaVersion"] = 2
