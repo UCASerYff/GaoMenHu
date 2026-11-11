@@ -205,7 +205,7 @@ final class FloatingLauncherController: NSObject, NSSearchFieldDelegate, NSMenuD
         surface.blendingMode = .behindWindow
         surface.state = .active
         surface.wantsLayer = true
-        surface.layer?.cornerRadius = 16
+        surface.layer?.cornerRadius = 18
         surface.layer?.masksToBounds = true
         surface.toolTip = "拖动空白处移动，靠近左右边缘自动吸附"
         panel.contentView = container
@@ -582,7 +582,7 @@ private final class FloatingLauncherEdgeHandle: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.controlAccentColor.withAlphaComponent(0.65).setFill()
+        PortalTheme.accentNS.withAlphaComponent(0.65).setFill()
         NSBezierPath(roundedRect: FloatingLauncherGeometry.stripRect(in: bounds, edge: edge),
                      xRadius: 3, yRadius: 3).fill()
     }
@@ -761,7 +761,7 @@ private final class FloatingLauncherRow: NSButton {
     override func mouseExited(with event: NSEvent) { hover = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         if hover || isHighlighted {
-            NSColor.controlAccentColor.withAlphaComponent(isHighlighted ? 0.15 : 0.08).setFill()
+            PortalTheme.accentNS.withAlphaComponent(isHighlighted ? 0.15 : 0.08).setFill()
             NSBezierPath(roundedRect: bounds, xRadius: 9, yRadius: 9).fill()
         }
     }

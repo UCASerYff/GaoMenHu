@@ -183,7 +183,6 @@ final class LibraryStore {
     let directory: URL
     let file: URL
     let persistent: Bool
-    var transientSnapshots: [String: Data] = [:]
     static let initializationKey = "GaoMenHu.LibraryInitialization.V1"
     private struct Evidence: Codable {
         let format: Int
@@ -288,7 +287,7 @@ final class LibraryStore {
         }
     }
 
-    /// Every persistent writer (including snapshots and restore) uses this gate.
+    /// Every persistent writer uses this gate.
     func requireWritable() throws {
         guard persistent else { return }
         do {

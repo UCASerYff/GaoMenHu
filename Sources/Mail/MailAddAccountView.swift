@@ -42,9 +42,9 @@ import SwiftUI
         VStack(spacing: 0) {
             HStack(spacing: 14) {
                 Image(systemName: "envelope.badge")
-                    .font(.system(size: 25, weight: .medium)).foregroundStyle(.indigo)
+                    .font(.system(size: 25, weight: .medium)).foregroundStyle(PortalTheme.accent)
                     .frame(width: 48, height: 48)
-                    .background(.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+                    .background(PortalTheme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(guide?.title ?? "添加邮箱").font(.title2.bold())
                     Text(guide == nil ? "选择邮箱服务商，使用适合你的登录方式。" : "在服务商官网准备好授权码，再回来连接邮箱。")
@@ -92,7 +92,7 @@ import SwiftUI
                             guide = option
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "key.fill").foregroundStyle(.indigo)
+                                Image(systemName: "key.fill").foregroundStyle(PortalTheme.accent)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(option.title).font(.callout.weight(.semibold))
                                     Text(option.summary).font(.caption).foregroundStyle(.secondary)
@@ -142,7 +142,7 @@ import SwiftUI
                 }
             }.labelsHidden().frame(width: 220)
         }.padding(14)
-            .background(.indigo.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .background(PortalTheme.accent.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func browserProviderCard(_ provider: OAuthProvider, title: String, symbol: String, detail: String) -> some View {
@@ -162,7 +162,7 @@ import SwiftUI
             }
         }.padding(17).frame(maxWidth: .infinity, alignment: .topLeading)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.indigo.opacity(0.18)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(PortalTheme.accent.opacity(0.18)))
     }
 
     private func guideContent(_ selected: MailAccountSetupGuide) -> some View {
@@ -172,8 +172,8 @@ import SwiftUI
             VStack(alignment: .leading, spacing: 18) {
                 ForEach(Array(selected.steps.enumerated()), id: \.offset) { index, step in
                     HStack(alignment: .top, spacing: 12) {
-                        Text("\(index + 1)").font(.callout.bold()).foregroundStyle(.indigo)
-                            .frame(width: 26, height: 26).background(.indigo.opacity(0.09), in: Circle())
+                        Text("\(index + 1)").font(.callout.bold()).foregroundStyle(PortalTheme.accent)
+                            .frame(width: 26, height: 26).background(PortalTheme.accent.opacity(0.09), in: Circle())
                         Text(step).font(.body).fixedSize(horizontal: false, vertical: true).padding(.top, 3)
                     }
                 }

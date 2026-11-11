@@ -48,7 +48,7 @@ struct DownloadSettingsView: View {
                     Button("查看资料格式与预算") { showBundledGuide("DataFormat") }
                 }
                 Section("资料保护") {
-                    Text("资料损坏、缺失或版本过新时停止写入，不创建空白库覆盖。恢复前保留现有资料，并按恢复说明核验备份。") .font(.callout)
+                    Text("资料损坏、缺失或版本过新时停止写入，不创建空白库覆盖，也不创建自动备份。导入前会核验资料格式与完整性。") .font(.callout)
                     Text("清理任务历史不会删除已发布文件。清理临时数据只处理任务清单记录的自有文件。") .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped).tabItem { Label("数据", systemImage: "externaldrive") }
@@ -63,6 +63,8 @@ struct DownloadSettingsView: View {
                 Link("源码与发行版本", destination: URL(string: "https://github.com/UCASerYff/GaoMenHu")!)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(30).tabItem { Label("关于", systemImage: "info.circle") }
         }
+        .tint(PortalTheme.accent)
+        .background(PortalTheme.canvas)
         .frame(width: 610, height: 510)
         .disabled(coordinator.shuttingDown)
         .preferredColorScheme(settings.appearance == "dark" ? .dark : settings.appearance == "light" ? .light : nil)

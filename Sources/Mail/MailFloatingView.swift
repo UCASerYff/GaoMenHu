@@ -45,7 +45,7 @@ struct MailFloatingView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .circular))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .circular).stroke(Color.primary.opacity(0.09), lineWidth: 1))
-        .tint(.indigo)
+        .tint(PortalTheme.accent)
         .onPreferenceChange(MailFloatingHeightPreferenceKey.self) { height in
             guard height.isFinite, height > 0 else { return }
             let ideal = ceil(height)
@@ -105,9 +105,9 @@ struct MailFloatingView: View {
             Text(syncing ? "正在同步" : summary.errorCount > 0 ? "\(summary.errorCount) 个邮箱待检查" : store.problem != nil ? "操作待处理" : "本机缓存")
         }
         .font(.system(size: 10, weight: .medium))
-        .foregroundStyle((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : Color.indigo)
+        .foregroundStyle((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : PortalTheme.accent)
         .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : Color.indigo).opacity(0.08), in: Capsule())
+        .background(((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : PortalTheme.accent).opacity(0.08), in: Capsule())
     }
 
     private var footer: some View {
@@ -126,7 +126,7 @@ struct MailFloatingView: View {
             Text("添加邮箱后，在这里查看缓存未读数量和同步状态。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.indigo.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
+            .background(PortalTheme.accent.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var privateSummary: some View {
@@ -149,7 +149,7 @@ struct MailFloatingView: View {
             ForEach(summary.unreadMessages) { message in
                 Button { controller.openInbox(accountID: message.accountID, messageID: message.id) } label: {
                     HStack(alignment: .top, spacing: 8) {
-                        Circle().fill(Color.indigo).frame(width: 5, height: 5).padding(.top, 5)
+                        Circle().fill(PortalTheme.accent).frame(width: 5, height: 5).padding(.top, 5)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(message.from.isEmpty ? "未知发件人" : message.from).font(.system(size: 10, weight: .medium)).lineLimit(1)
@@ -159,7 +159,7 @@ struct MailFloatingView: View {
                             Text(message.subject.isEmpty ? "（无主题）" : message.subject).font(.system(size: 12, weight: .medium)).lineLimit(2)
                             if let code = CodeExtractor.primaryCode(subject: message.subject, body: message.body, html: message.html), code.type != .link {
                                 HStack(spacing: 5) {
-                                    Image(systemName: "key.fill").font(.system(size: 9)).foregroundStyle(Color.indigo)
+                                    Image(systemName: "key.fill").font(.system(size: 9)).foregroundStyle(PortalTheme.accent)
                                     Text(code.value).font(.system(size: 11, weight: .bold, design: .monospaced))
                                     Spacer()
                                     Button {
@@ -175,11 +175,11 @@ struct MailFloatingView: View {
                                             Text(copiedCode == code.value ? "已复制" : "复制").font(.system(size: 9))
                                         }
                                         .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Color.indigo.opacity(0.12), in: Capsule())
+                                        .background(PortalTheme.accent.opacity(0.12), in: Capsule())
                                     }.buttonStyle(.plain)
                                 }
                                 .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(Color.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                                .background(PortalTheme.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
                             }
                             Text(store.account(message.accountID)?.displayName ?? "").font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
                         }

@@ -5,9 +5,10 @@ await pause();
 check('nativeBridgeReady',!!S&&S.library.sites.length===6);
 const original=structuredClone(S.library);
 check('sixWebsiteIcons',document.querySelectorAll('#grid .tile').length===6);
-check('seriesSidebarWidth',Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)===236);
-check('seriesNavigationSelected',$('launcherButton').getAttribute('aria-current')==='page'&&$('launcherButton').getBoundingClientRect().height>=32);
-check('launcherUsesCardSurface',getComputedStyle(document.querySelector('.launcher-card')).borderRadius==='14px');
+check('quietSidebarWidth',Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)===216);
+check('quietNavigationSelected',$('launcherButton').getAttribute('aria-current')==='page'&&$('launcherButton').getBoundingClientRect().height>=40);
+check('openLauncherSurface',document.querySelector('.launcher-surface')!==null&&getComputedStyle(document.querySelector('.launcher-surface')).backgroundColor==='rgba(0, 0, 0, 0)');
+check('noSnapshotCopy',!document.body.textContent.includes('本地自动快照'));
 const previousAppearance=S.library.appearance;
 S.library.appearance='dark';applyAppearance();check('explicitDarkAppearance',document.body.classList.contains('dark')&&!document.body.classList.contains('light'));
 S.library.appearance='light';applyAppearance();check('explicitLightAppearance',document.body.classList.contains('light')&&!document.body.classList.contains('dark'));
@@ -78,9 +79,10 @@ selectedSites.add('seed-0');showBatchBrowser();const expectedCommon=S.browsers.f
 check('batchBrowserRespectsAllowedList',($('batchBrowser')?.options.length||0)===expectedCommon.length);closeDialog();setSelectionMode(false);
 const testWorkspace={id:crypto.randomUUID(),name:'UI 工作场景',siteIDs:['seed-0','seed-1']};
 await native('saveWorkspace',{workspace:testWorkspace});check('workspacePersists',S.library.workspaces.some(w=>w.id===testWorkspace.id&&w.siteIDs.length===2));
-showWorkspaces();check('workspaceShowsLaunchAndEdit',!!$('dialog').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&!!$('dialog').querySelector('[data-edit-workspace="'+testWorkspace.id+'"]'));showWorkspaceEditor(testWorkspace.id);check('workspaceEditorRestoresSelection',$('workspaceName').value==='UI 工作场景'&&$('workspacePicker').querySelectorAll('input:checked').length===2);closeDialog();selectSection('workspaces');check('workspaceHasPrimaryPage',$('launcherPage').hidden&&!!$('sectionPage').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&$('workspacesButton').getAttribute('aria-current')==='page');selectSection('launcher');
+showWorkspaces();check('workspaceShowsLaunchAndEdit',!!$('dialog').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&!!$('dialog').querySelector('[data-edit-workspace="'+testWorkspace.id+'"]'));showWorkspaceEditor(testWorkspace.id);check('workspaceEditorRestoresSelection',$('workspaceName').value==='UI 工作场景'&&$('workspacePicker').querySelectorAll('input:checked').length===2);closeDialog();selectSection('workspaces');check('workspaceHasPrimaryPage',$('launcherPage').hidden&&!!$('sectionPage').querySelector('[data-launch-workspace="'+testWorkspace.id+'"]')&&$('workspacesButton').getAttribute('aria-current')==='page');check('workspaceResponsiveGrid',getComputedStyle(document.querySelector('.workspace-grid')).display==='grid');selectSection('vault');check('vaultResponsiveGrid',getComputedStyle(document.querySelector('.vault-grid')).display==='grid');selectSection('launcher');
 await native('deleteWorkspace',{id:testWorkspace.id});check('workspaceDeletePreservesSites',!S.library.workspaces.some(w=>w.id===testWorkspace.id)&&visibleIDs().has('seed-0')&&visibleIDs().has('seed-1'));
-const snapshotsResult=await native('snapshots');check('bulkOperationCreatesSnapshot',Array.isArray(snapshotsResult.snapshots)&&snapshotsResult.snapshots.length>0);
+check('snapshotRouteRemoved',!$('settingsButton').textContent.includes('快照'));
+await window.mendaoUndo();check('undoStillAvailableWithoutSnapshots',S.canUndo||!S.library.tiles.some(t=>t.name==='批量测试'));
 // UI-only source selection, search activation and image adjustment never open a real website.
 const realNative=native,featureLibrary=structuredClone(S.library),captured=[];
 try{

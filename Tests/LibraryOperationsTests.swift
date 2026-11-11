@@ -109,25 +109,11 @@ import Foundation
 
         let store = LibraryStore(directory: temporary.appendingPathComponent("real"))
         try store.save(current)
-        for index in 0..<12 { _ = try store.checkpoint(current, reason: "Operation \(index)") }
-        let snapshots = try store.snapshots()
-        check("ten snapshot retention", snapshots.count == 10)
-        check("snapshot sorted newest first", snapshots.first?.reason == "Operation 11" && snapshots.last?.reason == "Operation 2")
-        check("snapshot preserves full library", (try? store.loadSnapshot(id: snapshots[0].id)) == current)
-        check("snapshot refuses traversal", (try? store.loadSnapshot(id: "../../library")) == nil)
-        let snapshotFolder = store.directory.appendingPathComponent("Snapshots")
-        let folderMode = try FileManager.default.attributesOfItem(atPath: snapshotFolder.path)[.posixPermissions] as! NSNumber
-        let fileMode = try FileManager.default.attributesOfItem(atPath: snapshotFolder.appendingPathComponent(snapshots[0].id + ".json").path)[.posixPermissions] as! NSNumber
-        check("snapshot directory is private", folderMode.intValue == 0o700)
-        check("snapshot file is private", fileMode.intValue == 0o600)
+        check("library save creates no snapshot directory", !FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("Snapshots").path))
         let memoryPath = temporary.appendingPathComponent("memory-must-not-exist")
         let memory = LibraryStore(directory: memoryPath, persistent: false)
-        let memorySnapshot = try memory.checkpoint(current, reason: "test")!
-        check("test snapshot roundtrip", (try? memory.loadSnapshot(id: memorySnapshot.id)) == current)
+        try memory.save(current)
         check("test mode avoids disk", !FileManager.default.fileExists(atPath: memoryPath.path))
-        let symlinkID = UUID().uuidString
-        try FileManager.default.createSymbolicLink(at: snapshotFolder.appendingPathComponent(symlinkID + ".json"), withDestinationURL: snapshotFolder.appendingPathComponent(snapshots[0].id + ".json"))
-        check("snapshot rejects symlink", (try? store.loadSnapshot(id: symlinkID)) == nil)
 
         let browserHome = temporary.appendingPathComponent("browser-home")
         let profile = browserHome.appendingPathComponent("Library/Application Support/Microsoft Edge/Default")

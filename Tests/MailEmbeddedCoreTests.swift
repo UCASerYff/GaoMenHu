@@ -167,12 +167,11 @@ private final class MailMemoryCredentials {
             let cache = root.appendingPathComponent("MailCache.json"), damaged = Data("preserve undecodable original cache".utf8)
             try damaged.write(to: cache)
             let storage = MailStorage(root: root, evidenceDefaults: defaults); _ = storage.load()
-            // Explicit native recovery is different from ordinary save: it first
-            // preserves both readable original files and then applies a known backup.
+            // Explicit native recovery applies a validated import without making
+            // automatic pre-restore copies; the original cache remains until its atomic replacement.
             try storage.restore(MailLibrary()); try storage.saveMessages([])
             let names = try fm.contentsOfDirectory(atPath: root.path)
-            let snapshot = names.first { $0.hasPrefix("MailCache.beforeRestore.") }!
-            try check(try Data(contentsOf: root.appendingPathComponent(snapshot)) == damaged, "显式恢复先保留不可解析缓存原字节")
+            try check(!names.contains { $0.hasPrefix("MailCache.beforeRestore.") || $0.hasPrefix("BeforeRestore-") }, "恢复不生成自动备份副本")
             try check(try MailStorage.decoder.decode([CachedMessage].self, from: Data(contentsOf: cache)).isEmpty, "仅显式确认恢复可清空当前缓存视图")
         }
         do {

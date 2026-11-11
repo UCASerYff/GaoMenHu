@@ -28,8 +28,12 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sourc
 "$TEST_DIR/full-backup"
 swiftc -swift-version 5 -D DEBUG_TESTING -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
   "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/FullBackup.swift" \
-  "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Tests/BackupRestoreTests.swift" -o "$TEST_DIR/backup-restore"
+  "$PROJECT_DIR/Tests/BackupRestoreTests.swift" -o "$TEST_DIR/backup-restore"
 "$TEST_DIR/backup-restore"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
+  "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/FullBackup.swift" \
+  "$PROJECT_DIR/Tests/NoSnapshotTests.swift" -o "$TEST_DIR/no-snapshots"
+"$TEST_DIR/no-snapshots"
 swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/GaoActionPackage.swift" \
   "$PROJECT_DIR/Tests/GaoActionPackageTests.swift" -o "$TEST_DIR/gaoaction"
 "$TEST_DIR/gaoaction"
@@ -57,5 +61,5 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" \
   "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Tests/PortalExchangeRoutingTests.swift" \
   -framework Security -framework LocalAuthentication -o "$TEST_DIR/portal-exchange-routing"
 "$TEST_DIR/portal-exchange-routing"
-python3 "$PROJECT_DIR/Scripts/backup_verify.py" self-test
+python3 "$PROJECT_DIR/Tests/InstallPolicyTests.py"
 

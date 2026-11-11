@@ -76,7 +76,7 @@ struct DownloadMainView: View {
                 }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 216)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("仅在应用运行时下载", systemImage: "info.circle")
@@ -158,6 +158,7 @@ struct DownloadMainView: View {
         .sheet(isPresented: $coordinator.showSettings) {
             DownloadSettingsView(coordinator: coordinator, manager: manager, exchange: exchange)
         }
+        .tint(PortalTheme.accent)
         .preferredColorScheme(manager.settings.appearance == "dark" ? .dark : manager.settings.appearance == "light" ? .light : nil)
         .disabled(coordinator.shuttingDown)
         .onChange(of: coordinator.selectedSection) { _ in visibleCount = 100; selectedID = nil }

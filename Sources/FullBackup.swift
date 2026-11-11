@@ -11,7 +11,7 @@ enum FullBackup {
     static let maximumFileBytes = 30_000_000
     static let maximumTotalBytes = 330_000_000
     static let maximumArchiveBytes = maximumTotalBytes + 1_000_000
-    static let maximumSnapshots = 10
+    static let maximumSnapshots = 0
 
     struct Manifest: Codable, Equatable {
         var appID: String
@@ -20,14 +20,9 @@ enum FullBackup {
         var createdAt: Double
         var files: [String: String]
     }
-    struct Snapshot: Codable, Equatable {
-        var metadata: LibrarySnapshot
-        var library: Library
-    }
     struct Payload {
         let manifest: Manifest
         let library: Library
-        let snapshots: [Snapshot]
     }
     struct Summary {
         let fileCount: Int
@@ -37,52 +32,20 @@ enum FullBackup {
     }
 
     @discardableResult
-    static func export(library: Library, snapshotDirectory: URL? = nil,
-                       version: String, destination: URL) throws -> Summary {
-        var snapshots: [Snapshot] = []
-        if let directory = snapshotDirectory {
-            let manager = FileManager.default
-            // Inspect just this directory. Unknown files, sockets and sidecars are
-            // never copied, and symlinks are never followed.
-            guard directory.isFileURL else { throw failure("快照目录无效。") }
-            var info = stat()
-            if lstat(directory.path, &info) == 0 {
-                guard info.st_mode & S_IFMT == S_IFDIR else { throw failure("快照目录无效。") }
-                for url in try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-                    guard url.pathExtension == "json", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil else { continue }
-                    guard snapshots.count < maximumSnapshots else { throw failure("快照数量超过 10 份，请先检查快照目录。") }
-                    let snapshot = try JSONDecoder().decode(Snapshot.self, from: boundedRead(url, limit: maximumFileBytes))
-                    try validate(snapshot, filename: url.lastPathComponent)
-                    snapshots.append(snapshot)
-                }
-            } else if errno != ENOENT { throw failure("无法读取快照目录。") }
-        }
-        return try export(library: library, snapshots: snapshots, version: version, destination: destination)
-    }
-
-    @discardableResult
-    static func export(library: Library, snapshots: [Snapshot], version: String,
-                       destination: URL) throws -> Summary {
-        guard validVersion(version), destination.isFileURL, snapshots.count <= maximumSnapshots else { throw failure("备份参数无效。") }
+    static func export(library: Library, version: String, destination: URL) throws -> Summary {
+        guard validVersion(version), destination.isFileURL else { throw failure("导出参数无效。") }
         _ = try library.validated()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         var files = ["library.json": try encoder.encode(library)]
-        var snapshotIDs: Set<String> = []
-        for snapshot in snapshots {
-            try validate(snapshot, filename: snapshot.metadata.id + ".json")
-            guard snapshotIDs.insert(snapshot.metadata.id.lowercased()).inserted else { throw failure("快照编号重复。") }
-            files["Snapshots/" + snapshot.metadata.id + ".json"] = try encoder.encode(snapshot)
-        }
         try validateSizes(files)
-        let manifest = Manifest(appID: appID, format: 1, version: version,
+        let manifest = Manifest(appID: appID, format: 2, version: version,
                                 createdAt: Date().timeIntervalSince1970, files: files.mapValues(digest))
         files["manifest.json"] = try encoder.encode(manifest)
         let archive = try makeZIP(files)
-        // Verify the exact bytes before touching an existing destination.
         _ = try decode(archive, currentVersion: version)
         try writeAtomically(archive, to: destination)
         return Summary(fileCount: files.count, totalBytes: Int64(files.values.reduce(0) { $0 + $1.count }),
-                       zipBytes: Int64(archive.count), snapshotCount: snapshots.count)
+                       zipBytes: Int64(archive.count), snapshotCount: 0)
     }
 
     static func read(_ archive: URL, currentVersion: String) throws -> Payload {
@@ -92,57 +55,33 @@ enum FullBackup {
     private static func decode(_ archive: Data, currentVersion: String) throws -> Payload {
         guard validVersion(currentVersion) else { throw failure("当前应用版本无效。") }
         let files = try readZIP(archive)
-        guard let manifestData = files["manifest.json"], manifestData.count <= 100_000,
-              let libraryData = files["library.json"] else { throw failure("备份缺少清单或网站资料。") }
+        guard files.count == 2, let manifestData = files["manifest.json"], manifestData.count <= 100_000,
+              let libraryData = files["library.json"] else { throw failure("资料包必须只包含清单和当前网站资料。") }
         let decoder = JSONDecoder()
         let manifest = try decoder.decode(Manifest.self, from: manifestData)
-        guard manifest.appID == appID, manifest.format == 1,
+        guard manifest.appID == appID, manifest.format == 2,
               validVersion(manifest.version), manifest.version.compare(currentVersion, options: .numeric) != .orderedDescending,
-              manifest.createdAt.isFinite, manifest.createdAt > 0 else { throw failure("这不是兼容的搞门户完整资料备份；请确认应用和版本。") }
-        let payloadFiles = files.filter { $0.key != "manifest.json" }
-        guard manifest.files.count == payloadFiles.count, !manifest.files.isEmpty,
-              manifest.files.allSatisfy({ path, hash in
-                  hash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil && payloadFiles[path].map(digest) == hash
-              }) else { throw failure("备份文件校验失败，资料可能不完整或已被修改。") }
+              manifest.createdAt.isFinite, manifest.createdAt > 0 else { throw failure("这不是兼容的搞门户当前资料包；请确认应用和版本。") }
+        guard manifest.files == ["library.json": digest(libraryData)] else {
+            throw failure("资料包校验失败，资料可能不完整或已被修改。")
+        }
         let library = try decoder.decode(Library.self, from: libraryData).validated()
-        var snapshots: [Snapshot] = []
-        for (path, data) in payloadFiles where path.hasPrefix("Snapshots/") {
-            let snapshot = try decoder.decode(Snapshot.self, from: data)
-            try validate(snapshot, filename: String(path.dropFirst("Snapshots/".count)))
-            snapshots.append(snapshot)
-        }
-        snapshots.sort { $0.metadata.createdAt > $1.metadata.createdAt }
-        return Payload(manifest: manifest, library: library, snapshots: snapshots)
-    }
-
-    private static func validate(_ snapshot: Snapshot, filename: String) throws {
-        _ = try snapshot.library.validated()
-        let metadata = snapshot.metadata
-        guard UUID(uuidString: metadata.id) != nil, filename == metadata.id + ".json",
-              metadata.createdAt.isFinite, metadata.createdAt > 0,
-              metadata.reason.count <= 100, metadata.siteCount == snapshot.library.sites.count,
-              metadata.folderCount == snapshot.library.tiles.filter({ $0.kind == "folder" }).count else {
-            throw failure("快照格式或编号无效。")
-        }
+        return Payload(manifest: manifest, library: library)
     }
 
     private static func validVersion(_ value: String) -> Bool {
         value.range(of: "^[1-9][0-9]{0,3}\\.[0-9]{2}$", options: .regularExpression) != nil
     }
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
-    private static func failure(_ text: String = "完整资料 ZIP 格式无效或已损坏。") -> AppError { .message(text) }
+    private static func failure(_ text: String = "当前资料 ZIP 格式无效或已损坏。") -> AppError { .message(text) }
     private static func allowedPath(_ path: String) -> Bool {
-        if path == "manifest.json" || path == "library.json" { return true }
-        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts[0] == "Snapshots", parts[1].hasSuffix(".json") else { return false }
-        let id = String(parts[1].dropLast(5))
-        return id.count == 36 && UUID(uuidString: id) != nil
+        path == "manifest.json" || path == "library.json"
     }
     private static func validateSizes(_ files: [String: Data]) throws {
-        guard files.count <= maximumSnapshots + 2,
+        guard files.count <= 2,
               files.allSatisfy({ allowedPath($0.key) && $0.value.count <= ($0.key == "manifest.json" ? 100_000 : maximumFileBytes) }),
               files.values.reduce(0, { $0 + $1.count }) <= maximumTotalBytes else {
-            throw failure("备份资料过大：单个文件最多 30 MB，总计最多 330 MB。")
+            throw failure("资料过大：单个文件最多 30 MB。")
         }
     }
 

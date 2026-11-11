@@ -44,7 +44,9 @@ import Darwin
             try fm.createDirectory(at: dest, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             let m = DownloadManager(rootURL: parent.appendingPathComponent("data", isDirectory: true), evidenceDefaults: nil, monitorNetwork: false)
             guard m.recoveryIssue == nil else { throw DownloadError.message(m.recoveryIssue!) }
-            return (m, try m.addDestination(dest), dest)
+            let grant = try m.addDestination(dest)
+            guard !fm.fileExists(atPath: m.dataRootURL.appendingPathComponent("downloads.previous.json").path) else { throw DownloadError.message("不得创建自动下载历史备份") }
+            return (m, grant, dest)
         }
         try check(strongDownloadETag("\"version-1\"") != nil && strongDownloadETag("W/\"version-1\"") == nil && strongDownloadETag("\"bad\nvalue\"") == nil, "只有可靠强ETag允许续传")
         do {

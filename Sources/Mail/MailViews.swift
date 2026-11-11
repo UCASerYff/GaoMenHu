@@ -23,10 +23,10 @@ struct EmptyMailView: View {
     var action: (() -> Void)? = nil
     var body: some View {
         VStack(spacing:14) {
-            Image(systemName:icon).font(.system(size:38,weight:.light)).foregroundStyle(.indigo.opacity(0.65)).frame(width:84,height:84).background(.indigo.opacity(0.065),in:RoundedRectangle(cornerRadius:25))
+            Image(systemName:icon).font(.system(size:38,weight:.light)).foregroundStyle(PortalTheme.accent.opacity(0.65)).frame(width:84,height:84).background(PortalTheme.accent.opacity(0.065),in:RoundedRectangle(cornerRadius:25))
             Text(title).font(.system(size:21,weight:.semibold))
             Text(detail).font(.system(size:13)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth:380).lineSpacing(5)
-            if let button, let action { Button(button,action:action).buttonStyle(.borderedProminent).tint(.indigo).controlSize(.large).padding(.top,5) }
+            if let button, let action { Button(button,action:action).buttonStyle(.borderedProminent).tint(PortalTheme.accent).controlSize(.large).padding(.top,5) }
         }.frame(maxWidth:.infinity,maxHeight:.infinity).padding(30)
     }
 }
@@ -71,7 +71,7 @@ struct PortalMailRootView: View {
                     if store.notice != nil {footer}
                 }.background(Color.mailCanvas)
             }
-        }.tint(.indigo)
+        }.tint(PortalTheme.accent)
         .animation(.easeInOut(duration:0.22),value:sidebarHidden)
         .onReceive(NotificationCenter.default.publisher(for:.mailToggleSidebar)) {_ in sidebarHidden.toggle()}
         .onReceive(NotificationCenter.default.publisher(for:.mailFocusSearch)) {_ in
@@ -188,7 +188,7 @@ struct PortalMailRootView: View {
                 Text("身份与平台资料保存在本机").font(.system(size:10)).foregroundStyle(.tertiary)
             }.padding(12).background(Color.primary.opacity(0.04),in:RoundedRectangle(cornerRadius:12,style:.continuous))
                 .padding(.horizontal,14).padding(.vertical,12)
-        }.frame(width:236).frame(maxHeight:.infinity).background(.regularMaterial)
+        }.frame(width:216).frame(maxHeight:.infinity).background(PortalTheme.canvas)
     }
     private func sidebarHeading(_ title:String) -> some View {
         Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary).padding(.horizontal,10).padding(.bottom,2)
@@ -262,7 +262,7 @@ struct PortalMailRootView: View {
                     Button {editingAccount = nil; accountSheet = true} label:{Label("添加邮箱",systemImage:"plus")}.controlSize(.large)
                 }.padding(.top,5)
                 HStack(spacing:14) {
-                    metric("我的邮箱",value:store.filteredAccounts.count,detail:"\(store.filteredAccounts.filter{$0.enabled}.count) 个开启收发",icon:"envelope",color:.indigo)
+                    metric("我的邮箱",value:store.filteredAccounts.count,detail:"\(store.filteredAccounts.filter{$0.enabled}.count) 个开启收发",icon:"envelope",color:PortalTheme.accent)
                     metric("关联平台",value:store.filteredPlatforms.count,detail:"由你维护的账号关联",icon:"link",color:Color(hex:"14877D"))
                     metric("未读邮件",value:store.messages.filter{!$0.isRead && $0.folder == "INBOX" && Set(store.filteredAccounts.map(\.id)).contains($0.accountID)}.count,detail:"已同步到本机",icon:"tray",color:Color(hex:"DA8C48"))
                 }
@@ -281,7 +281,7 @@ struct PortalMailRootView: View {
                 if store.library.accounts.isEmpty {
                     Card {
                         HStack(alignment:.center,spacing:24) {
-                            Image(systemName:"envelope.open").font(.system(size:51,weight:.ultraLight)).foregroundStyle(.indigo.opacity(0.65)).frame(width:90)
+                            Image(systemName:"envelope.open").font(.system(size:51,weight:.ultraLight)).foregroundStyle(PortalTheme.accent.opacity(0.65)).frame(width:90)
                             VStack(alignment:.leading,spacing:10) { Text("从你的第一个邮箱开始").font(.system(size:20,weight:.semibold)); Text("可以先登记邮箱和用途，再连接收发。把注册过的网站与 App 记下来，以后就不用猜用了哪个邮箱。").foregroundStyle(.secondary).font(.system(size:13)).lineSpacing(5); HStack(spacing:14) { Button("添加邮箱") {editingAccount = nil; accountSheet = true}.buttonStyle(.borderedProminent); Button("了解账号授权") {openSettings(); DispatchQueue.main.async {NotificationCenter.default.post(name:.mailSettingsTab,object:"module")}}.buttonStyle(.link) }.padding(.top,6) }
                         }.padding(.vertical,17)
                     }
@@ -296,7 +296,7 @@ struct PortalMailRootView: View {
     private func metric(_ title: String,value: Int,detail: String,icon: String,color: Color) -> some View {
         Card { VStack(alignment:.leading,spacing:12) { HStack {Text(title).font(.system(size:12)).foregroundStyle(.secondary); Spacer(); Image(systemName:icon).foregroundStyle(color)}; Text(String(value)).font(.system(size:31,weight:.semibold,design:.rounded)); Text(detail).font(.system(size:10)).foregroundStyle(.tertiary) } }
     }
-    private func step(_ n: String,_ title: String,_ text: String) -> some View { HStack(alignment:.top,spacing:10) {Text(n).font(.system(size:12,weight:.semibold,design:.monospaced)).foregroundStyle(.indigo.opacity(0.55)); VStack(alignment:.leading,spacing:5) {Text(title).font(.system(size:12,weight:.medium)); Text(text).font(.system(size:10)).foregroundStyle(.secondary)}; Spacer(minLength:0)} }
+    private func step(_ n: String,_ title: String,_ text: String) -> some View { HStack(alignment:.top,spacing:10) {Text(n).font(.system(size:12,weight:.semibold,design:.monospaced)).foregroundStyle(PortalTheme.accent.opacity(0.55)); VStack(alignment:.leading,spacing:5) {Text(title).font(.system(size:12,weight:.medium)); Text(text).font(.system(size:10)).foregroundStyle(.secondary)}; Spacer(minLength:0)} }
     private var accountsPage: some View {
         VStack(spacing:0) {
             HStack { VStack(alignment:.leading,spacing:5) {Text("你的邮箱，各有归属").font(.system(size:25,weight:.semibold)); Text("连接收发，或先登记身份和关联平台。").font(.system(size:12)).foregroundStyle(.secondary)}; Spacer(); Button {editingAccount = nil; accountSheet = true} label:{Label("添加邮箱",systemImage:"plus")}.controlSize(.large).buttonStyle(.borderedProminent) }.padding(27)
@@ -341,7 +341,7 @@ struct PortalMailRootView: View {
     private func platformRow(_ p: PlatformRecord) -> some View {
         Card {
             HStack(spacing:15) {
-                Text(String(p.name.prefix(1)).uppercased()).font(.system(size:21,weight:.semibold,design:.rounded)).foregroundStyle(.indigo).frame(width:45,height:45).background(.indigo.opacity(0.07),in:RoundedRectangle(cornerRadius:13))
+                Text(String(p.name.prefix(1)).uppercased()).font(.system(size:21,weight:.semibold,design:.rounded)).foregroundStyle(PortalTheme.accent).frame(width:45,height:45).background(PortalTheme.accent.opacity(0.07),in:RoundedRectangle(cornerRadius:13))
                 VStack(alignment:.leading,spacing:5) { Text(p.name).font(.system(size:15,weight:.semibold)); Text(p.username.isEmpty ? (MailValidation.webURL(p.url)?.host ?? p.kind) : p.username).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1) }.frame(minWidth:100,maxWidth:.infinity,alignment:.leading)
                 VStack(alignment:.leading,spacing:5) {Text(p.address.isEmpty ? store.account(p.accountID)?.email ?? "未关联邮箱" : p.address).font(.system(size:11)).lineLimit(1); IdentityBadge(identity:store.identity(store.account(p.accountID)?.identityID))}.frame(minWidth:155,maxWidth:.infinity,alignment:.leading)
                 VStack(alignment:.leading,spacing:5) {Text(p.loginMethod).font(.system(size:11)); Text(p.roles.joined(separator:" · ")).font(.system(size:10)).foregroundStyle(.secondary)}.frame(width:105,alignment:.leading)
@@ -434,7 +434,7 @@ struct InboxView: View {
                         if store.filteredMessages.isEmpty {EmptyMailView(icon:"tray",title:store.search.isEmpty ? "暂无缓存邮件" : "未找到邮件",detail:store.search.isEmpty ? "请先连接邮箱并同步。仅登记的邮箱不会收发邮件。" : "搜索范围为已同步到本机的邮件；正文在打开后缓存。")}
                         else { List(selection:$store.selectedMessageID) { ForEach(store.filteredMessages) {m in
                             VStack(alignment:.leading,spacing:8) {
-                                HStack(spacing:6) {Circle().fill(m.isRead ? Color.clear : .indigo).frame(width:6,height:6); Text(m.from.isEmpty ? "未知发件人" : m.from).font(.system(size:12,weight:m.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if m.isFlagged {Image(systemName:"star.fill").font(.system(size:10)).foregroundStyle(.orange)}; Text(m.date.formatted(date:.numeric,time:.omitted)).font(.system(size:9)).foregroundStyle(.secondary)}
+                                HStack(spacing:6) {Circle().fill(m.isRead ? Color.clear : PortalTheme.accent).frame(width:6,height:6); Text(m.from.isEmpty ? "未知发件人" : m.from).font(.system(size:12,weight:m.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if m.isFlagged {Image(systemName:"star.fill").font(.system(size:10)).foregroundStyle(.orange)}; Text(m.date.formatted(date:.numeric,time:.omitted)).font(.system(size:9)).foregroundStyle(.secondary)}
                                 Text(m.subject.isEmpty ? "（无主题）" : m.subject).font(.system(size:13,weight:.medium)).lineLimit(2)
                                 Text(m.preview.isEmpty ? store.account(m.accountID)?.email ?? "" : m.preview).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(2)
                                 HStack {
@@ -445,8 +445,8 @@ struct InboxView: View {
                                             Text(code.value).font(.system(size: 10, weight: .bold, design: .monospaced))
                                         }
                                         .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .foregroundStyle(Color.indigo)
-                                        .background(Color.indigo.opacity(0.10), in: Capsule())
+                                        .foregroundStyle(PortalTheme.accent)
+                                        .background(PortalTheme.accent.opacity(0.10), in: Capsule())
                                         .help("提取到验证码 \(code.value)")
                                     }
                                 }
@@ -502,12 +502,12 @@ struct InboxView: View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: item.isLink ? "link.badge.plus" : "key.radiowaves.forward.fill")
                 .font(.system(size: 20))
-                .foregroundStyle(Color.indigo)
+                .foregroundStyle(PortalTheme.accent)
                 .frame(width: 42, height: 42)
-                .background(Color.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                .background(PortalTheme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    Text(item.displayTitle).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.indigo)
+                    Text(item.displayTitle).font(.system(size: 12, weight: .semibold)).foregroundStyle(PortalTheme.accent)
                     Text("置信度 \(Int(item.confidence * 100))%").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if item.isLink {
@@ -535,8 +535,8 @@ struct InboxView: View {
             }
         }
         .padding(12)
-        .background(Color.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.indigo.opacity(0.18), lineWidth: 1))
+        .background(PortalTheme.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(PortalTheme.accent.opacity(0.18), lineWidth: 1))
     }
     private func saveAttachment(_ a: CachedAttachment) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = URL(fileURLWithPath:a.filename).lastPathComponent

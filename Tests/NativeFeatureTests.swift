@@ -18,8 +18,7 @@ extension AppDelegate {
             let initial = library
             try batch(["siteIDs": ["seed-0", "seed-1"], "operation": "move", "folderName": "写论文"])
             check("batchCreatesOrderedFolder", library.tiles.last?.children == ["seed-0", "seed-1"])
-            let snapshotCount = try store.snapshots().count
-            check("batchCheckpointCreated", snapshotCount == 1)
+            check("noSnapshotDirectoryCreated", !FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("Snapshots").path))
             try undoOrganization(); check("undoRestoresLayout", library.tiles == initial.tiles)
             try batch(["siteIDs": ["seed-1", "seed-2"], "operation": "browser", "browser": "edge"])
             check("batchSetsAllowedDefault", library.sites[1].defaultBrowser == "edge" && library.sites[2].defaultBrowser == "edge")

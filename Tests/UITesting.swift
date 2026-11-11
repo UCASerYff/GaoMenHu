@@ -8,6 +8,7 @@ extension AppDelegate {
     func runAutomatedTests() {
         let featureChecks = runNativeFeatureChecks()
         var settingsChecks: [String: Bool] = [:]
+        settingsChecks["sharedPortalThemeCompiled"] = PortalTheme.accent != .clear
         let savedLibrary = library
         do {
             library.appearance = "dusk"

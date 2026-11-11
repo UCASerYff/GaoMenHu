@@ -95,19 +95,18 @@ struct PortalSettingsView: View {
                 }
             }.formStyle(.grouped).tabItem { Text("外观") }
             Form {
-                Section("完整资料") {
-                    Text("此网站备份包含网站、账号信息、图标、文件夹、工作场景、外观与恢复快照。下载队列、邮件资料、附件、目录授权和交换事务需使用完整升级备份保留；密码留在系统钥匙串，浏览器 Cookie 不包含在备份中。")
-                    Button("导出完整资料…") { app.exportFullBackup() }
-                    Button("从完整资料恢复…") { app.restoreFullBackup() }
+                Section("当前资料") {
+                    Text("ZIP 仅包含当前网站、账号元数据、图标、文件夹、工作场景与外观。密码留在系统钥匙串，不包含浏览器 Cookie、下载队列、邮件资料或附件。")
+                        .foregroundStyle(.secondary)
+                    Button("导出当前资料…") { app.exportFullBackup() }
+                    Button("从资料恢复…") { app.restoreFullBackup() }
                     if model.busy { ProgressView().controlSize(.small) }
                 }
-                Section("模块格式") {
-                    Text("JSON 格式保存当前网站资料，可合并导入或预览恢复；不包含历史快照和密码。")
+                Section("JSON 格式") {
+                    Text("导出当前网站资料，可合并导入或预览恢复；不包含密码。")
                         .foregroundStyle(.secondary)
-                    Button("导出模块备份…") { app.exportModuleBackup() }
-                    Button("恢复模块备份…") { app.restoreModuleBackup() }
-                    Button("合并导入模块备份…") { app.mergeModuleBackup() }
-                    Button("查看恢复快照…") { app.showSettingsPage("snapshots") }
+                    Button("导出 JSON…") { app.exportModuleBackup() }
+                    Button("导入 JSON…") { app.mergeModuleBackup() }
                 }
                 Section("数据目录") {
                     Button("打开数据目录") { app.revealDataDirectory() }
@@ -119,7 +118,8 @@ struct PortalSettingsView: View {
         .safeAreaInset(edge: .bottom) {
             if !model.status.isEmpty { Text(model.status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding([.horizontal, .bottom], 24) }
         }
-        .tint(Color(red: 0.20, green: 0.45, blue: 0.82))
+        .tint(PortalTheme.accent)
+        .background(PortalTheme.canvas)
         .frame(width: 820, height: 740)
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in model.refresh() }
     }
@@ -229,16 +229,10 @@ extension AppDelegate: NSToolbarDelegate {
             guard result == .OK, let url = panel.url else { self.settingsModel?.busy = false; return }
             do {
                 try self.store.requireWritable()
-                // Capture current library; strictly read/validate every snapshot off the UI thread.
                 let library = self.library, version = self.version
-                let snapshotDirectory = self.store.persistent ? self.store.directory.appendingPathComponent("Snapshots", isDirectory: true) : nil
-                let transient = self.store.persistent ? [] : try self.store.transientSnapshots.values.map { try JSONDecoder().decode(FullBackup.Snapshot.self, from: $0) }
-                self.settingsModel?.busy = true; self.settingsModel?.status = "正在备份并逐文件校验…"
+                self.settingsModel?.busy = true; self.settingsModel?.status = "正在导出并校验当前资料…"
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let outcome = Result {
-                        if let snapshotDirectory { return try FullBackup.export(library: library, snapshotDirectory: snapshotDirectory, version: version, destination: url) }
-                        return try FullBackup.export(library: library, snapshots: transient, version: version, destination: url)
-                    }
+                    let outcome = Result { try FullBackup.export(library: library, version: version, destination: url) }
                     DispatchQueue.main.async {
                         self.settingsModel?.busy = false
                         switch outcome {
@@ -267,17 +261,18 @@ extension AppDelegate: NSToolbarDelegate {
                         let payload = try outcome.get()
                         guard self.library == baseline else { throw AppError.message("校验期间网站资料已发生变化，请重新选择备份。") }
                         let alert = NSAlert(); alert.messageText = "恢复这份完整资料？"
-                        alert.informativeText = "已校验 \(payload.manifest.files.count) 个文件，包含 \(payload.library.sites.count) 个网站与 \(payload.snapshots.count) 份快照。\n\n将恢复排列、场景和设置；备份未包含的现有网站保留为已移除入口。本机密码绑定继续保留，外来账号需重新填写密码。恢复前会保留安全快照。"
+                        alert.informativeText = "已校验当前资料，包含 \(payload.library.sites.count) 个网站。\n\n将恢复排列、场景和设置；资料包未包含的现有网站保留为已移除入口。本机密码绑定继续保留，外来账号需重新填写密码。"
                         alert.addButton(withTitle: "恢复资料"); alert.addButton(withTitle: "取消")
                         alert.beginSheetModal(for: self.settingsWindow!) { response in
                             defer { self.settingsModel?.busy = false }
                             guard response == .alertFirstButtonReturn else { self.settingsModel?.status = "已取消恢复。"; return }
                             do {
                                 guard self.library == baseline else { throw AppError.message("当前资料已变化，请重新选择备份。") }
-                                self.library = try self.store.installBackup(payload, current: self.library)
+                                let restored = try LibraryOperations.restore(payload.library, into: self.library)
+                                try self.store.save(restored); self.library = restored
                                 self.organizationHistory.removeAll(); self.pendingLibraryChanges.removeAll(); self.launches.removeAll()
                                 self.applyAppearance(); self.emit("update", ["state": self.state()])
-                                self.settingsModel?.status = "恢复完成。原资料已保留为恢复快照；密码仍在本机钥匙串。"
+                                self.settingsModel?.status = "当前资料已恢复；密码仍在本机钥匙串。"
                                 self.settingsModel?.refresh()
                             } catch { self.settingsModel?.status = "恢复未完成：" + error.localizedDescription }
                         }

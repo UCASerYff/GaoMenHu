@@ -177,15 +177,6 @@ final class DownloadStore {
         defer { close(fd); unlinkat(rootFD, name, 0) }
         try writeAll(data, to: fd)
         guard fsync(fd) == 0 else { throw posixFailure("同步资料事务") }
-        // The previous complete snapshot is retained as explicit recovery evidence.
-        if faccessat(rootFD, "downloads.json", F_OK, AT_SYMLINK_NOFOLLOW) == 0 {
-            let old = try readSafe(root.appendingPathComponent("downloads.json"), maximum: 32 * 1024 * 1024)
-            let previousName = ".previous-\(UUID().uuidString)"
-            let previousFD = openat(rootFD,previousName,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
-            guard previousFD >= 0 else { throw posixFailure("创建上个有效快照") }; defer { close(previousFD); unlinkat(rootFD,previousName,0) }
-            try writeAll(old,to:previousFD)
-            guard fsync(previousFD) == 0, renameat(rootFD,previousName,rootFD,"downloads.previous.json") == 0 else { throw posixFailure("保留上个有效快照") }
-        }
         // An explicit directory reauthorization may bind external file evidence
         // to this exact database publication. Recheck it at the final boundary.
         if let beforeAtomicCommit {

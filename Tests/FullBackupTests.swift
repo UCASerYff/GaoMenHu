@@ -10,7 +10,10 @@ import zlib
             do { guard try assertion() else { fatalError(name) }; passed += 1 }
             catch { fatalError(name + ": " + error.localizedDescription) }
         }
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("gaomenhu-fullbackup-tests-" + UUID().uuidString)
+        func rejects(_ name: String, _ body: () throws -> Void) {
+            do { try body(); fatalError(name) } catch { passed += 1 }
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("gaomenhu-current-data-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -20,35 +23,30 @@ import zlib
         library.sites[0].icon = "data:image/png;base64,AA=="
         library.layoutDensity = "compact"; library.iconSize = 60
         library.workspaces = [Workspace(id: "fixture-scene", name: "Fixture", siteIDs: [library.sites[0].id])]
-        let snapshot = FullBackup.Snapshot(metadata: LibrarySnapshot(id: UUID().uuidString, createdAt: 1_700_000_000,
-                                                                    reason: "测试快照", siteCount: library.sites.count, folderCount: 0), library: library)
         let destination = root.appendingPathComponent(FullBackup.defaultFilename)
-        let result = try FullBackup.export(library: library, snapshots: [snapshot], version: "1.05", destination: destination)
-        let decoded = try FullBackup.read(destination, currentVersion: "1.05")
-        check("round trip library, account metadata, icon, workspace and appearance", decoded.library == library)
-        check("round trip complete snapshot", decoded.snapshots == [snapshot])
-        check("manifest identity and version", decoded.manifest.appID == FullBackup.appID && decoded.manifest.format == 1 && decoded.manifest.version == "1.05")
-        check("summary includes library manifest snapshot", result.fileCount == 3 && result.snapshotCount == 1 && result.zipBytes > 0)
-        check("export permissions restrict backup to owner", (try FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let result = try FullBackup.export(library: library, version: "1.18", destination: destination)
+        let decoded = try FullBackup.read(destination, currentVersion: "1.18")
+        check("round trip contains only current library", decoded.library == library)
+        check("manifest contains library only", result.fileCount == 2 && decoded.manifest.files.keys.sorted() == ["library.json"])
+        check("manifest identity and current format", decoded.manifest.appID == FullBackup.appID && decoded.manifest.format == 2 && decoded.manifest.version == "1.18")
+        check("summary contains no snapshots", result.snapshotCount == 0 && result.zipBytes > 0)
+        check("export permissions restrict archive to owner", (try FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip"); process.arguments = ["-tqq", destination.path]
         try process.run(); process.waitUntilExit()
         check("export is a valid interoperable ZIP", process.terminationStatus == 0)
 
-        var files = ["library.json": try encoder.encode(library), "Snapshots/" + snapshot.metadata.id + ".json": try encoder.encode(snapshot)]
+        var files = ["library.json": try encoder.encode(library)]
         func manifest(_ payload: [String: Data]) throws -> Data {
-            try encoder.encode(FullBackup.Manifest(appID: FullBackup.appID, format: 1, version: "1.05", createdAt: 1_700_000_000,
-                                                 files: payload.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }))
+            try encoder.encode(FullBackup.Manifest(appID: FullBackup.appID, format: 2, version: "1.18", createdAt: 1_700_000_000,
+                files: payload.filter { $0.key != "manifest.json" }.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }))
         }
         files["manifest.json"] = try manifest(files)
         func readEntries(_ entries: [FixtureEntry]) throws -> FullBackup.Payload {
             let url = root.appendingPathComponent("crafted.zip")
             try storedZIP(entries).write(to: url)
-            return try FullBackup.read(url, currentVersion: "1.05")
+            return try FullBackup.read(url, currentVersion: "1.18")
         }
         func entries(_ values: [String: Data]) -> [FixtureEntry] { values.keys.sorted().map { FixtureEntry(path: $0, data: values[$0]!) } }
-        func rejects(_ name: String, _ body: () throws -> Void) {
-            do { try body(); fatalError(name) } catch { passed += 1 }
-        }
         check("independent stored ZIP accepted", try readEntries(entries(files)).library == library)
         var missing = files; missing.removeValue(forKey: "manifest.json")
         rejects("missing manifest rejected") { _ = try readEntries(entries(missing)) }
@@ -59,33 +57,22 @@ import zlib
         var m = try JSONDecoder().decode(FullBackup.Manifest.self, from: files["manifest.json"]!)
         m.appID = "com.example.other-app"; modified = files; modified["manifest.json"] = try encoder.encode(m)
         rejects("wrong app identity rejected") { _ = try readEntries(entries(modified)) }
-        m.appID = FullBackup.appID; m.format = 99; modified["manifest.json"] = try encoder.encode(m)
-        rejects("future archive format rejected") { _ = try readEntries(entries(modified)) }
-        m.format = 1; m.version = "1.06"; modified["manifest.json"] = try encoder.encode(m)
+        m.appID = FullBackup.appID; m.format = 1; modified["manifest.json"] = try encoder.encode(m)
+        rejects("legacy snapshot archive format rejected") { _ = try readEntries(entries(modified)) }
+        m.format = 2; m.version = "1.19"; modified["manifest.json"] = try encoder.encode(m)
         rejects("future app version rejected") { _ = try readEntries(entries(modified)) }
-        m.version = "garbage"; modified["manifest.json"] = try encoder.encode(m)
-        rejects("malformed version rejected") { _ = try readEntries(entries(modified)) }
-        m.version = "1.04"; modified["manifest.json"] = try encoder.encode(m)
-        check("older compatible version accepted", try readEntries(entries(modified)).library == library)
+        m.version = "1.17"; modified["manifest.json"] = try encoder.encode(m)
+        check("older current-data archive accepted", try readEntries(entries(modified)).library == library)
         var badLibrary = library; badLibrary.schema = 2
-        modified = files; modified.removeValue(forKey: "manifest.json"); modified["library.json"] = try encoder.encode(badLibrary); modified["manifest.json"] = try manifest(modified)
-        rejects("valid hashes cannot authorize unsupported library schema") { _ = try readEntries(entries(modified)) }
+        modified = files; modified["library.json"] = try encoder.encode(badLibrary); modified["manifest.json"] = try manifest(modified)
+        rejects("valid hashes cannot authorize unsupported schema") { _ = try readEntries(entries(modified)) }
         badLibrary = library; badLibrary.sites[0].allowedBrowsers = []
-        modified = files; modified.removeValue(forKey: "manifest.json"); modified["library.json"] = try encoder.encode(badLibrary); modified["manifest.json"] = try manifest(modified)
+        modified = files; modified["library.json"] = try encoder.encode(badLibrary); modified["manifest.json"] = try manifest(modified)
         rejects("invalid browser configuration rejected") { _ = try readEntries(entries(modified)) }
-        var badSnapshot = snapshot
-        badSnapshot.metadata = LibrarySnapshot(id: snapshot.metadata.id, createdAt: snapshot.metadata.createdAt, reason: "Fixture", siteCount: 999, folderCount: 0)
-        modified = files; modified.removeValue(forKey: "manifest.json"); modified["Snapshots/" + snapshot.metadata.id + ".json"] = try encoder.encode(badSnapshot); modified["manifest.json"] = try manifest(modified)
-        rejects("snapshot metadata validated") { _ = try readEntries(entries(modified)) }
-        modified = files; modified.removeValue(forKey: "manifest.json"); modified["Snapshots/" + UUID().uuidString + ".json"] = modified.removeValue(forKey: "Snapshots/" + snapshot.metadata.id + ".json"); modified["manifest.json"] = try manifest(modified)
-        rejects("snapshot filename must match metadata id") { _ = try readEntries(entries(modified)) }
-        for path in ["../library.json", "/library.json", "Snapshots/../../library.json", "Snapshots\\escape.json", "bridge.sock", "credentials.json", "__MACOSX/library.json", "Snapshots/"] {
+        for path in ["../library.json", "/library.json", "Snapshots/../../library.json", "Snapshots\\escape.json", "Snapshots/example.json", "Snapshots/", "bridge.sock", "credentials.json", "__MACOSX/library.json"] {
             rejects("reject path: " + path) { _ = try readEntries(entries(files) + [FixtureEntry(path: path, data: Data("private-placeholder".utf8))]) }
         }
         rejects("duplicate ZIP name rejected") { _ = try readEntries(entries(files) + [FixtureEntry(path: "library.json", data: files["library.json"]!)]) }
-        rejects("case insensitive snapshot duplicate rejected") {
-            _ = try readEntries(entries(files) + [FixtureEntry(path: "Snapshots/" + snapshot.metadata.id.lowercased() + ".json", data: files["Snapshots/" + snapshot.metadata.id + ".json"]!)])
-        }
         var custom = entries(files); custom[0].mode = 0o120777
         rejects("symbolic link rejected before content decoding") { _ = try readEntries(custom) }
         custom = entries(files); custom[0].flags = 1
@@ -98,62 +85,35 @@ import zlib
         rejects("central and local name mismatch rejected") { _ = try readEntries(custom) }
         custom = entries(files); custom[0].crc = 123
         rejects("CRC32 mismatch rejected") { _ = try readEntries(custom) }
-        let archive = try Data(contentsOf: destination)
-        let damaged = root.appendingPathComponent("damaged.zip")
+        let archive = try Data(contentsOf: destination), damaged = root.appendingPathComponent("damaged.zip")
         try archive.dropLast(1).write(to: damaged)
-        rejects("truncated ZIP rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.05") }
+        rejects("truncated ZIP rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.18") }
         var appended = archive; appended.append(Data("trailing garbage".utf8)); try appended.write(to: damaged)
-        rejects("trailing hidden payload rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.05") }
-        var bomb = archive
-        // Lie about the first deflated entry in both local and central headers.
-        // The bounded inflater must reject extra output even with a tiny advertised size.
-        let centralStart = Int(read32(bomb, bomb.count - 6))
+        rejects("trailing hidden payload rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.18") }
+        var bomb = archive, centralStart = Int(read32(bomb, bomb.count - 6))
         put32(&bomb, 22, 1); put32(&bomb, centralStart + 24, 1); try bomb.write(to: damaged)
-        rejects("lying deflate expansion size rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.05") }
+        rejects("lying deflate expansion size rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.18") }
         var illegalOffset = archive; put32(&illegalOffset, centralStart + 42, UInt32.max); try illegalOffset.write(to: damaged)
-        rejects("out of range local offset rejected without a crash") { _ = try FullBackup.read(damaged, currentVersion: "1.05") }
+        rejects("out of range local offset rejected without a crash") { _ = try FullBackup.read(damaged, currentVersion: "1.18") }
         var hiddenPrefix = Data([0]); hiddenPrefix.append(archive); try hiddenPrefix.write(to: damaged)
-        rejects("hidden prefix rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.05") }
-
-        // Only allowlisted JSON snapshots are exported; unrelated local files stay local.
-        let snapshots = root.appendingPathComponent("Snapshots")
-        try FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
-        let snapshotURL = snapshots.appendingPathComponent(snapshot.metadata.id + ".json")
-        try encoder.encode(snapshot).write(to: snapshotURL)
-        try Data("not-exportable".utf8).write(to: snapshots.appendingPathComponent("credentials.json"))
-        try Data("not-exportable".utf8).write(to: snapshots.appendingPathComponent("bridge.sock"))
-        let fromDirectory = root.appendingPathComponent("directory.zip")
-        _ = try FullBackup.export(library: library, snapshotDirectory: snapshots, version: "1.05", destination: fromDirectory)
-        let directoryPayload = try FullBackup.read(fromDirectory, currentVersion: "1.05")
-        check("snapshot whitelist excludes unrelated files", directoryPayload.manifest.files.count == 2 && directoryPayload.snapshots == [snapshot])
-        let linkedDirectory = root.appendingPathComponent("snapshot-directory-link")
-        try FileManager.default.createSymbolicLink(at: linkedDirectory, withDestinationURL: snapshots)
-        rejects("snapshot directory symlink rejected") { _ = try FullBackup.export(library: library, snapshotDirectory: linkedDirectory, version: "1.05", destination: fromDirectory) }
-        rejects("non-file snapshot URL rejected") { _ = try FullBackup.export(library: library, snapshotDirectory: URL(string: "https://example.com/Snapshots")!, version: "1.05", destination: fromDirectory) }
-        rejects("duplicate snapshot IDs rejected on export") { _ = try FullBackup.export(library: library, snapshots: [snapshot, snapshot], version: "1.05", destination: fromDirectory) }
+        rejects("hidden prefix rejected") { _ = try FullBackup.read(damaged, currentVersion: "1.18") }
         let linkedInput = root.appendingPathComponent("input-link.zip")
         try FileManager.default.createSymbolicLink(at: linkedInput, withDestinationURL: destination)
-        rejects("archive symlink rejected") { _ = try FullBackup.read(linkedInput, currentVersion: "1.05") }
-        try FileManager.default.removeItem(at: snapshotURL)
-        try FileManager.default.createSymbolicLink(at: snapshotURL, withDestinationURL: destination)
-        rejects("snapshot symlink rejected") { _ = try FullBackup.export(library: library, snapshotDirectory: snapshots, version: "1.05", destination: fromDirectory) }
-        check("snapshot failure retains old backup", try FullBackup.read(fromDirectory, currentVersion: "1.05").library == library)
-        rejects("invalid source cannot overwrite valid backup") { _ = try FullBackup.export(library: badLibrary, snapshots: [], version: "1.05", destination: destination) }
+        rejects("archive symlink rejected") { _ = try FullBackup.read(linkedInput, currentVersion: "1.18") }
+        rejects("invalid source cannot overwrite valid archive") { _ = try FullBackup.export(library: badLibrary, version: "1.18", destination: destination) }
         check("failed export retains previous exact ZIP bytes", try Data(contentsOf: destination) == archive)
-        let target = root.appendingPathComponent("private-target"); let marker = Data("keep-original".utf8)
+        let target = root.appendingPathComponent("private-target"), marker = Data("keep-original".utf8)
         try marker.write(to: target)
         let outputLink = root.appendingPathComponent("output-link.zip")
         try FileManager.default.createSymbolicLink(at: outputLink, withDestinationURL: target)
-        rejects("export rejects destination symlink") { _ = try FullBackup.export(library: library, snapshots: [], version: "1.05", destination: outputLink) }
+        rejects("export rejects destination symlink") { _ = try FullBackup.export(library: library, version: "1.18", destination: outputLink) }
         check("symlink target stays unchanged", try Data(contentsOf: target) == marker)
-        _ = try FullBackup.export(library: .empty(), snapshots: [], version: "1.05", destination: destination)
-        check("successful atomic replacement updates existing backup", try FullBackup.read(destination, currentVersion: "1.05").library == .empty())
+        _ = try FullBackup.export(library: .empty(), version: "1.18", destination: destination)
+        check("successful atomic replacement updates existing archive", try FullBackup.read(destination, currentVersion: "1.18").library == .empty())
         check("no abandoned staged archives", try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".gaomenhu-backup-") })
-        print("Full backup tests passed: \(passed)")
+        print("Current-data archive tests passed: \(passed)")
     }
 
-    /// Independent stored-ZIP fixture writer permits hostile records the exporter
-    /// deliberately cannot create. It does not share production ZIP serialization.
     struct FixtureEntry {
         var path: String
         var data: Data

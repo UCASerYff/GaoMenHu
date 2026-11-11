@@ -7,8 +7,8 @@ private struct MailEditorHeader: View {
     let symbol: String
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: symbol).font(.system(size: 25, weight: .medium)).foregroundStyle(.indigo)
-                .frame(width: 48, height: 48).background(.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+            Image(systemName: symbol).font(.system(size: 25, weight: .medium)).foregroundStyle(PortalTheme.accent)
+                .frame(width: 48, height: 48).background(PortalTheme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.title2.bold())
                 Text(subtitle).font(.callout).foregroundStyle(.secondary)
@@ -259,7 +259,7 @@ private struct MailEditorFeedback: View {
                             Button { value.symbol = symbol } label: {
                                 Image(systemName: symbol).font(.title2).frame(width: 50, height: 40)
                                     .foregroundStyle(value.symbol == symbol ? Color.white : .primary)
-                                    .background(value.symbol == symbol ? Color.indigo : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                                    .background(value.symbol == symbol ? PortalTheme.accent : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                             }.buttonStyle(.plain).accessibilityLabel("选择图标 \(symbol)")
                         }
                     }.padding(.vertical, 4)
@@ -449,7 +449,7 @@ private func editorColor(_ value: String) -> Color {
                     }.labelsHidden()
                     if let account {
                         Text(store.identityName(for: account)).font(.caption.weight(.medium)).padding(.horizontal, 9).padding(.vertical, 4)
-                            .background(.indigo.opacity(0.09), in: Capsule()).foregroundStyle(.indigo)
+                            .background(PortalTheme.accent.opacity(0.09), in: Capsule()).foregroundStyle(PortalTheme.accent)
                     }
                 }
                 addressRow
@@ -472,7 +472,7 @@ private func editorColor(_ value: String) -> Color {
     }
     private var composerHeader: some View {
         HStack(spacing: 14) {
-            Image(systemName: "square.and.pencil").font(.title2).foregroundStyle(.indigo)
+            Image(systemName: "square.and.pencil").font(.title2).foregroundStyle(PortalTheme.accent)
             VStack(alignment: .leading, spacing: 3) {
                 Text("写邮件").font(.title2.bold())
                 Text(account?.enabled == true ? "\(draft.from) · \(store.identityName(for: account))" : "选择已开启收发的邮箱发送，或先存为草稿。")
@@ -746,7 +746,7 @@ private func editorColor(_ value: String) -> Color {
                                 Text("2. 批量别名生成器").font(.system(size: 14, weight: .semibold))
                                 Spacer()
                                 if isGmail {
-                                    Text("检测到 Gmail 格式，支持点号与镜像域").font(.caption).foregroundStyle(.indigo)
+                                    Text("检测到 Gmail 格式，支持点号与镜像域").font(.caption).foregroundStyle(PortalTheme.accent)
                                 } else {
                                     Text("通用邮箱采用标准 + 标签子地址规则").font(.caption).foregroundStyle(.secondary)
                                 }

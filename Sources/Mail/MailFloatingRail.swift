@@ -7,7 +7,7 @@ struct MailFloatingRailView: View {
     var unreadCount: Int = 0
     var errorCount: Int = 0
 
-    private var color: Color { Color(red: 0.72, green: 0.63, blue: 0.90) }
+    private var color: Color { PortalTheme.accent }
 
     var body: some View {
         Button(action: controller.expand) {

@@ -53,21 +53,7 @@ extension AppDelegate {
         case "applyBackup", "applyBookmarks":
             guard let token = data["token"] as? String else { throw AppError.message("请先预览。") }
             try applyLibraryChange(token: token, kind: action == "applyBookmarks" ? "bookmarks" : "backup")
-            reply(responseID, ["ok": true, "state": state(), "message": "已完成，操作前的数据已保存到本地快照。"])
-        case "snapshots":
-            let formatter = ISO8601DateFormatter()
-            let snapshots = try store.snapshots().map { snapshot -> [String: Any] in
-                ["id": snapshot.id, "date": formatter.string(from: Date(timeIntervalSince1970: snapshot.createdAt)),
-                 "label": snapshot.reason, "sites": snapshot.siteCount, "folders": snapshot.folderCount]
-            }
-            reply(responseID, ["ok": true, "snapshots": snapshots])
-        case "previewSnapshot":
-            guard let id = data["id"] as? String else { throw AppError.message("请选择快照。") }
-            let imported = try store.loadSnapshot(id: id)
-            let next = try LibraryOperations.restore(imported, into: library)
-            reply(responseID, try prepareLibraryChange(next, kind: "backup", reason: "恢复本地快照前", sites: imported.sites.count,
-                folders: imported.tiles.filter { $0.kind == "folder" }.count,
-                message: "恢复快照中的网站和排列；当前额外网站保留在已移除入口中。不会删除钥匙串密码。"))
+            reply(responseID, ["ok": true, "state": state(), "message": "已完成。"])
         case "bookmarkSources":
             let sources = testMode ? [] : BookmarksImporter().sources()
             reply(responseID, ["ok": true, "sources": sources.map { ["id": $0.id, "browser": $0.browserID, "label": $0.name] }])
@@ -84,7 +70,6 @@ extension AppDelegate {
         case "deleteWorkspace":
             guard let id = data["id"] as? String, library.workspaces?.contains(where: { $0.id == id }) == true else { throw AppError.message("场景不存在。") }
             var next = library; next.workspaces?.removeAll { $0.id == id }
-            _ = try store.checkpoint(library, reason: "删除工作场景前")
             try store.save(next); library = next; reply(responseID, ["ok": true, "state": state()])
         case "launchWorkspace": launchWorkspace(data, responseID: responseID)
         case "refreshIcon":
@@ -126,7 +111,6 @@ extension AppDelegate {
         _ = try next.validated()
         let before = OrganizationState(library), after = OrganizationState(next)
         guard before != after else { return }
-        _ = try store.checkpoint(library, reason: reason)
         try store.save(next)
         organizationHistory.append(OrganizationEdit(before: before, after: after))
         if organizationHistory.count > 30 { organizationHistory.removeFirst() }
@@ -137,7 +121,7 @@ extension AppDelegate {
         guard let edit = organizationHistory.last else { throw AppError.message("没有可以撤销的整理操作。") }
         guard OrganizationState(library) == edit.after else {
             organizationHistory.removeAll()
-            throw AppError.message("网站数据已发生其他变化，请从本地快照恢复原排列。")
+            throw AppError.message("网站数据已发生其他变化，请撤销最近的其他整理或手动调整排列。")
         }
         var next = library; next.tiles = edit.before.tiles
         for index in next.sites.indices {
@@ -206,7 +190,6 @@ extension AppDelegate {
     func applyLibraryChange(token: String, kind: String) throws {
         guard let pending = pendingLibraryChanges[token], pending.kind == kind, pending.expires > Date() else { throw AppError.message("预览已过期，请重新选择。") }
         guard library == pending.baseline else { throw AppError.message("预览期间网站发生变化，请重新预览后导入。") }
-        _ = try store.checkpoint(library, reason: pending.reason)
         try store.save(pending.library); library = pending.library
         applyAppearance(); settingsModel?.refresh()
         pendingLibraryChanges.removeAll(); organizationHistory.removeAll(); launches.removeAll()
@@ -216,7 +199,7 @@ extension AppDelegate {
     func previewBackup(_ data: [String: Any], responseID: String) {
         let mode = data["mode"] as? String == "restore" ? "restore" : "merge"
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
-        panel.message = mode == "restore" ? "预览并恢复网站、文件夹和排列；操作前会保存本地快照。" : "预览合并网站和文件夹，重复网址保留现有设置。"
+        panel.message = mode == "restore" ? "预览并恢复网站、文件夹和排列；不会创建自动快照。" : "预览合并网站和文件夹，重复网址保留现有设置。"
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { self.reply(responseID, ["ok": false, "cancelled": true]); return }
             do {
@@ -241,7 +224,6 @@ extension AppDelegate {
         var next = library, groups = library.workspaces ?? []
         if let index = groups.firstIndex(where: { $0.id == workspace.id }) { groups[index] = workspace } else { groups.append(workspace) }
         next.workspaces = groups
-        _ = try store.checkpoint(library, reason: "编辑工作场景前")
         try store.save(next); library = next
     }
 
@@ -292,7 +274,6 @@ extension AppDelegate {
         var next = library; next.sites.append(site)
         if let folderID, let index = next.tiles.firstIndex(where: { $0.id == folderID }) { next.tiles[index].children?.append(site.id) }
         else { next.tiles.append(Tile(id: site.id, kind: "site", name: nil, children: nil)) }
-        _ = try store.checkpoint(library, reason: "从浏览器收藏前")
         try store.save(next); library = next; organizationHistory.removeAll()
         emit("update", ["state": state()]); fetchIcon(site)
         return ["ok": true, "message": "已收藏到搞门户。"]

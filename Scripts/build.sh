@@ -10,7 +10,7 @@ TEST_FLAGS=()
 if (( $# > 0 )); then
   if (( $# != 2 )) || [[ "$1" != "--app-only" ]]; then print -u2 "用法：build.sh [--app-only /绝对路径/容器.noindex/测试.app]"; exit 1; fi
   # Resolve and check the destination before compiling or creating any App.
-  DEST="$(python3 - "$PROJECT_DIR/Scripts/backup_verify.py" "$2" <<'PY'
+  DEST="$(python3 - "$PROJECT_DIR/Scripts/install.py" "$2" <<'PY'
 import runpy
 import sys
 from pathlib import Path
@@ -37,8 +37,8 @@ clang -O2 -arch arm64 -mmacosx-version-min=14.0 -isysroot "$SDK" \
 swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/module-cache" \
   -import-objc-header "$PROJECT_DIR/Sources/Mail/MailNative.h" \
   "$TEST_FLAGS[@]" "$PROJECT_DIR/Tests/UITesting.swift" "$PROJECT_DIR/Tests/NativeFeatureTests.swift" \
-  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
-  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/BackupRestore.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Sources/PortalIntegration.swift" "$PROJECT_DIR/Sources/PortalDownloadIngress.swift" "$PROJECT_DIR/Sources/PortalDownloadHost.swift" "$PROJECT_DIR/Sources/Downloads/"*.swift "$PROJECT_DIR/Sources/PortalMailHost.swift" "$PROJECT_DIR/Sources/PortalMailPreferences.swift" "$PROJECT_DIR/Sources/Mail/"*.swift "$PROJECT_DIR/Sources/App.swift" "$STAGING/MailNative.o" \
+  "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/PortalTheme.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
+  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Sources/PortalIntegration.swift" "$PROJECT_DIR/Sources/PortalDownloadIngress.swift" "$PROJECT_DIR/Sources/PortalDownloadHost.swift" "$PROJECT_DIR/Sources/Downloads/"*.swift "$PROJECT_DIR/Sources/PortalMailHost.swift" "$PROJECT_DIR/Sources/PortalMailPreferences.swift" "$PROJECT_DIR/Sources/Mail/"*.swift "$PROJECT_DIR/Sources/App.swift" "$STAGING/MailNative.o" \
   -framework SwiftUI -framework AppKit -framework WebKit -framework Security -framework LocalAuthentication -framework Carbon -framework ImageIO -framework Network -framework CryptoKit -framework AuthenticationServices -framework UserNotifications -lcurl -lsqlite3 \
   -o "$APP/Contents/MacOS/MenDao"
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \

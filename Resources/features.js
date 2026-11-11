@@ -91,21 +91,13 @@ function previewCount(value){return Array.isArray(value)?value.length:Math.max(0
 function showImportPreview(result,action,title,restoring=false){
   if(!result.token||!result.preview){toast('没有可导入的内容。');return;}
   const preview=result.preview;
-  openDialog(head('PREVIEW',title,'确认预览后再应用。操作前会自动保存当前布局快照。')+
+  openDialog(head('PREVIEW',title,'确认预览后再应用，不会创建自动快照。')+
     '<div class="preview-stats"><div><strong>'+previewCount(preview.sites)+'</strong><span>网站</span></div><div><strong>'+previewCount(preview.folders)+'</strong><span>文件夹</span></div><div><strong>'+previewCount(preview.duplicates)+'</strong><span>重复网站</span></div></div>'+
     '<p class="confirm-body">'+esc(preview.message||(restoring?'恢复备份中的网站、文件夹和排列。':'保留现有内容，新增网站按原文件夹结构合并。'))+'</p>'+
     (Array.isArray(preview.folderNames)&&preview.folderNames.length?'<p class="form-note">文件夹：'+esc(preview.folderNames.join('、'))+'</p>':'')+
     '<p class="form-note">密码不会从备份或浏览器导入；已保存在本机钥匙串的密码由搞门户继续管理。</p><div class="form-error" id="previewError"></div><div class="dialog-actions"><button class="soft-button" data-close>取消</button><button class="primary-button" id="applyPreview">'+(restoring?'恢复布局':'确认导入')+'</button></div>');
   $('applyPreview').onclick=async()=>{const button=$('applyPreview');button.disabled=true;try{const response=await native(action,{token:result.token});setSelectionMode(false);page=0;closeFolder();render();closeDialog();toast(response.message||'已完成。');}catch(error){if($('previewError'))$('previewError').textContent=error.message;button.disabled=false;}};
 }
-async function showSnapshots(){
-  try{const result=await native('snapshots'),snapshots=result.snapshots||[];
-    openDialog(head('SNAPSHOTS','本地自动快照','快照仅保存在这台 Mac，用于恢复网站和布局，不包含密码。')+
-      (!snapshots.length?'<p class="empty-accounts">还没有自动快照。批量整理或导入前会自动保存。</p>':'<div class="snapshot-list">'+snapshots.map(s=>'<div class="setting-row"><div><strong>'+esc(s.label||'整理前快照')+'</strong><p>'+esc(formatSnapshotDate(s.date))+' · '+previewCount(s.sites)+' 个网站 · '+previewCount(s.folders)+' 个文件夹</p></div><button class="soft-button" data-snapshot="'+esc(s.id)+'">预览恢复</button></div>').join('')+'</div>'));
-    $('dialog').querySelectorAll('[data-snapshot]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{const response=await native('previewSnapshot',{id:button.dataset.snapshot});showImportPreview(response,'applyBackup','恢复自动快照',true);}catch(error){toast(error.message);button.disabled=false;}});
-  }catch(error){toast(error.message);}
-}
-function formatSnapshotDate(value){const date=new Date(value);return Number.isNaN(date.valueOf())?'时间未知':date.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 async function showBookmarkSources(){
   try{const result=await native('bookmarkSources'),sources=result.sources||[];
     openDialog(head('IMPORT','导入浏览器收藏','选择个人资料，将收藏栏网站连同文件夹导入搞门户。')+
@@ -115,7 +107,7 @@ async function showBookmarkSources(){
 }
 function workspaceContents(){
   const workspaces=S.library.workspaces||[];
-  return '<div class="workspace-list">'+(!workspaces.length?'<div class="empty-state"><span class="empty-state-symbol">'+svg('workspaces')+'</span><strong>还没有工作场景</strong><p>例如创建「写论文」，把检索、写作和邮箱放在一起。<br>每个网站使用自己的默认浏览器，一个场景最多包含 20 个网站。</p><button class="primary-button" id="newWorkspace">创建工作场景</button></div>':workspaces.map(w=>{const sites=w.siteIDs.map(siteById).filter(Boolean);return '<section class="workspace-card"><div class="workspace-title"><div><strong>'+esc(w.name)+'</strong><p>'+sites.length+' 个网站 · '+esc(sites.slice(0,3).map(s=>s.name).join('、'))+(sites.length>3?'…':'')+'</p></div><button class="primary-button" data-launch-workspace="'+esc(w.id)+'">打开场景</button></div><div class="workspace-controls"><button class="text-button" data-edit-workspace="'+esc(w.id)+'">编辑场景</button><button class="text-button danger" data-delete-workspace="'+esc(w.id)+'">删除</button></div></section>';}).join(''))+'</div>';
+  return '<div class="workspace-grid">'+(!workspaces.length?'<div class="empty-state"><span class="empty-state-symbol">'+svg('workspaces')+'</span><strong>还没有工作场景</strong><p>例如创建「写论文」，把检索、写作和邮箱放在一起。<br>每个网站使用自己的默认浏览器，一个场景最多包含 20 个网站。</p><button class="primary-button" id="newWorkspace">创建工作场景</button></div>':workspaces.map(w=>{const sites=w.siteIDs.map(siteById).filter(Boolean);return '<section class="workspace-card"><div class="workspace-title"><div><strong>'+esc(w.name)+'</strong><p>'+sites.length+' 个网站 · '+esc(sites.slice(0,3).map(s=>s.name).join('、'))+(sites.length>3?'…':'')+'</p></div><button class="primary-button" data-launch-workspace="'+esc(w.id)+'">打开场景</button></div><div class="workspace-controls"><button class="text-button" data-edit-workspace="'+esc(w.id)+'">编辑场景</button><button class="text-button danger" data-delete-workspace="'+esc(w.id)+'">删除</button></div></section>';}).join(''))+'</div>';
 }
 function bindWorkspaceControls(root){
   root.querySelector('#newWorkspace')?.addEventListener('click',()=>showWorkspaceEditor());

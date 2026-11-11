@@ -233,9 +233,8 @@ final class MailStorage {
         }
     }
     func restore(_ library: MailLibrary) throws {
-        // Called only after the native restore confirmation. Even undecodable
-        // original bytes must be readable and snapshotted before replacement;
-        // a missing file, marker or unknown root is never treated as empty.
+        // Called only after native confirmation. Original bytes remain in place
+        // until the validated replacement commits atomically; no copy is created.
         guard !blocked else { throw MailAppError.message(readFailure ?? "邮件资料等待迁移复核。") }
         try MailValidation.validate(library)
         let restoringProtectedData = readFailure != nil
@@ -251,11 +250,7 @@ final class MailStorage {
         } else { try verifyAvailability() }
         let originalLibrary = try mailRead(libraryURL, maximum: 64 * 1024 * 1024)
         let originalCache = try mailRead(root.appendingPathComponent("MailCache.json"), maximum: 512 * 1024 * 1024)
-        let suffix = UUID().uuidString
-        try writeExclusive(originalLibrary, name: "BeforeRestore-" + suffix + ".json")
-        try writeExclusive(originalCache, name: "MailCache.beforeRestore." + suffix + ".json")
-        // Rebind only inside this explicitly confirmed recovery operation after
-        // preserving both originals. No ordinary save/load uses this path.
+        // Rebind against the exact current bytes before the atomic replacement.
         libraryDigest = Self.digest(originalLibrary); cacheDigest = Self.digest(originalCache)
         readFailure = nil
         do { try verifyAvailability(); try replace(Self.encoder.encode(library), name: "Library.json") }

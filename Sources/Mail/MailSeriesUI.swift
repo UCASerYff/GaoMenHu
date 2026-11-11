@@ -15,7 +15,7 @@ struct MailSidebarRow: View {
     var symbol: String
     var count: Int?
     var selected: Bool
-    var accent: Color = .indigo
+    var accent: Color = PortalTheme.accent
     var action: () -> Void
     @State private var hovered = false
     @Environment(\.colorScheme) private var colorScheme
@@ -30,13 +30,13 @@ struct MailSidebarRow: View {
                         .padding(.horizontal,7).padding(.vertical,2)
                         .background(selected ? Color.white.opacity(0.22) : Color.primary.opacity(0.05),in:Capsule())
                 }
-            }.padding(.horizontal,10).frame(maxWidth:.infinity,minHeight:32)
+            }.padding(.horizontal,10).frame(maxWidth:.infinity,minHeight:40)
                 .foregroundStyle(selected ? Color.white : .primary)
                 .background {
-                    if selected {RoundedRectangle(cornerRadius:9,style:.continuous).fill(accent).shadow(color:accent.opacity(colorScheme == .dark ? 0.45 : 0.32),radius:5,y:2)}
-                    else if hovered {RoundedRectangle(cornerRadius:9,style:.continuous).fill(Color.primary.opacity(0.06))}
+                    if selected {RoundedRectangle(cornerRadius:12,style:.continuous).fill(accent).shadow(color:accent.opacity(colorScheme == .dark ? 0.45 : 0.32),radius:5,y:2)}
+                    else if hovered {RoundedRectangle(cornerRadius:12,style:.continuous).fill(Color.primary.opacity(0.06))}
                 }
-                .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+                .contentShape(RoundedRectangle(cornerRadius:12,style:.continuous))
         }.buttonStyle(.plain).onHover {hovered = $0}
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }

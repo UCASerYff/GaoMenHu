@@ -339,7 +339,7 @@ function selectSection(section){
   if(!['launcher','workspaces','vault'].includes(section))return;
   closeFolder();hideContext();selectionMode=false;selectedSites.clear();activeSection=section;
   $('launcherPage').hidden=section!=='launcher';$('sectionPage').hidden=section==='launcher';
-  const titles={launcher:['网站启动台','常用网站，按你的习惯排列。'],workspaces:['工作场景','把同一件事需要的网站放在一起。'],vault:['账号库','集中管理网站账号，密码保存在本机钥匙串。']};
+  const titles={launcher:['网站启动台','把常用的地方，放在最顺手的位置。'],workspaces:['工作场景','把同一件事需要的网站放在一起。'],vault:['账号库','集中管理网站账号，密码保存在本机钥匙串。']};
   $('pageTitle').textContent=titles[section][0];$('pageSubtitle').textContent=titles[section][1];
   $('addButton').innerHTML='<span>＋</span> '+(section==='workspaces'?'创建场景':'添加网站');
   renderSelection();render();
@@ -347,11 +347,11 @@ function selectSection(section){
 function renderSection(){
   const root=$('sectionPage');
   if(activeSection==='workspaces'){root.innerHTML=workspaceContents();bindWorkspaceControls(root);}
-  if(activeSection==='vault'){root.innerHTML='<div class="section-notice">'+svg('vault')+'<span>账号库解锁后可自动填充。睡眠、锁屏或 5 分钟后会自动锁定。</span></div>'+vaultContents();bindVaultControls(root);}
+  if(activeSection==='vault'){root.innerHTML='<div class="section-notice">'+svg('vault')+'<span>账号库解锁后可自动填充。睡眠、锁屏或 5 分钟后会自动锁定。</span></div><div class="vault-grid">'+vaultContents()+'</div>';bindVaultControls(root);}
 }
 function toggleSidebar(){sidebarHidden=!sidebarHidden;document.body.classList.toggle('sidebar-hidden',sidebarHidden);render();}
 function openSettingsPage(page){
-  const routes={bookmarks:showBookmarkSources,snapshots:showSnapshots,archived:()=>showVault(true),'backup-merge':()=>startBackupPreview('merge'),'backup-restore':()=>startBackupPreview('restore')};
+  const routes={bookmarks:showBookmarkSources,archived:()=>showVault(true),'backup-merge':()=>startBackupPreview('merge'),'backup-restore':()=>startBackupPreview('restore')};
   if(routes[page])routes[page]();
 }
 function initializeLauncher(){

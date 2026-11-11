@@ -619,7 +619,7 @@ import UniformTypeIdentifiers
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             var incoming = try MailStorage.decoder.decode(MailLibrary.self,from:Data(contentsOf:url)); try MailValidation.validate(incoming)
-            let alert = NSAlert(); alert.messageText = "恢复资料备份？"; alert.informativeText = "将替换当前的身份、邮箱资料、平台记录和草稿，并清空当前邮件视图。备份内有 \(incoming.accounts.count) 个邮箱、\(incoming.platforms.count) 条平台记录。当前资料和邮件缓存（含本机发送记录）会先保存恢复前副本，存放在数据文件夹中。恢复后邮箱设为仅登记，请重新检查收发授权。"; alert.addButton(withTitle:"恢复"); alert.addButton(withTitle:"取消")
+            let alert = NSAlert(); alert.messageText = "恢复资料备份？"; alert.informativeText = "将替换当前的身份、邮箱资料、平台记录和草稿，并清空当前邮件视图。导入文件内有 \(incoming.accounts.count) 个邮箱、\(incoming.platforms.count) 条平台记录。此操作不会创建自动备份。恢复后邮箱设为仅登记，请重新检查收发授权。"; alert.addButton(withTitle:"恢复"); alert.addButton(withTitle:"取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             for i in incoming.accounts.indices { incoming.accounts[i].enabled = false; incoming.accounts[i].syncError = nil; incoming.accounts[i].lastSync = nil }
             try storage.restore(incoming); library = incoming; messages = []; try storage.saveMessages([]); identityFilter = nil; mailboxFilter = nil; notice = "资料已恢复，请重新检查邮箱授权"
