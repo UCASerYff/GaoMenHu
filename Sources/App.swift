@@ -165,6 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         data.addItem(withTitle: "导出授权的网站目录…", action: #selector(exportPortalSiteCatalog), keyEquivalent: "")
         data.addItem(withTitle: "导出授权的场景目录…", action: #selector(exportPortalWorkspaceCatalog), keyEquivalent: "")
         setupMailMenu(in: bar)
+        let windowRoot = NSMenuItem(); bar.addItem(windowRoot)
+        let windowMenu = NSMenu(title: "窗口"); windowRoot.submenu = windowMenu
+        // Let the responder chain select the current window and preserve its close delegate.
+        let close = windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        close.keyEquivalentModifierMask = [.command]
+        NSApp.windowsMenu = windowMenu
         NSApp.mainMenu = bar
     }
     func setupStatusItem() {

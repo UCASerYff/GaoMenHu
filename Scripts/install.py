@@ -81,7 +81,7 @@ def install(no_open=False):
     verify_existing(FORMAL_APP)
     verify_existing(LEGACY_APP)
     stage = Path("/Applications") / f".GaoMenHu-install-{uuid.uuid4()}.noindex"
-    mount = Path(tempfile.mkdtemp(prefix="GaoMenHu-mount-", dir="/private/tmp"))
+    mount = Path(tempfile.mkdtemp(prefix="GaoMenHu-mount-", suffix=".noindex", dir="/private/tmp"))
     mounted = False
     try:
         stage.mkdir(mode=0o700)
@@ -92,7 +92,9 @@ def install(no_open=False):
         candidate = stage / "搞门户.app"
         run(["ditto", str(candidate_source), str(candidate)])
         verify_candidate(candidate, version)
-        subprocess.run(["osascript", "-e", f'tell application id "{APP_ID}" to quit'], capture_output=True)
+        run(["osascript", "-e", f'if application id "{APP_ID}" is running then tell application id "{APP_ID}" to quit'])
+        running = run(["osascript", "-e", f'application id "{APP_ID}" is running'])
+        require(running.stdout.strip() == "false", "搞门户仍在运行；请先保留草稿并正常退出，停止替换。")
         verify_existing(FORMAL_APP)
         verify_existing(LEGACY_APP)
         for old in (LEGACY_APP, FORMAL_APP):
@@ -102,14 +104,16 @@ def install(no_open=False):
         run(["lsregister", "-f", str(FORMAL_APP)]) if shutil.which("lsregister") else None
         if not no_open:
             subprocess.run(["open", "-a", str(FORMAL_APP)], check=True)
-        print(f"已安装：{FORMAL_APP}")
-        return FORMAL_APP
     finally:
-        if mounted:
-            subprocess.run(["hdiutil", "detach", str(mount), "-quiet"], capture_output=True)
-        shutil.rmtree(mount, ignore_errors=True)
-        if stage.exists() and not (stage / "搞门户.app").exists():
-            shutil.rmtree(stage)
+        try:
+            if stage.exists():
+                shutil.rmtree(stage)
+        finally:
+            if mounted:
+                run(["hdiutil", "detach", str(mount), "-quiet"])
+            mount.rmdir()
+    print(f"已安装：{FORMAL_APP}")
+    return FORMAL_APP
 
 
 def main():
