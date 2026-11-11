@@ -2,9 +2,9 @@
 
 邮件模块沿用原生收发、缓存、附件、草稿、身份及平台资料。新权威目录为 `~/Library/Application Support/MenDao/MailCenter/`，来源目录为 `~/Library/Application Support/GaoSeries/GaoYouJian/`。来源项目不是编译或运行依赖。
 
-## 先保留资料，再切换权威
+## 先核对资料，再切换权威
 
-总协调先完整备份来源项目、未提交改动、Git 历史、真实资料、偏好、缓存、全部自有附件及恢复依据，逐摘要核验并做恢复演练。来源 V1.10 没有覆盖全库的写者锁；总协调必须在最后快照到切换完成期间实际阻止旧宿主继续写入。单次查询进程不存在、工具的 `--source-retired` 参数或写在 JSON 里的 `sourceFrozen=true`，都不能代替这个动作。
+总协调先逐项核验来源真实资料、偏好、缓存、全部自有附件及恢复依据。当前版本不创建完整备份、迁移备份或恢复快照；失败时停止并报告，不以空白资料覆盖。来源 V1.10 没有覆盖全库的写者锁；总协调必须在最后核验到切换完成期间实际阻止旧宿主继续写入。单次查询进程不存在、工具的 `--source-retired` 参数或写在 JSON 里的 `sourceFrozen=true`，都不能代替这个动作。
 
 迁移前不自动启动任一应用，不登录、不联网，也不读取或导出钥匙串秘密。原凭据继续使用 `com.gaoseries.GaoYouJian.credentials` 和原账号／OAuth 标识；这些标识保留不代表新宿主已经取得访问权限。首次打开只显示缓存，须本人在原生邮件界面明确连接，系统钥匙串提示也由本人处理。未配置 Google／Microsoft 客户端 ID 时仍显示未配置。
 
@@ -26,7 +26,7 @@ Scripts/build-mail-migrator.sh /absolute/reports.noindex/mail-migrator
 
 预检通过相同的 `PortalMailMigration.preflight` 读取真实来源，输出全树、Library 和完整来源偏好三个摘要，以及账号、草稿、缓存和附件数量。完整偏好来自 `/usr/bin/defaults export com.gaoseries.GaoYouJian -` 的原始 plist 字节，不只挑选若干键，也不将导出失败当作空偏好。输出包含本机元数据，应保存在私有报告中。
 
-只有完整备份恢复演练完成、来源实际停写且最后快照核验无变化后，总协调才能生成 schema 1 的 `PortalMailMigrationAuthority`，再执行：
+只有来源实际停写且最后资料核验无变化后，总协调才能生成 schema 1 的 `PortalMailMigrationAuthority`，再执行。以下 `--backup-receipt` 是历史授权格式的兼容字段，只引用既有事实，不要求也不生成新备份：
 
 ```sh
 /absolute/reports.noindex/mail-migrator --apply --source-retired \
@@ -42,7 +42,7 @@ Scripts/build-mail-migrator.sh /absolute/reports.noindex/mail-migrator
 
 - 保留原账号 UUID、启用标记、UID／UIDVALIDITY、平台、草稿、缓存附件和未完成 OAuth 记录，不补造账号或成功状态。
 - 私有目录内草稿附件按完整实物映射；外部草稿附件保留原路径，迁移不擅自读取、搬动或声称权限已转授，使用时由本人正常授权。
-- 旧初始化依据、恢复文件和未知文件原样保留并在收据标明，不把未知内容冒充已验证的新格式。缺失、不可读、未来格式、摘要冲突或未完成事务都停写，不以空库覆盖。
+- 旧初始化依据、事务文件和未知现用文件原样保留并在收据标明；`Library.previous.json`、`BeforeRestore-*.json` 与 `MailCache.beforeRestore.*.json` 自动备份不复制到目标。缺失、不可读、未来格式、摘要冲突或未完成事务都停写，不以空库覆盖。
 - 新目标具有独立初始化证据和迁移事务；重复执行核验既有收据，不重复导入。失败保留来源、目标、暂存和恢复依据，不能用旧快照覆盖新增资料。
 - 原浮窗偏好完整归档；新宿主的可见和发件人／主题预览默认关闭。邮件主题仅应用于邮件窗口，不改门户网站模块的外观。
 

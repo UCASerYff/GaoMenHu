@@ -50,7 +50,7 @@ Root 必须保持真实 lease 和写者 fence。生产 CLI 在写入前、发布
 
 ## 目标现用资料与恢复边界
 
-迁移将全部来源现存文件原字节复制到 `DownloadCenter/ReadOnlyHistory/<migrationUUID>/OriginalFiles/`，同处保存来源相邻初始化原件、完整原偏好、原交换独立证据、源文件清单、四条只读 entries 和只拒绝的身份索引。完整原 ledger 在该目录内保持原字节，包含原 ID、nonce 和摘要。它们是接收方现用业务历史，后续完整备份必须覆盖；不需要读取旧来源路径。原源码／App／专属旧恢复备份不在此保留范围。
+迁移将来源现用业务文件原字节复制到 `DownloadCenter/ReadOnlyHistory/<migrationUUID>/OriginalFiles/`，但明确排除 `downloads.previous.json` 自动备份。此处保存来源相邻初始化原件、完整原偏好、原交换独立证据、源文件清单、四条只读 entries 和只拒绝的身份索引。完整原 ledger 在该目录内保持原字节，包含原 ID、nonce 和摘要。它们是接收方现用业务历史，不需要读取旧来源路径，也不生成后续完整备份。原源码／App／专属旧恢复备份不在此保留范围。
 
 正常库保留原 installation／job／item／grant UUID 和关系；grant 需本人重新授权，不自动开始传输。当前 Exchange 只迁入那条完整旧 completed 历史及其完整包，保留旧 target BID、不可重新批准或发送。四条缺件记录不进入当前 Exchange.records、Incoming／Outgoing 授权或重试流。原目录外的真实下载文件不由迁移工具打开，仍需本人授权后的正常完整性核验。
 
@@ -60,6 +60,6 @@ Root 必须保持真实 lease 和写者 fence。生产 CLI 在写入前、发布
 
 最后 committed defaults 同步和 readback **成功后**才独占写入／fsync 相邻 `.DownloadCenter.history-isolation-complete-v2.json`，绑定完整最终 State 摘要。readiness／readHistory 都要求完成 seal；末次同步失败即使内存已显示 committed 仍保护。validated 的同依据事务可继续，preparing 中断保留现场待恢复，不清空重建；重复成功调用不覆盖目标后来新增业务。缺独立 anchor／marker／receipt 而仍有 ReadOnlyHistory 也保护，不能落回普通空初始化。
 
-`readHistory` 只核目标不可变依据，不打开已被 DownloadManager 持锁的库，也不访问来源。Host 创建 manager 前的 readiness 可只读核库；`verifyPreservedFiles` 是明确维护核验全部保留字节的入口。来源清理由 Root 在例外范围、实际资料核对、业务／组件、安装发布、调用改指和唯一入口都完成后执行；缺件事实始终不能被总台账记成全部历史完整通过。
+`readHistory` 只核目标不可变依据，不打开已被 DownloadManager 持锁的库，也不访问来源。Host 创建 manager 前的 readiness 可只读核库；`verifyPreservedFiles` 核验全部现用保留字节，并明确忽略旧清单中的 `downloads.previous.json`，因此既有自动备份可精确删除而不影响其他历史校验。来源清理由 Root 在例外范围、实际资料核对、业务／组件、安装发布、调用改指和唯一入口都完成后执行；缺件事实始终不能被总台账记成全部历史完整通过。
 
 定向合成检查脚本为 `Scripts/test-download-history-isolation.sh`，仅在 Root 构建 GO／租约后运行。它不启动 App、浏览器或测试窗口，不读取真实账户／资料／钥匙串，也不重跑原不变的下载全套。

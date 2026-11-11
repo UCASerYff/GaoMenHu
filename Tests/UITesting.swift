@@ -32,7 +32,12 @@ extension AppDelegate {
             settingsChecks["nativeDataMenuAvailable"] = NSApp.mainMenu?.items.contains { $0.submenu?.title == "数据" } == true
             settingsWindow?.orderOut(nil)
         } catch { settingsChecks["setup"] = false }
-        library = savedLibrary; applyAppearance(); window.makeKeyAndOrderFront(nil)
+        library = savedLibrary; applyAppearance(); NSApp.activate(ignoringOtherApps: true)
+        let activationDeadline = Date().addingTimeInterval(2)
+        while !NSApp.isActive && Date() < activationDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        window.makeKeyAndOrderFront(nil)
         var floatingChecks: [String: Bool] = [:]
         if let floating = floatingLauncher {
             floating.setVisible(true)
@@ -248,7 +253,7 @@ extension AppDelegate {
                 floatingChecks["searchExternalClickImmediatelyCollapses"] = floating.edgeHidden && !floating.expanded &&
                     floating.query.isEmpty && !(floating.panel.firstResponder is NSTextView)
                 floating.processMouseUp(at: outside, now: clock + 42)
-                floating.setExpanded(true); floating.panel.makeKey(); floating.panel.makeFirstResponder(field)
+                floating.setExpanded(true); floating.panel.makeKeyAndOrderFront(nil); floating.panel.makeFirstResponder(field)
                 if let editor = floating.panel.firstResponder as? NSTextView {
                     editor.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
                     floating.processPointer(at: outside, now: clock + 43)

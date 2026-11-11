@@ -10,7 +10,8 @@ extension AppDelegate {
             launchHistory = originalHistory; floatingLauncher?.refresh()
             pendingLibraryChanges.removeAll(); launches.removeAll(); clients.removeAll(); launchFeedback.removeAll()
         }
-        store = LibraryStore(persistent: false)
+        let fixtureDirectory = URL(fileURLWithPath: "/private/tmp/gaomenhu-native-" + UUID().uuidString, isDirectory: true)
+        store = LibraryStore(directory: fixtureDirectory, persistent: false)
         library = Library.initial(browsers: ["chrome", "edge"])
         var checks: [String: Bool] = [:]
         func check(_ name: String, _ value: @autoclosure () -> Bool) { checks[name] = value() }

@@ -107,6 +107,8 @@ struct MailMigrationTests {
             check(try files(f.source) == before)
             let keyBefore = PortalMailMigration.evidenceKey(destinationRootURL: f.target)
             let receipt = try f.apply(authorization)
+            check(!FileManager.default.fileExists(atPath: f.target.appendingPathComponent("Library.previous.json").path)
+                && !FileManager.default.fileExists(atPath: f.target.appendingPathComponent("MigrationEvidence/OriginalLibraries/Library.previous.json").path))
             check(receipt.accountIDs == f.library.accounts.map(\.id) && receipt.draftIDs == f.library.drafts.map(\.id))
             check(receipt.cachedMessageIDs == [f.message!.id] && receipt.originalEnabledAccountIDs == f.library.accounts.map(\.id))
             check(receipt.credentialServicePreserved == "com.gaoseries.GaoYouJian.credentials" && receipt.newHostConnectionAuthorizationRequired)

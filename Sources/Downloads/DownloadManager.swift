@@ -173,7 +173,7 @@ import Darwin
         } catch {
             // A post-rename fsync error may leave the whole new snapshot on
             // disk. Do not publish a partial model or overwrite recovery files.
-            recoveryIssue = "保存目录重授权失败，已停止新写入并保留恢复快照：\(error.localizedDescription)"
+            recoveryIssue = "保存目录重授权失败，已停止新写入并保留原资料：\(error.localizedDescription)"
             for transfer in transfers.values { transfer.cancel() }
             throw error
         }

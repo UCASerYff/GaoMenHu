@@ -143,8 +143,7 @@ ln -s /Applications "$STAGING/disk/Applications"
 cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"
 xattr -cr "$STAGING/disk"
 hdiutil create -quiet -volname "搞门户 V$VERSION" -srcfolder "$STAGING/disk" -format UDZO "$STAGING/GaoMenHu-$VERSION.dmg"
-# The previous package is retained until installation and business verification
-# succeed. Cleanup belongs to the verified upgrade-finalization step.
+# Publish only the current package; never create an upgrade or rollback backup.
 mv "$STAGING/GaoMenHu-$VERSION.dmg" "$PROJECT_DIR/Release/"
 (cd "$PROJECT_DIR/Release" && shasum -a 256 "GaoMenHu-$VERSION.dmg" > "GaoMenHu-$VERSION.dmg.sha256")
 print "完成：$PROJECT_DIR/Release/GaoMenHu-$VERSION.dmg"

@@ -50,6 +50,7 @@ private final class MailMemoryCredentials {
             library.accounts.append(account); library.preferences.googleClientID = "synthetic-client-id"
             library.drafts = [MailDraft(accountID: account.id, from: account.email, to: "recipient@example.invalid", body: "private fixture draft")]
             try storage.save(library)
+            try check(!fm.fileExists(atPath: root.appendingPathComponent("Library.previous.json").path), "邮件保存不生成上一份库备份")
             let message = CachedMessage(id: account.id.uuidString + "|INBOX|42|1", accountID: account.id, folder: "INBOX", uid: 1,
                 subject: "fixture cached subject", from: "sender@example.invalid", to: account.email, cc: "", date: Date(), preview: "cached",
                 body: "fixture cached body", html: nil, isRead: false, isFlagged: false, messageID: "<fixture@example.invalid>", references: nil,

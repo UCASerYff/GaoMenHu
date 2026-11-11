@@ -558,11 +558,11 @@ enum PortalDownloadMigration {
         guard original.st_dev == final.st_dev, original.st_ino == final.st_ino else { throw issue() }
         return Tree(files: files, directories: directories.sorted())
     }
-    static func copy(_ source: URL, to target: URL, expected: Tree) throws {
+    static func copy(_ source: URL, to target: URL, expected: Tree, excluding: Set<String> = []) throws {
         for path in expected.directories.sorted(by: { $0.split(separator: "/").count < $1.split(separator: "/").count }) {
             try makeDirectory(target.appendingPathComponent(path, isDirectory: true))
         }
-        for (path, record) in expected.files {
+        for (path, record) in expected.files where !excluding.contains(path) {
             let src = source.appendingPathComponent(path), dst = target.appendingPathComponent(path)
             let sourceParent = try openDirectoryNoLinks(src.deletingLastPathComponent()); defer { close(sourceParent) }
             let targetParent = try openDirectoryNoLinks(dst.deletingLastPathComponent()); defer { close(targetParent) }
@@ -583,6 +583,7 @@ enum PortalDownloadMigration {
             guard before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == after.st_size,
                   before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else { throw issue() }
         }
-        guard try tree(target) == expected else { throw issue() }
+        let retained = Tree(files: expected.files.filter { !excluding.contains($0.key) }, directories: expected.directories)
+        guard try tree(target) == retained else { throw issue() }
     }
 }

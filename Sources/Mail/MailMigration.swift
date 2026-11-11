@@ -212,7 +212,9 @@ enum PortalMailMigration {
         let staged = container.appendingPathComponent(target.lastPathComponent, isDirectory: true)
         if value.phase == "preparing" {
             guard !(try exists(container)), !(try exists(target)) else { throw issue() }
-            try makeDirectory(container); try makeDirectory(staged); try copy(root, to: staged, expected: source.tree)
+            try makeDirectory(container); try makeDirectory(staged)
+            let automaticBackups = Set(source.tree.files.keys.filter { isAutomaticBackup($0) })
+            try copy(root, to: staged, expected: source.tree, excluding: automaticBackups)
             guard source.tree.files[".MailStore.lock"] == nil else { throw issue("来源含有接收端保留的锁文件，未复用未知写入依据。") }
             try write(Data(), at: staged.appendingPathComponent(".MailStore.lock"), replacing: false)
             try fault?("mail.copied")
@@ -221,12 +223,12 @@ enum PortalMailMigration {
             try write(sourcePreferences, at: evidence.appendingPathComponent("source-preferences.plist"), replacing: false)
             try write(try encode(source.tree), at: evidence.appendingPathComponent("source-files.json"), replacing: false)
             var mappings: [String: String] = [:]
-            for relative in source.knownLibraryFiles {
+            for relative in source.knownLibraryFiles where !isAutomaticBackup(relative) {
                 let original = try read(root.appendingPathComponent(relative), limit: maximumLibraryBytes)
                 let (mapped, changed) = try mapOwnedAttachments(original, source: source, target: target)
                 if !changed.isEmpty {
-                    // Known library snapshots are root files; their original bytes
-                    // remain separately available for rollback and recovery review.
+                    // Current and pending library files retain their original bytes
+                    // for transaction review; automatic backups are never copied.
                     try write(original, at: evidence.appendingPathComponent("OriginalLibraries").appendingPathComponent(relative), replacing: false)
                     try write(mapped, at: staged.appendingPathComponent(relative), replacing: true)
                     for (from, to) in changed { mappings[from] = to }
@@ -533,11 +535,17 @@ enum PortalMailMigration {
         guard original.st_dev == final.st_dev, original.st_ino == final.st_ino else { throw issue() }
         return Tree(files: files, directories: directories.sorted())
     }
-    private static func copy(_ source: URL, to target: URL, expected: Tree) throws {
+    private static func isAutomaticBackup(_ path: String) -> Bool {
+        guard !path.contains("/") else { return false }
+        return path == "Library.previous.json"
+            || (path.hasPrefix("BeforeRestore-") && path.hasSuffix(".json"))
+            || (path.hasPrefix("MailCache.beforeRestore.") && path.hasSuffix(".json"))
+    }
+    private static func copy(_ source: URL, to target: URL, expected: Tree, excluding: Set<String> = []) throws {
         for path in expected.directories.sorted(by: { $0.split(separator: "/").count < $1.split(separator: "/").count }) {
             try makeDirectory(target.appendingPathComponent(path, isDirectory: true))
         }
-        for (path, record) in expected.files {
+        for (path, record) in expected.files where !excluding.contains(path) {
             let src = source.appendingPathComponent(path), dst = target.appendingPathComponent(path)
             let sourceParent = try openDirectory(src.deletingLastPathComponent()); defer { close(sourceParent) }
             let targetParent = try openDirectory(dst.deletingLastPathComponent()); defer { close(targetParent) }
@@ -558,6 +566,7 @@ enum PortalMailMigration {
             guard before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == after.st_size,
                   before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else { throw issue() }
         }
-        guard try tree(target) == expected else { throw issue() }
+        let retained = Tree(files: expected.files.filter { !excluding.contains($0.key) }, directories: expected.directories)
+        guard try tree(target) == retained else { throw issue() }
     }
 }

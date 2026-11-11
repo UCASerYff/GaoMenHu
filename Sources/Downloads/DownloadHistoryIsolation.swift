@@ -446,7 +446,11 @@ enum PortalDownloadHistoryIsolation {
     static func verifyPreservedFiles(destinationRootURL: URL, targetDefaults: PortalDownloadMigrationDefaults = UserDefaults.standard) throws {
         guard let loaded = try current(destinationRootURL, defaults: targetDefaults) else { throw bad() }
         let history = destinationRootURL.appendingPathComponent(loaded.receipt.historyRelativePath)
-        guard try M.tree(history.appendingPathComponent("OriginalFiles")) == loaded.receipt.sourceFiles,
+        let original = try M.tree(history.appendingPathComponent("OriginalFiles"))
+        let actual = M.Tree(files: original.files.filter { $0.key != "downloads.previous.json" }, directories: original.directories)
+        let source = loaded.receipt.sourceFiles
+        let expected = M.Tree(files: source.files.filter { $0.key != "downloads.previous.json" }, directories: source.directories)
+        guard actual == expected,
               downloadDigest(try readRecord(history.appendingPathComponent("source-initialization.json"), limit: 4096)) == loaded.receipt.plan.sourceMarkerSHA256 else { throw bad() }
     }
 
@@ -553,7 +557,7 @@ enum PortalDownloadHistoryIsolation {
             let relative = "ReadOnlyHistory/" + value.migrationID.uuidString
             let history = staged.appendingPathComponent(relative); try M.makeDirectory(history)
             let originals = history.appendingPathComponent("OriginalFiles"); try M.makeDirectory(originals)
-            try M.copy(source, to: originals, expected: snap.tree)
+            try M.copy(source, to: originals, expected: snap.tree, excluding: ["downloads.previous.json"])
             try M.write(snap.marker, at: history.appendingPathComponent("source-initialization.json"), replacing: false)
             try M.write(snap.preferences, at: history.appendingPathComponent("source-preferences.plist"), replacing: false)
             try M.write(snap.evidence, at: history.appendingPathComponent("source-exchange-evidence.bin"), replacing: false)
@@ -577,9 +581,6 @@ enum PortalDownloadHistoryIsolation {
             let payload = try encoded(database)
             try M.write(try encoded(M.DatabaseEnvelope(payload: payload, sha256: downloadDigest(payload))), at: staged.appendingPathComponent("downloads.json"), replacing: false)
             try M.write(Data(), at: staged.appendingPathComponent("store.lock"), replacing: false)
-            if snap.tree.files["downloads.previous.json"] != nil {
-                try M.write(readRecord(source.appendingPathComponent("downloads.previous.json")), at: staged.appendingPathComponent("downloads.previous.json"), replacing: false)
-            }
             try M.write(snap.marker, at: M.markerURL(staged), replacing: false)
             let exchange = staged.appendingPathComponent("Exchange"); try M.makeDirectory(exchange)
             for name in ["Incoming", "Outgoing"] { try M.makeDirectory(exchange.appendingPathComponent(name)) }

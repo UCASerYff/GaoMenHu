@@ -147,13 +147,10 @@ final class MailStorage {
     }
     func save(_ library: MailLibrary) throws {
         try verifyAvailability(); try MailValidation.validate(library)
-        let previous = try mailRead(libraryURL, maximum: 64 * 1024 * 1024)
-        try replace(previous, name: "Library.previous.json")
         try replace(Self.encoder.encode(library), name: "Library.json")
     }
     func prepareAccountAddition(_ library: MailLibrary) throws -> PreparedLibrarySave {
         try verifyAvailability(); try MailValidation.validate(library)
-        try replace(mailRead(libraryURL, maximum: 64 * 1024 * 1024), name: "Library.previous.json")
         let data = try Self.encoder.encode(library), staged = root.appendingPathComponent(".Library." + UUID().uuidString + ".pending")
         try writeExclusive(data, name: staged.lastPathComponent)
         return PreparedLibrarySave(staged: staged, destination: libraryURL, beforeCommit: { try self.verifyAvailability() }, didCommit: { self.libraryDigest = Self.digest(data) })

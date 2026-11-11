@@ -61,6 +61,7 @@ import Darwin
                     retryAt: nil, artifact: PublishedArtifact(fileName: "history.bin", byteCount: 8, sha256: downloadDigest(payload), device: 1, inode: 3), createdAt: now,
                     stagingName: itemID.uuidString + ".part")]
                 try store.save(database)
+                try DownloadHistoryIsolationTests.write(try Data(contentsOf: source.appendingPathComponent("downloads.json")), source.appendingPathComponent("downloads.previous.json"))
             }
             let exchange = source.appendingPathComponent("Exchange")
             DownloadHistoryIsolationTests.stage = "fixture-journal-initialize"
@@ -187,7 +188,9 @@ import Darwin
             try check(receipt.plan.taskIDs == [f.jobID] && receipt.plan.itemIDs == [f.itemID] && receipt.plan.grantIDs == [f.grantID])
             try check(try PortalDownloadMigration.tree(f.source) == before)
             try H.verifyPreservedFiles(destinationRootURL: f.target, targetDefaults: f.defaults); checks += 1
+            try check(!FileManager.default.fileExists(atPath: f.target.appendingPathComponent("downloads.previous.json").path))
             let history = f.target.appendingPathComponent(receipt.historyRelativePath)
+            try check(!FileManager.default.fileExists(atPath: history.appendingPathComponent("OriginalFiles/downloads.previous.json").path))
             try check(try Data(contentsOf: history.appendingPathComponent("source-preferences.plist")) == f.preferences)
             try check(try Data(contentsOf: history.appendingPathComponent("OriginalFiles/Exchange/journal.json")) == Data(contentsOf: f.source.appendingPathComponent("Exchange/journal.json")))
             try check(try H.readHistory(destinationRootURL: f.target, targetDefaults: f.defaults).count == 4)

@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         do {
             library = try store.load(defaultBrowsers: installedBrowsers().map { $0.id })
         }
-        catch { library = .empty(); loadError = "已有数据读取失败，已进入恢复保护状态并停止资料写入。原始数据、快照、附件和钥匙串已保留。\n\(error.localizedDescription)" }
+        catch { library = .empty(); loadError = "已有数据读取失败，已进入恢复保护状态并停止资料写入。原始数据、附件和钥匙串已保留。\n\(error.localizedDescription)" }
         applyAppearance(); setupMenus(); setupWindow(); setupStatusItem(); registerHotkey()
         portalCoordinator = PortalExchangeCoordinator(app: self)
         if testMode || store.isWritable {

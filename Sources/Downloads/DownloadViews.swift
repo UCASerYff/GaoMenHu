@@ -56,34 +56,37 @@ struct DownloadMainView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $coordinator.selectedSection) {
-                Section("下载") {
-                    ForEach(DownloadSection.allCases.filter { $0 != .exchange }) { section in
-                        Label {
-                            HStack {
-                                Text(section.title)
-                                Spacer()
-                                Text("\(manager.items.filter { section.matches($0) }.count)")
-                                    .foregroundStyle(.secondary).font(.caption.monospacedDigit())
-                            }
-                        } icon: { Image(systemName: section.icon) }.tag(section)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(DownloadSection.allCases) { section in
+                    if section == .all || section == .exchange {
+                        Text(section == .all ? "下载" : "交接")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 12).padding(.top, section == .all ? 4 : 20).padding(.bottom, 6)
                     }
+                    let selected = coordinator.selectedSection == section
+                    Button { coordinator.selectedSection = section } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: section.icon).frame(width: 18)
+                            Text(section.title)
+                            Spacer()
+                            Text("\(section == .exchange ? exchange.records.filter { $0.stage == "awaitingReview" }.count : manager.items.filter { section.matches($0) }.count)")
+                                .font(.caption.monospacedDigit()).foregroundStyle(selected ? Color.white.opacity(0.82) : Color.secondary)
+                        }
+                        .font(.callout.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.white : Color.primary)
+                        .padding(.horizontal, 12).frame(height: 40)
+                        .background(selected ? PortalTheme.accent : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }.buttonStyle(.plain)
                 }
-                Section("交接") {
-                    Label {
-                        HStack { Text("跨应用请求"); Spacer(); Text("\(exchange.records.filter { $0.stage == "awaitingReview" }.count)").foregroundStyle(.secondary).font(.caption) }
-                    } icon: { Image(systemName: "arrow.left.arrow.right") }.tag(DownloadSection.exchange)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 190, ideal: 216)
-            .safeAreaInset(edge: .bottom) {
+                Spacer()
+                Divider().padding(.vertical, 8)
                 VStack(alignment: .leading, spacing: 6) {
                     Label("仅在应用运行时下载", systemImage: "info.circle")
-                    Text("退出会暂停，重新打开后由你恢复。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }.font(.caption).padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("退出会暂停，重新打开后由你恢复。").font(.caption2).foregroundStyle(.secondary)
+                }.font(.caption).padding(.horizontal, 4).padding(.bottom, 4)
             }
+            .padding(12).background(PortalTheme.panel)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 216, max: 236)
         } detail: {
             VStack(spacing: 0) {
                 if let recovery {
@@ -142,6 +145,7 @@ struct DownloadMainView: View {
                     }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 10)
                 }
             }
+            .background(PortalTheme.canvas)
             .searchable(text: $query, prompt: "搜索文件名或来源")
             .toolbar {
                 ToolbarItemGroup {

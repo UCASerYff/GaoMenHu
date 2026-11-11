@@ -232,7 +232,7 @@ final class LibraryStore {
             return library
         } catch {
             access = .blocked
-            throw AppError.message("网站资料处于恢复保护状态，已停止自动保存。原资料、快照和附件保持不变；请检查主资料文件及未完成事务，恢复安全副本后重新启动。\n\(error.localizedDescription)")
+            throw AppError.message("网站资料处于恢复保护状态，已停止自动保存。原资料和附件保持不变；请检查主资料文件及未完成事务，处理后重新启动。\n\(error.localizedDescription)")
         }
     }
 

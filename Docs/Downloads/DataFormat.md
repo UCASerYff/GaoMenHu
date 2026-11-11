@@ -2,7 +2,7 @@
 
 下载权威根为 `~/Library/Application Support/MenDao/DownloadCenter/`；网站收藏和账号仍使用原 `MenDao/library.json` 和原钥匙串服务。下载资料不会存入网站账号字段或浏览器 Cookie。
 
-`downloads.json` 是 schemaVersion 1 的下载快照，外层为 payload 的 Base64 与 SHA-256，内层保留 installationID、revision、migrationHistory、jobs、items、destinations 和 settings。`downloads.previous.json` 为上一完整快照，只供核对恢复，不自动回退。独立初始化记录 `.DownloadCenter.initialized-v1.json` 位于 MenDao 下，丢失或与资料冲突时停写；不能创建空队列替代已有资料。
+`downloads.json` 是 schemaVersion 1 的下载数据库，外层为 payload 的 Base64 与 SHA-256，内层保留 installationID、revision、migrationHistory、jobs、items、destinations 和 settings。旧版 `downloads.previous.json` 仅作为历史迁移可读格式，新版不生成，也不自动回退。独立初始化记录 `.DownloadCenter.initialized-v1.json` 位于 MenDao 下，丢失或与资料冲突时停写；不能创建空队列替代已有资料。
 
 每个 URL 对应一组稳定的 job/item UUID，原目标目录书签保存 device、inode 和 volumeUUID。迁入的书签全部要求在新宿主重新选择原目录；重授权核对目录身份，不能靠路径字符串重用旧权限。未完成片段仍留在原授权目录的历史 `.GaoXiaZai-Staging-<grantUUID>` 容器，保留原名称、inode、SHA 和 HTTP 校验器，不复制到默认下载目录，不覆盖正式文件。
 
