@@ -1,0 +1,10 @@
+"""搞门户 Windows 版。业务使用 Python 标准库，界面由本机网页提供。"""
+
+MARKETING_VERSION = "1.19"
+WINDOWS_BUILD = "1"
+VERSION_LABEL = "1.19+1"
+APP_ID = "cn.mendao.launcher"
+NATIVE_HOST_NAME = "cn.mendao.bridge"
+EXTENSION_ID = "ipggjapdbehjdikobhedllpdbchkoigf"
+PASSWORD_SERVICE = "cn.mendao.launcher.passwords"
+MAIL_CREDENTIAL_SERVICE = "com.gaoseries.GaoYouJian.credentials"

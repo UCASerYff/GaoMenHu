@@ -1,0 +1,76 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test and build executables
+        run: powershell -ExecutionPolicy Bypass -File .\build.ps1
+      - name: Smoke-test the packaged exe
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = Join-Path $env:TEMP ("gaomenhu-smoke-" + [guid]::NewGuid().ToString("n"))
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $libraryFile = Join-Path $dest "library.json"
+          if (Test-Path $libraryFile) { throw "temp data dir already has library.json" }
+          $port = 18767
+          $exe = Join-Path (Get-Location) "dist\GaoMenHu.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList @(
+            "--data-dir", $dest, "--serve", "--no-browser", "--port", "$port"
+          ) -PassThru -WindowStyle Hidden
+          try {
+            $page = $null
+            $deadline = (Get-Date).AddSeconds(90)
+            do {
+              if ($proc.HasExited) { throw "GaoMenHu.exe exited early with code $($proc.ExitCode)" }
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 3 -NoProxy
+                if ($response.StatusCode -eq 200) { $page = $response; break }
+              } catch {}
+              Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            if (-not $page) { throw "packaged exe did not return HTTP 200" }
+            $token = [regex]::Match($page.Content, 'name="gao-token" content="([^"]+)"').Groups[1].Value
+            if (-not $token) { throw "HTTP 200 page did not include a session token" }
+            $headers = @{ "X-Gao-Token" = $token }
+            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/library/create" -Headers $headers -ContentType "application/json" -Body "{}" -NoProxy | Out-Null
+            if (-not (Test-Path $libraryFile)) { throw "creating a library did not write library.json" }
+            $siteBody = '{"site":{"name":"CI smoke site","url":"https://example.com","color":"#537CE6","allowedBrowsers":["chrome"],"defaultBrowser":"chrome","accounts":[],"profiles":{}}}'
+            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/sites/save" -Headers $headers -ContentType "application/json" -Body $siteBody -NoProxy | Out-Null
+            $saved = Get-Content -Raw -Encoding UTF8 $libraryFile
+            if ($saved -notmatch "CI smoke site") { throw "library.json does not contain the written site" }
+            $listed = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/state" -Headers $headers -Method POST -ContentType "application/json" -Body "{}" -NoProxy
+            $sites = @($listed.library.sites)
+            $found = $false
+            foreach ($site in $sites) {
+              if ($site.name -eq "CI smoke site") { $found = $true }
+            }
+            if (-not $found) { throw "reading the library did not return the written site" }
+            Write-Output "smoke ok: HTTP 200, wrote and read library.json"
+            try {
+              Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/shutdown" -Headers $headers -ContentType "application/json" -Body "{}" -NoProxy | Out-Null
+            } catch {}
+            $exitDeadline = (Get-Date).AddSeconds(20)
+            while (-not $proc.HasExited -and (Get-Date) -lt $exitDeadline) { Start-Sleep -Milliseconds 500 }
+          } finally {
+            if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
+            if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GaoMenHu-Windows-1.19
+          if-no-files-found: error
+          path: |
+            windows/dist/GaoMenHu.exe
+            windows/dist/GaoMenHu-cli.exe
