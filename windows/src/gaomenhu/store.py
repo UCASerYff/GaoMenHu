@@ -118,13 +118,21 @@ def read_regular(path: Path, limit=30_000_000):
 
 
 def write_exclusive(path: Path, data: bytes):
+    # Windows 默认把 os.open 当成文本文件，会把换行改成 CRLF，读回校验就会失败。
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
     try:
         fd = os.open(str(path), flags, 0o600)
     except OSError as exc:
         raise RecoveryError() from exc
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise RecoveryError()
+            view = view[written:]
         os.fsync(fd)
     except OSError as exc:
         raise RecoveryError() from exc

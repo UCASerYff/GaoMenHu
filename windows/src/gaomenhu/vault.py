@@ -69,6 +69,8 @@ def _local_key(directory: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     key = os.urandom(32)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
     fd = os.open(str(path), flags, 0o600)
     try:
         os.write(fd, key)

@@ -374,6 +374,8 @@ class DownloadManager:
         else:
             raise AppError("目标目录里同名文件过多。")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
         fd = os.open(str(chosen), flags, 0o600)
         try:
             with open(partial, "rb") as source, os.fdopen(fd, "wb") as target:
