@@ -348,14 +348,9 @@ body.dark :is(.windows-dialog, .crop-overlay, .folder-panel) .primary-button { c
 .preferences-groups .setting-row { min-height: 43px; padding: 6px 0; gap: 7px 12px; flex-wrap: wrap; border-color: var(--prefs-border); }
 .preferences-groups .setting-row:last-child { border-bottom: 0; }
 .preferences-groups .settings-buttons { justify-content: flex-start; }
-.preferences-groups .setting-row > strong, .preferences-groups .settings-browser-name strong { font-size: 13px; font-weight: 550; }
+.preferences-groups .setting-row > strong { font-size: 13px; font-weight: 550; }
 .preferences-groups .setting-actions { flex-wrap: wrap; gap: 6px; max-width: 100%; }
-.preferences-groups .setting-row > span:not(.connection), .preferences-groups .settings-note { color: var(--prefs-muted); }
-.preferences-groups .setting-group .settings-note { padding: 5px 0 8px; margin: 0; }
-.preferences-groups .settings-browser-name { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; }
-.preferences-groups .settings-browser-row .connection { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 12px; color: var(--prefs-success); text-align: start; }
-.preferences-groups .settings-browser-row .connection::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.preferences-groups .settings-browser-row .connection.offline { color: var(--prefs-muted); }
+.preferences-groups .setting-row > span { color: var(--prefs-muted); }
 .preferences-groups :is(.settings-key, .setting-row kbd) { font-size: 12px; }
 .preferences-groups .settings-key kbd { padding: 1px 4px; margin-inline-end: 3px; border: 1px solid var(--prefs-border); border-radius: 4px; }
 .preferences-groups #settingsDockEnabled { appearance: auto; width: 18px; height: 18px; margin: 0; }
@@ -366,6 +361,62 @@ body.dark :is(.windows-dialog, .crop-overlay, .folder-panel) .primary-button { c
 .preferences-startup { display: grid; align-content: start; justify-items: start; gap: 10px; padding: 22px; color: var(--prefs-muted); overflow: auto; }
 .preferences-startup p { margin: 0; }
 .preferences-startup p[role="alert"] { color: var(--prefs-danger); }
+
+.preferences-groups .browser-diagnostics { gap: 9px; padding-bottom: 14px; }
+.diagnostic-header, .diagnostic-card-title, .diagnostic-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+}
+.diagnostic-header, .diagnostic-card-title { justify-content: space-between; }
+.diagnostic-header > header { flex: 1 1 240px; }
+.diagnostic-actions { justify-content: start; }
+.diagnostic-actions button[aria-disabled="true"] { cursor: progress; opacity: .68; }
+#diagnosticStatus { margin: 0; color: var(--prefs-muted); font-size: 12px; }
+#diagnosticStatus[data-kind="error"] { padding: 7px 9px; color: var(--prefs-danger); background: var(--prefs-danger-soft); border-radius: 6px; }
+#diagnosticResults { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 285px), 1fr)); align-items: start; gap: 9px; }
+#diagnosticResults:empty { display: none; }
+.diagnostic-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--prefs-border);
+  border-radius: 7px;
+  background: var(--prefs-inset);
+  overflow-wrap: anywhere;
+}
+.diagnostic-card :is(h4, h5, p) { margin: 0; }
+.diagnostic-card h4 { font-size: 15px; font-weight: 650; }
+.diagnostic-card h5 { font-size: 13px; font-weight: 650; }
+.diagnostic-state {
+  padding: 2px 7px;
+  border: 1px solid var(--prefs-border);
+  border-radius: 4px;
+  color: var(--prefs-muted);
+  background: var(--prefs-panel);
+  font-size: 12px;
+  font-weight: 550;
+}
+.diagnostic-state[data-state="connected"], .diagnostic-evidence [data-status="ok"] { color: var(--prefs-success); }
+.diagnostic-state[data-state="attention"], .diagnostic-evidence [data-status="issue"] { color: var(--prefs-danger); }
+.diagnostic-summary, .diagnostic-help, .diagnostic-issues { font-size: 13px; }
+.diagnostic-issues { color: var(--prefs-danger); }
+.diagnostic-help { color: var(--prefs-muted); }
+.diagnostic-profiles { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.diagnostic-profiles li { display: flex; justify-content: space-between; gap: 4px 10px; flex-wrap: wrap; }
+.diagnostic-profiles small { color: var(--prefs-muted); font-size: 12px; white-space: nowrap; }
+.diagnostic-card details { border-block-start: 1px solid var(--prefs-border); }
+.diagnostic-card summary, .diagnostic-setup summary { padding: 6px 0 0; color: var(--prefs-accent-text); cursor: pointer; font-size: 13px; }
+.diagnostic-card dl { display: grid; gap: 7px; margin: 8px 0 0; font-size: 12px; }
+.diagnostic-evidence { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 6px; }
+.diagnostic-evidence dt { font-weight: 650; }
+.diagnostic-evidence dd { margin: 0; color: var(--prefs-muted); }
+.diagnostic-evidence dd p { margin-top: 2px; }
+.diagnostic-setup p { margin: 6px 0 0; color: var(--prefs-muted); font-size: 13px; }
 
 @media (max-width: 660px) {
   .site-editor-dialog .browser-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }

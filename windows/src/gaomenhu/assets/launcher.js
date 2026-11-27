@@ -12,8 +12,26 @@ let currentAccess, libraryRevision, settingsTab = 'modules';
 let lastProposal, lastAppliedQuery, previousFeedback;
 let activeActionReview, checkingActions = false;
 let pendingPortalActions = 0;
+let launcherDesktopHidden = false;
+const launcherPolls = [];
 const backgroundPortalRequests = new Set(['/api/launcher/state', '/api/launcher/runtime', '/api/launcher/acknowledge',
-  '/api/actions/queue', '/api/actions/ack-notice', '/api/sites/icon-warmup']);
+  '/api/actions/queue', '/api/actions/ack-notice', '/api/sites/icon-warmup', '/api/browser/diagnostics']);
+
+function launcherHidden() {
+  return launcherDesktopHidden || document.hidden;
+}
+
+function launcherVisibilityChanged() {
+  launcherPolls.forEach(update => update());
+}
+
+// WinForms Hide may leave WebView2's document visibility unchanged.
+window.gaoSetDesktopHidden = hidden => {
+  if (typeof hidden !== 'boolean' || hidden === launcherDesktopHidden) return;
+  launcherDesktopHidden = hidden;
+  launcherVisibilityChanged();
+};
+document.addEventListener('visibilitychange', launcherVisibilityChanged);
 
 window.gaoCloseState = () => ({
   busy: pendingPortalActions > 0 || preferenceFeedback.kind === 'busy',
@@ -285,7 +303,7 @@ async function applyButton(button, action, success) {
   }
 }
 
-const preferenceTabs = [['modules', '功能与助手'], ['appearance', '外观'], ['data', '资料与交接']];
+const preferenceTabs = [['modules', '功能'], ['browsers', '浏览器'], ['appearance', '外观'], ['data', '资料与交接']];
 const preferenceScroll = new Map();
 let preferenceWrites = Promise.resolve();
 let preferenceWriteID = 0;
@@ -306,10 +324,121 @@ function settingButton(id, label) {
   return '<button type="button" class="soft-button" id="' + id + '">' + esc(label) + '</button>';
 }
 
+const diagnosticStates = new Map([['connected', '已连接'], ['attention', '需处理'], ['indeterminate', '未能确认']]);
+const diagnosticChecks = new Map([['ok', '已验证'], ['issue', '需检查'], ['unknown', '未能确认']]);
+const diagnosticStages = [['browser', '浏览器程序'], ['package', '随包助手'], ['registration', 'Windows 主机登记'], ['extension', '浏览器扩展']];
+
+function diagnosticProfileAge(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '本次检测确认';
+  if (seconds < 10) return '刚刚';
+  if (seconds < 60) return Math.floor(seconds) + ' 秒前';
+  return Math.floor(seconds / 60) + ' 分钟前';
+}
+
+function diagnosticCard(browser, result) {
+  const state = diagnosticStates.has(result.state) ? result.state : 'indeterminate';
+  const issues = diagnosticStages.filter(([key]) => result[key]?.status === 'issue').map(([, title]) => title);
+  const stages = diagnosticStages.map(([key, title]) => {
+    const item = result[key];
+    const status = diagnosticChecks.has(item?.status) ? item.status : 'unknown';
+    return '<div class="diagnostic-evidence"><dt>' + title + '</dt><dd><span data-status="' + status + '">'
+      + diagnosticChecks.get(status) + '</span><p>' + esc(item?.detail || '本次未取得该项信息。') + '</p></dd></div>';
+  }).join('');
+  const profiles = Array.isArray(result.profiles) ? result.profiles : [];
+  const recent = profiles.length ? '<ul class="diagnostic-profiles">' + profiles.map(profile => '<li><span>'
+    + esc(profile.label || '默认资料') + '</span><small>' + diagnosticProfileAge(profile.ageSeconds) + '</small></li>').join('') + '</ul>'
+    : '<p class="diagnostic-help">本次未收到资料连接。每个资料都需要单独启用助手。</p>';
+  let repair = '';
+  if (result.browser?.status === 'issue') {
+    repair = '如果尚未安装，请通过浏览器的官方渠道手动安装，完成后重新检测。';
+  } else if (result.package?.status === 'issue' || result.registration?.status === 'issue') {
+    repair = '可用搞门户的 Windows 安装包手动覆盖安装，勾选「注册 Chrome 和 Edge 的搞门户助手」，完成后重新检测。';
+  } else if (state !== 'connected') {
+    repair = '在要连接的浏览器资料中确认助手已启用，打开助手弹窗并点「重新连接」，然后返回重新检测。';
+  }
+  const manage = result.browser?.status === 'ok'
+    ? '<button type="button" class="soft-button" data-diagnostic-browser="' + browser.id + '">打开 ' + esc(browser.name) + ' 扩展管理…</button>'
+    : '';
+  return '<section class="diagnostic-card" data-browser="' + browser.id + '" aria-labelledby="diagnostic-' + browser.id + '">'
+    + '<div class="diagnostic-card-title"><h4 id="diagnostic-' + browser.id + '">' + esc(browser.name) + '</h4>'
+    + '<span class="diagnostic-state" data-state="' + state + '">' + diagnosticStates.get(state) + '</span></div>'
+    + '<p class="diagnostic-summary">' + esc(result.summary || '本次未取得连接结论。') + '</p>'
+    + (issues.length ? '<p class="diagnostic-issues">需检查 ' + issues.join('、') + '</p>' : '')
+    + (manage ? '<div class="diagnostic-actions">' + manage + '</div>' : '')
+    + '<h5>近期连接资料' + (profiles.length ? '（' + profiles.length + '）' : '') + '</h5>' + recent
+    + '<details><summary>检测依据</summary><dl>' + stages + '</dl></details>'
+    + (repair ? '<p class="diagnostic-help">' + esc(repair) + '</p>' : '') + '</section>';
+}
+
+function bindBrowserDiagnostics() {
+  const panel = $('browserDiagnostics');
+  const status = $('diagnosticStatus');
+  const results = $('diagnosticResults');
+  const retry = $('diagnosticRetry');
+  const folder = $('extensionFolder');
+  let checking = false;
+  let folderAvailable = false;
+  async function inspect() {
+    if (checking) return;
+    checking = true;
+    status.dataset.kind = '';
+    status.textContent = '正在检测浏览器连接…';
+    results.setAttribute('aria-busy', 'true');
+    retry.setAttribute('aria-disabled', 'true');
+    try {
+      const {browsers} = await portalAPI('/api/browser/diagnostics', {}, false);
+      if (!panel.isConnected) return;
+      if (!Array.isArray(browsers)) throw new Error('检测结果不完整，请重新检测。');
+      const cards = browserCatalog.filter(browser => browser.supportsFill).map(browser => [browser, browsers.find(row => row?.id === browser.id)]);
+      if (cards.some(([, result]) => !result)) throw new Error('检测结果不完整，请重新检测。');
+      const expanded = new Set([...results.querySelectorAll('details[open]')].map(details => details.closest('[data-browser]').dataset.browser));
+      results.innerHTML = cards.map(([browser, result]) => diagnosticCard(browser, result)).join('');
+      for (const details of results.querySelectorAll('details')) details.open = expanded.has(details.closest('[data-browser]').dataset.browser);
+      folderAvailable = cards.some(([, result]) => result.package?.status === 'ok');
+      folder.disabled = !folderAvailable;
+      status.textContent = '本次检测已完成。';
+    } catch (error) {
+      if (!panel.isConnected) return;
+      results.replaceChildren();
+      folderAvailable = false;
+      folder.disabled = true;
+      status.dataset.kind = 'error';
+      status.textContent = error instanceof TypeError ? '无法获取检测结果，请重新检测。' : error.message;
+    } finally {
+      checking = false;
+      if (panel.isConnected) {
+        retry.removeAttribute('aria-disabled');
+        results.setAttribute('aria-busy', 'false');
+      }
+    }
+  }
+  retry.onclick = inspect;
+  results.addEventListener('click', event => {
+    const button = event.target.closest('[data-diagnostic-browser]');
+    if (!button) return;
+    applyButton(button, () => portalAPI('/api/browser/extensions', {browserID: button.dataset.diagnosticBrowser}),
+      '已请求打开扩展管理。完成检查后请返回重新检测。');
+  });
+  folder.onclick = async () => {
+    if (!folderAvailable) return;
+    await applyButton(folder, () => portalAPI('/api/browser/extensions'));
+    folder.disabled = !folderAvailable;
+  };
+  void inspect();
+}
+
 function settingsContent(tab) {
-  const note = text => '<p class="settings-note">' + esc(text) + '</p>';
   const row = (label, value) => '<div class="setting-row"><strong>' + esc(label) + '</strong><span>' + esc(value) + '</span></div>';
   const buttonRow = (...buttons) => '<div class="setting-row settings-buttons">' + buttons.join('') + '</div>';
+  if (tab === 'browsers') {
+    return '<section class="setting-group browser-diagnostics" id="browserDiagnostics"><div class="diagnostic-header">'
+      + '<header><h3>连接诊断</h3><p>使用本机登记、随包文件和助手报告的近期连接来判断。</p></header>'
+      + '<div class="diagnostic-actions">' + settingButton('diagnosticRetry', '重新检测')
+      + '<button type="button" class="soft-button" id="extensionFolder" disabled>打开助手文件夹</button></div></div>'
+      + '<p id="diagnosticStatus" role="status"></p><div id="diagnosticResults" aria-busy="false"></div>'
+      + '<details class="diagnostic-setup"><summary>首次连接浏览器资料</summary>'
+      + '<p>在要使用的浏览器资料中打开扩展管理并启用开发者模式。点击「打开助手文件夹」查看目录，然后在浏览器里选择「加载已解压的扩展程序」。打开助手弹窗并点「重新连接」，再返回这里检测。</p></details></section>';
+  }
   if (tab === 'appearance') {
     return settingGroup('窗口主题', [
       settingChoice('settingsAppearance', '主题', [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']], S.library.appearance)
@@ -331,11 +460,7 @@ function settingsContent(tab) {
     buttonRow(settingButton('importBookmarks', '导入浏览器收藏…'), settingButton('refreshIcons', '刷新网站图标')),
     buttonRow(settingButton('archivedSites', '查看已移除的网站…'))
   ]) + settingGroup('浏览器助手', [
-    ...S.browsers.filter(browser => browser.supportsFill).map(browser =>
-      '<div class="setting-row settings-browser-row"><div class="settings-browser-name"><strong>' + esc(browser.name) + '</strong><span class="connection" data-settings-connection="' + browser.id + '"></span></div><div class="setting-actions">'
-      + settingButton('reconnect-' + browser.id, '重新连接') + settingButton('extensions-' + browser.id, '管理扩展…') + '</div></div>'),
-    buttonRow(settingButton('extensionFolder', '打开助手文件夹')),
-    note('在扩展管理页开启开发者模式，再加载助手文件夹。')
+    buttonRow(settingButton('browserDiagnosticsLink', '查看浏览器连接…'))
   ], '每个浏览器资料需单独连接，才能自动填充。') + settingGroup('悬浮窗', [
     '<label class="setting-row"><strong>显示悬浮窗</strong><input type="checkbox" role="switch" id="settingsDockEnabled"></label>',
     settingChoice('settingsDock', '停靠位置', [['left', '左侧'], ['right', '右侧'], ['none', '自由浮动']], S.floating.dock),
@@ -351,14 +476,6 @@ function settingsContent(tab) {
 
 function refreshSettingsState(force = false) {
   if (!$('launcherSettingsTabs')) return;
-  for (const indicator of document.querySelectorAll('[data-settings-connection]')) {
-    const browser = S.browsers.find(item => item.id === indicator.dataset.settingsConnection);
-    const count = S.profiles.filter(profile => profile.browser === browser.id).length;
-    indicator.textContent = count ? '已连接 · ' + count + ' 个资料' : browser.installed ? '未连接' : '未安装';
-    indicator.classList.toggle('offline', !count);
-    $('reconnect-' + browser.id).disabled = !browser.installed;
-    $('extensions-' + browser.id).disabled = !browser.installed;
-  }
   if ($('settingsDockEnabled')) $('settingsDockEnabled').checked = S.floating.enabled;
   if ($('settingsDock')) $('settingsDock').value = S.floating.dock || 'right';
   if ($('settingsLock')) {
@@ -486,11 +603,7 @@ function renderWindowsSettings(tab = settingsTab) {
     bind('importBookmarks', showBookmarkSources);
     bind('archivedSites', () => showVault(true));
     bind('refreshIcons', () => native('refreshIcon'));
-    for (const browser of S.browsers.filter(item => item.supportsFill)) {
-      bind('reconnect-' + browser.id, () => portalAPI('/api/browser/extensions', {browserID: browser.id, reconnect: true}));
-      bind('extensions-' + browser.id, () => portalAPI('/api/browser/extensions', {browserID: browser.id}));
-    }
-    bind('extensionFolder', () => portalAPI('/api/browser/extensions'));
+    $('browserDiagnosticsLink').onclick = () => renderWindowsSettings('browsers');
     const floating = async change => {
       try {
         const result = await portalAPI('/api/floating', change);
@@ -513,6 +626,7 @@ function renderWindowsSettings(tab = settingsTab) {
     bind('settingsMailPreferences', () => openPortalWindow('/mail#settings'));
     bind('settingsLock', () => native('lock'), '账号库已锁定。');
   }
+  if (tab === 'browsers') bindBrowserDiagnostics();
   if (tab === 'appearance') $('settingsAppearance').onchange = event => {
     const appearance = event.target.value;
     savePreference(() => portalAPI('/api/appearance', {appearance}));
@@ -690,11 +804,11 @@ async function showSendDownloadAction() {
 }
 
 async function pollActionQueue() {
-  if (settingsWindow || checkingActions || !S || document.hidden || !$('dialogOverlay').hidden) return;
+  if (settingsWindow || checkingActions || !S || launcherHidden() || !$('dialogOverlay').hidden) return;
   checkingActions = true;
   try {
     const result = await portalAPI('/api/actions/queue', {}, false);
-    if (!$('dialogOverlay').hidden) return;
+    if (launcherHidden() || !$('dialogOverlay').hidden) return;
     if (result.notice) {
       if (result.notice.error) toast(result.notice.error);
       else if (result.notice.path) await openPortalWindow(result.notice.path);
@@ -771,10 +885,12 @@ function logBackgroundIssue(error) {
 }
 
 async function pollLauncherRuntime() {
-  if (!S || document.hidden || drag) return;
+  if (!S || launcherHidden() || drag) return;
   const live = await portalAPI('/api/launcher/runtime', {}, false);
+  if (launcherHidden()) return;
   if (live.revision !== libraryRevision || live.access !== currentAccess) {
-    await portalAPI('/api/launcher/state');
+    const latest = await portalAPI('/api/launcher/state', {}, false);
+    if (!launcherHidden()) applyPortalState(latest);
     return;
   }
   if (S.unlocked !== live.vaultUnlocked) {
@@ -789,6 +905,28 @@ async function pollLauncherRuntime() {
       JSON.stringify(previousProfiles) !== JSON.stringify(S.profiles)) renderBrowserOptions();
   refreshSettingsState();
   handlePortalEvents(live);
+}
+
+function scheduleLauncherPoll(poll, interval) {
+  let timer;
+  let running = false;
+  async function run() {
+    if (running || launcherHidden()) return;
+    running = true;
+    try {
+      await poll();
+    } catch (error) {
+      logBackgroundIssue(error);
+    } finally {
+      running = false;
+      if (!launcherHidden()) timer = setTimeout(run, interval);
+    }
+  }
+  launcherPolls.push(() => {
+    clearTimeout(timer);
+    void run();
+  });
+  void run();
 }
 
 document.addEventListener('keydown', event => {
@@ -832,6 +970,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!settingsWindow && !new URLSearchParams(location.search).has('offline')) {
     portalAPI('/api/sites/icon-warmup', {}, false).catch(logBackgroundIssue);
   }
-  setInterval(() => pollLauncherRuntime().catch(logBackgroundIssue), 2300);
-  if (!settingsWindow) setInterval(() => pollActionQueue().catch(logBackgroundIssue), 1200);
+  scheduleLauncherPoll(pollLauncherRuntime, 2300);
+  if (!settingsWindow) scheduleLauncherPoll(pollActionQueue, 1200);
 });

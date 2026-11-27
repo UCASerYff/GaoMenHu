@@ -180,7 +180,7 @@ class MailFloatingPanel:
 
     def refresh(self, *, restore_visibility=True):
         if not self.service.mail_lock.acquire(blocking=False):
-            return
+            return False
         try:
             source = self.service.data_dir / "MailCenter" / "Library.json"
             if not self.pending and self.service.mail is None and not source.exists():
@@ -314,11 +314,17 @@ class MailFloatingPanel:
             self.redraw()
         now = time.monotonic()
         if now >= self.ready_at:
-            self.refresh()
-            self.ready_at = now + (0.25 if self.pending or self.expanded else 1)
+            if self.refresh() is False or self.pending or self.expanded:
+                self.ready_at = now + 0.25
+            else:
+                self.ready_at = now + 1 if self.enabled else float("inf")
+        delay = 100 if self.enabled else 150
         if self.enabled and not self.menu_open and self.present:
-            self.evaluate_pointer(now, self.desktop.pointer(), self.desktop.mouse_buttons())
-        self.schedule = self.root.after(40, self.poll)
+            point = self.desktop.pointer()
+            self.evaluate_pointer(now, point, self.desktop.mouse_buttons())
+            if self.contains(point) or self.expanded or self.drag:
+                delay = 40
+        self.schedule = self.root.after(delay, self.poll)
 
     def evaluate_pointer(self, now, point, buttons):
         if self.drag:

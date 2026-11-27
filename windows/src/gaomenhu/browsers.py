@@ -99,11 +99,12 @@ def extension_directory():
 
 def open_extension_setup(browser_id=None):
     folder = extension_directory()
-    if not (folder / "manifest.json").is_file():
-        raise AppError("找不到搞门户助手目录，请重新安装搞门户。")
-    if browser_id:
+    if browser_id is not None:
         if not isinstance(browser_id, str) or browser_id not in EXTENSION_PAGES or not launch_browser(browser_id, EXTENSION_PAGES[browser_id]):
             raise AppError("浏览器未安装。")
-    elif os.name == "nt":
-        os.startfile(str(folder))
+    else:
+        if not (folder / "manifest.json").is_file():
+            raise AppError("找不到搞门户助手目录，请重新安装搞门户。")
+        if os.name == "nt":
+            os.startfile(str(folder))
     return {"ok": True, "path": str(folder)}

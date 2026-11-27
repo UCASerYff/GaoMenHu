@@ -212,6 +212,21 @@ class DownloadManager:
     def database(self):
         return self.store.database
 
+    def tray_progress(self):
+        if not self.lock.acquire(blocking=False):
+            return None
+        try:
+            active = [(item.get("bytesReceived"), item.get("totalBytes")) for item in self.database["items"]
+                      if item["id"] in self.workers and item["state"] in ACTIVE_STATES] if self.workers else []
+        finally:
+            self.lock.release()
+        count = len(active)
+        if not active or any(type(received) is not int or type(total) is not int or not 0 <= received <= total
+                             for received, total in active):
+            return count, None
+        total_bytes = sum(total for _, total in active)
+        return count, (100 * sum(received for received, _ in active) // total_bytes if total_bytes else None)
+
     def add_destination(self, path: Path):
         path = Path(path)
         if not path.is_absolute():

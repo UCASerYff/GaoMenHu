@@ -257,7 +257,7 @@ try {
     if (-not (Test-Path -LiteralPath $report)) { throw "WebView2 smoke exited before recording results: $($starter.ExitCode)" }
     $nativeText = Get-Content -LiteralPath $report -Raw -Encoding UTF8
     try { $nativeResult = $nativeText | ConvertFrom-Json } catch { throw "WebView2 reported: $nativeText" }
-    if ($starter.ExitCode -ne 0 -or -not ($nativeResult.launcher -and $nativeResult.bridge -and $nativeResult.token) -or $nativeResult.windows.Count -ne 4) { throw "WebView2 smoke exited with $($starter.ExitCode): $nativeText" }
+    if ($starter.ExitCode -ne 0 -or -not ($nativeResult.launcher -and $nativeResult.bridge -and $nativeResult.token -and $nativeResult.browserDiagnostics) -or $nativeResult.windows.Count -ne 4) { throw "WebView2 smoke exited with $($starter.ExitCode): $nativeText" }
     if ($nativeResult.mailFloating.rail.Count -ne 2 -or $nativeResult.mailFloating.card.Count -ne 2 -or $nativeResult.mailFloating.card[0] -le $nativeResult.mailFloating.rail[0]) { throw "Native mail floating smoke failed: $nativeText" }
     Write-Output ("Native mail rail and card at {0} DPI: {1} → {2}" -f $nativeResult.mailFloating.dpi, ($nativeResult.mailFloating.rail -join 'x'), ($nativeResult.mailFloating.card -join 'x'))
     if ($PeerPython) {
@@ -265,7 +265,7 @@ try {
         & $fixtureInterpreter (Join-Path $PSScriptRoot 'gaoaction-installed-peer.py') --portal $app
         if ($LASTEXITCODE) { throw "Independent installed GaoAction peer smoke failed" }
     }
-    Write-Output "Installer, x64 PE, loopback routes, DPAPI, browser identity and hidden WebView2 passed; legacy upgrade=$([bool]$LegacyExe); registry=$([bool]$Register)"
+    Write-Output "Installer, x64 PE, loopback routes, DPAPI, browser identity and hidden WebView2 diagnosis passed; legacy upgrade=$([bool]$LegacyExe); registry=$([bool]$Register)"
 } finally {
     Stop-Portal $launcher
     if ($installAttempt -and (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe'))) {

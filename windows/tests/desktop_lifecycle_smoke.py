@@ -17,8 +17,12 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from ctypes import wintypes as W
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from PIL import Image
 
 from native_desktop_smoke import send_message, win
 from native_tray_lifecycle_smoke import IconIdentifier, icon_rect
@@ -151,6 +155,8 @@ class ShellProbe:
         self.choice = ""
         self.hwnd = None
         self.icon = None
+        self.tip = ""
+        self.tip_updates = []
         self.notify = win.notify_icon
 
     def notify_icon(self, operation, data):
@@ -160,6 +166,10 @@ class ShellProbe:
             self.hwnd = icon.window
             self.icon = IconIdentifier(size=C.sizeof(IconIdentifier), window=icon.window, id=icon.id)
             self.registrations.add((icon.window, icon.id))
+        if operation in (win.NIM_ADD, win.NIM_MODIFY) and result and icon.flags & win.NIF_TIP:
+            self.tip = icon.tip
+            if operation == win.NIM_MODIFY and icon.flags == win.NIF_TIP:
+                self.tip_updates.append(icon.tip)
         if operation == win.NIM_DELETE and result:
             self.removals.add((icon.window, icon.id))
         return result
@@ -199,9 +209,85 @@ def choose_exit_prompt(button, *, screenshot=None):
     control = dialog_button(prompt, button)
     assert control, f"The exit confirmation lacks button {button}"
     if screenshot:
-        capture_window(prompt, win.window_rect(prompt), screenshot)
+        def body_painted():
+            capture_window(prompt, win.window_rect(prompt), screenshot)
+            with Image.open(screenshot) as image:
+                return image.crop((0, image.height // 3, image.width, image.height)).getbbox() is not None
+
+        wait_for(body_painted, "the exit confirmation painting on the private desktop")
     post(prompt, 0x0111, button, control)  # WM_COMMAND with a real Yes/No button
     wait_for(lambda: not window_exists(prompt), "dismissal of the native exit confirmation")
+
+
+@contextmanager
+def verify_download_tray(app, shell, work, evidence):
+    chunk = b"D" * 65536
+    release = {path: threading.Event() for path in ("/known-total.bin", "/unknown-total.bin", "/exit-transfer.bin")}
+
+    class FixtureDownload(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            return
+
+        def do_GET(self):
+            self.send_response(200)
+            if self.path != "/unknown-total.bin":
+                self.send_header("Content-Length", str(2 * len(chunk)))
+            self.send_header("ETag", '"tray-fixture"')
+            self.end_headers()
+            try:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                release[self.path].wait(35)
+                self.wfile.write(chunk)
+            except ConnectionError:
+                pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), FixtureDownload) as source:
+        worker = threading.Thread(target=source.serve_forever, daemon=True)
+        worker.start()
+        try:
+            directory = work / "isolated-downloads"
+            directory.mkdir()
+            grant = portal_api(app, "/api/downloads/destination", {"path": str(directory)})["destination"]
+
+            def start(path):
+                result = portal_api(app, "/api/downloads/create", {
+                    "urls": [f"http://localhost:{source.server_port}{path}"], "destinationID": grant["id"],
+                })
+                return next(item["id"] for item in result["items"] if item["suggestedName"] == path[1:])
+
+            known_tip = "搞门户 · 1 项下载进行中 · 已传输 50%"
+            start("/known-total.bin")
+            wait_for(lambda: shell.tip == known_tip, "Explorer accepting the measured 50% progress")
+            shell.choose("下载中心… · 1 项下载进行中 · 已传输 50%")
+            download = wait_for(lambda: app.windows.get("/downloads"), "the download window from the tray")
+            assert download.events.loaded.wait(12)
+            wait_for(lambda: download.evaluate_js("Boolean(document.querySelector('.download-list [data-state=running]'))"),
+                     "the live transfer in the download window")
+            if evidence:
+                capture_webview(download, evidence / "download-center-from-tray.png")
+            release["/known-total.bin"].set()
+            wait_for(lambda: shell.tip == "搞门户", "idle tray after the download completed")
+
+            unknown_tip = "搞门户 · 1 项下载进行中"
+            unknown = start("/unknown-total.bin")
+            wait_for(lambda: shell.tip == unknown_tip, "Explorer accepting the download count without an unknown percentage")
+            shell.choose("下载中心… · 1 项下载进行中")
+            portal_api(app, "/api/downloads/pause", {"id": unknown})
+            release["/unknown-total.bin"].set()
+            wait_for(lambda: shell.tip == "搞门户", "idle tray after pausing a download")
+            shell.choose("下载中心…")
+            assert len(shell.registrations) == 1
+            checked = {"knownTotal": known_tip, "unknownTotal": unknown_tip, "idle": shell.tip,
+                       "acceptedTooltipUpdates": shell.tip_updates.copy()}
+            exit_task = start("/exit-transfer.bin")
+            wait_for(lambda: shell.tip == known_tip, "the transfer checkpoint before the tray exit")
+            yield checked, exit_task
+        finally:
+            for event in release.values():
+                event.set()
+            source.shutdown()
+            worker.join(5)
 
 
 def verify_lifecycle(app, shell, desktop_name, data, evidence):
@@ -239,6 +325,24 @@ def verify_lifecycle(app, shell, desktop_name, data, evidence):
     assert native_window(app.windows["/"]) == handle and len(shell.registrations) == 1
     print("The second application process forwarded to the original instance.")
 
+    with verify_download_tray(app, shell, data.parent, evidence) as (tray_download, exit_task):
+        print("The original tray icon reported a real download and omitted the unknown percentage.")
+        verify_mail_tray_exit(app, shell, handle, evidence, exit_task)
+        wait_for(lambda: transfer_state(app, exit_task) == ("paused", 65536), "the exit keeping the active download checkpoint")
+        tray_download["exitPausedAt64KiB"] = True
+    return {"mainHwnd": handle, "trayHwnd": shell.hwnd, "trayIconId": shell.icon.id,
+            "regularReopen": True, "menuLabels": shell.chosen, "cancelledWithDraftInEditor": True,
+            "hostPort": app.server.port, "distinctIconIdentities": len(shell.registrations), "trayDownload": tray_download}
+
+
+def transfer_state(app, task):
+    manager = app.service.downloads
+    with manager.lock:
+        item = manager._item(task)
+        return item["state"], item["bytesReceived"]
+
+
+def verify_mail_tray_exit(app, shell, handle, evidence, exit_task):
     portal_api(app, "/api/mail/account", {"account": {"id": "exit-fixture", "email": "isolated@example.test"}})
     shell.choose("邮件中心…")
     mail = wait_for(lambda: app.windows.get("/mail"), "the native mail window from the tray")
@@ -261,15 +365,13 @@ def verify_lifecycle(app, shell, desktop_name, data, evidence):
     assert not app.stop.is_set() and window_exists(handle) and app.tray_registered
     assert mail.evaluate_js("document.querySelector('dialog[open] textarea').value") == "只用于测试退出草稿"
     assert portal_api(app, "/api/mail/state")["drafts"] == []
+    assert transfer_state(app, exit_task) == ("running", 65536)
     print("Cancelling native exit left the draft in the editor.")
 
     shell.choose("退出搞门户")
     choose_exit_prompt(6)  # IDYES
     wait_for(app.stop.is_set, "the confirmed application exit")
     print("Confirming native exit saved the draft and initiated shutdown.")
-    return {"mainHwnd": handle, "trayHwnd": shell.hwnd, "trayIconId": shell.icon.id,
-            "regularReopen": True, "menuLabels": shell.chosen, "cancelledWithDraftInEditor": True,
-            "hostPort": app.server.port, "distinctIconIdentities": len(shell.registrations)}
 
 
 def run_child(work, desktop_name, evidence):

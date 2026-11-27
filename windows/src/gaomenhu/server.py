@@ -183,6 +183,10 @@ class PortalServer:
             return launcher_runtime_state(service)
         if path == "/api/launcher/data-directory":
             return reveal_data_directory(service)
+        if path == "/api/browser/diagnostics":
+            from .browser_diagnostics import diagnose_browsers
+
+            return diagnose_browsers(service)
         if path == "/api/browser/extensions":
             return open_extension_setup(payload.get("browserID"))
         if path == "/api/launcher/acknowledge":

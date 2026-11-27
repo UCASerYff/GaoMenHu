@@ -96,6 +96,13 @@ async function run() {
   const html = await (await fetch(origin)).text();
   pageToken = html.match(/name="gao-token" content="([^"]+)"/)?.[1];
   assert.ok(pageToken, 'The isolated portal did not return its page token');
+  const labels = {chrome: 'Chrome isolation profile', edge: 'Edge isolation profile'};
+  const before = await api('/api/browser/diagnostics');
+  assert.deepEqual(before.browsers.map(browser => browser.id), ['chrome', 'edge']);
+  for (const browser of before.browsers) {
+    assert.equal(browser.package.status, 'ok');
+    assert.ok(browser.profiles.every(profile => profile.label !== labels[browser.id]));
+  }
   const fixture = await startFixture();
   const centers = {};
   let localDownload;
@@ -123,10 +130,16 @@ async function run() {
         const state = await api('/api/launcher/runtime');
         return state.profiles.find(profile => profile.browser === name && profile.id === id);
       }, `${name} did not poll the installed Native Messaging host`);
+      assert.ok(await worker.evaluate(async label => (await popupMessage({type: 'setLabel', label})).ok, labels[name]));
       console.log(`${name} (${browserVersion.product}) loaded the installed extension and identified its real profile`);
     }
 
     assert.notEqual(centers.chrome.profile.id, centers.edge.profile.id, 'Browser profiles shared an identity');
+    await until(async () => (await api('/api/browser/diagnostics')).browsers.every(browser =>
+      browser.state === 'connected' && browser.extension.status === 'ok' && browser.profiles.some(profile =>
+        profile.label === labels[browser.id] && Number.isInteger(profile.ageSeconds) && !('id' in profile))),
+    'The diagnostics did not observe both browser profiles through the actual Native Messaging connection');
+    console.log('Browser diagnostics confirmed both live profiles without returning profile identifiers');
     for (const [name, {context, profile}] of Object.entries(centers)) {
       const siteID = randomUUID();
       const accountID = randomUUID();

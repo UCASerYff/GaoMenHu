@@ -122,6 +122,8 @@ class FloatingPanel:
         self.theme = "light"
         self.font_family = font_family(root)
         self.sync_time = 0
+        self.tray_download_sync_time = 0
+        self.tray_download_summary = ""
         self.search_hit = self.clear_hit = self.scroll_hit = Rect(0, 0, 0, 0)
         self.last_layout = None
         self.placeholder = True
@@ -196,9 +198,13 @@ class FloatingPanel:
                 self.last_settings = None
                 self.sync()
         elif event == "tray":
+            self.sync_tray_download()
+            download_label = "下载中心…"
+            if self.tray_download_summary:
+                download_label += " · " + self.tray_download_summary
             items = [
                 ("打开搞门户", self.show_main, False),
-                ("下载中心…", self.open_downloads, False),
+                (download_label, self.open_downloads, False),
                 ("邮件中心…", self.open_mail, False),
             ]
             if self.mail_panel is not None:
@@ -258,7 +264,11 @@ class FloatingPanel:
         if now >= self.sync_time:
             self.sync()
             self.sync_time = now + 0.3
+        if now >= self.tray_download_sync_time:
+            self.sync_tray_download()
+            self.tray_download_sync_time = now + 1
         self.finish_launch()
+        delay = 100
         if self.enabled and not self.menu_open:
             point = self.desktop.pointer()
             buttons = self.desktop.mouse_buttons()
@@ -270,6 +280,8 @@ class FloatingPanel:
             if not buttons:
                 self.press_inside = self.scroll_drag = False
             inside = self.frame.contains(point)
+            if inside or self.expanded or self.drag:
+                delay = 25
             pressed = bool(buttons & ~self.buttons)
             if pressed and inside:
                 self.press_inside = True
@@ -284,7 +296,20 @@ class FloatingPanel:
                 if hover != self.hover_row:
                     self.hover_row = hover
                     self.redraw()
-        self.root.after(25, self.poll)
+        self.root.after(delay, self.poll)
+
+    def sync_tray_download(self):
+        manager = self.service.downloads
+        progress = manager.tray_progress() if manager is not None else (0, None)
+        if progress is None:
+            return
+        count, percent = progress
+        summary = f"{count} 项下载进行中" if count else ""
+        if percent is not None:
+            summary += f" · 已传输 {percent}%"
+        if summary != self.tray_download_summary:
+            self.tray_download_summary = summary
+            self.native.set_tray_tip(f"搞门户 · {summary}" if summary else "搞门户")
 
     def sync(self):
         settings = self.service.floating_preferences()

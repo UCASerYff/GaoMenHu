@@ -14,6 +14,8 @@ def test_settings_navigation_and_editor_focus_at_high_dpi(launcher_page, tmp_pat
     assert page.js("devicePixelRatio === 1.5 && document.documentElement.scrollWidth === innerWidth")
 
     page.key("ArrowRight", "ArrowRight", 39)
+    page.until("document.activeElement.id === 'settings-tab-browsers'")
+    page.key("ArrowRight", "ArrowRight", 39)
     page.until("document.activeElement.id === 'settings-tab-appearance'")
     page.change("#settingsAppearance", "dark")
     page.until("document.body.classList.contains('dark') && document.querySelector('#preferencesStatus').dataset.kind === 'saved'")

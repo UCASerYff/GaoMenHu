@@ -89,6 +89,7 @@ TRAY_MESSAGE = 0x8050
 NIM_ADD = 0
 NIM_MODIFY = 1
 NIM_DELETE = 2
+NIF_TIP = 4
 TRAY_RETRY_MILLISECONDS = 1000
 
 
@@ -234,6 +235,15 @@ class DesktopWindow:
         if announce and changed:
             self.event("tray-state")
 
+    def set_tray_tip(self, text):
+        if self.closed or self.icon is None or self.icon.tip == text:
+            return
+        self.icon.tip = text
+        if self.tray_available:
+            update = NotifyIcon(size=self.icon.size, window=self.window, id=self.icon.id, flags=NIF_TIP, tip=text)
+            if not notify_icon(NIM_MODIFY, C.byref(update)):
+                self._schedule_tray_refresh(0)
+
     def _deliver_events(self):
         self.event_poll = None
         try:
@@ -246,7 +256,7 @@ class DesktopWindow:
                     self.event(event)
         finally:
             if not self.closed:
-                self.event_poll = self.root.after(25, self._deliver_events)
+                self.event_poll = self.root.after(50, self._deliver_events)
 
     def dispatch(self, window, message, wparam, lparam):
         # The HWND callback can reenter Tk's native message loop. Queue work

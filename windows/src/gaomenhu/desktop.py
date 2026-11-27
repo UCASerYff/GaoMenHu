@@ -56,6 +56,7 @@ class Desktop:
         self.tray_registered = False
         self.tray_window = None
         self.hidden_while_tray_starting = False
+        self.main_hidden = False
         self.exit_lock = threading.Lock()
         self.exit_pending = False
         self.webview = None
@@ -134,7 +135,9 @@ class Desktop:
 
         window.expose(open_window, toggle_fullscreen, close_window, choose_folder, save_file)
         window.events.loaded += lambda: self._set_title_bar(key, window)
-        if key != "/":
+        if key == "/":
+            window.events.loaded += self._publish_main_visibility
+        else:
             window.events.closed += lambda: self.windows.pop(key, None)
         return window
 
@@ -205,6 +208,17 @@ class Desktop:
                 else:
                     raise RuntimeError(f"WebView2 did not render the interface for {path}")
             result["windows"] = list(routes)
+            settings = self.windows["/settings"]
+            settings.evaluate_js("document.querySelector('#settings-tab-browsers').click()")
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if settings.evaluate_js("Boolean(document.querySelector('[data-browser=chrome] .diagnostic-state') && "
+                                        "document.querySelector('[data-browser=edge] .diagnostic-state'))"):
+                    result["browserDiagnostics"] = True
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("WebView2 did not render the browser connection diagnosis")
             from .mail_floating import smoke_mail_floating
             result["mailFloating"] = smoke_mail_floating(self.service)
             Path(self.smoke_file).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
@@ -215,6 +229,33 @@ class Desktop:
 
     def show_main(self):
         return self.open_window("/")
+
+    def _set_main_hidden(self, hidden):
+        if hidden != self.main_hidden:
+            self.main_hidden = hidden
+            self._publish_main_visibility()
+
+    def _publish_main_visibility(self):
+        window = self.windows.get("/")
+        form = window.native if window else None
+        if form is None or self.stop.is_set():
+            return
+
+        def publish():
+            try:
+                control = form.webview.CoreWebView2
+                if control is not None and not self.stop.is_set():
+                    script = "window.gaoSetDesktopHidden?.(" + json.dumps(self.main_hidden) + ")"
+                    control.ExecuteScriptAsync(script)
+            except Exception:
+                LOG.debug("Could not notify the launcher of window visibility", exc_info=True)
+
+        try:
+            from System import Action
+
+            form.BeginInvoke(Action(publish))
+        except Exception:
+            LOG.debug("Could not dispatch launcher visibility", exc_info=True)
 
     def appearance_changed(self, route="/"):
         for key, window in tuple(self.windows.items()):
@@ -278,6 +319,8 @@ class Desktop:
                 if window.native is not None and str(window.native.WindowState) == "Minimized":
                     window.restore()
                 window.show()
+                if key == "/":
+                    self._set_main_hidden(False)
                 self._foreground(window)
         return True
 
@@ -304,6 +347,9 @@ class Desktop:
             if not self.tray_registered and not self.tray_starting:
                 self.hidden_while_tray_starting = False
                 window.show()
+                self._set_main_hidden(False)
+            else:
+                self._set_main_hidden(True)
         else:
             self.request_quit()
         return False
