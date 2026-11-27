@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 
 struct MailFloatingView: View {
+    let store: MailStore
+    @ObservedObject var controller: MailFloatingController
+
+    var body: some View {
+        if controller.isExpanded { MailFloatingCardView(store: store, controller: controller) }
+        else { MailFloatingRailView(store: store, controller: controller) }
+    }
+}
+
+private struct MailFloatingCardView: View {
     @ObservedObject var store: MailStore
     @ObservedObject var controller: MailFloatingController
     @State private var copiedCode: String?
@@ -13,16 +23,6 @@ struct MailFloatingView: View {
     private var canSync: Bool { summary.scopeAccounts.contains(where: { $0.enabled && store.isHostConnectionAuthorized(accountID:$0.id) }) && !syncing }
 
     var body: some View {
-        Group {
-            if controller.isExpanded { card }
-            else {
-                let all = MailFloatingSummary(library:store.library,messages:store.messages)
-                MailFloatingRailView(controller:controller,unreadCount:all.unreadCount,errorCount:all.errorCount + (store.problem == nil ? 0 : 1))
-            }
-        }
-    }
-
-    private var card: some View {
         VStack(spacing: 0) {
             unreadHeader
             ScrollView(.vertical) {
@@ -111,9 +111,10 @@ struct MailFloatingView: View {
     }
 
     private var footer: some View {
-        HStack {
+        let latestSync = summary.latestSync
+        return HStack {
             TimelineView(.periodic(from: .now, by: 60)) { context in
-                Text(MailFloatingSummary(library: store.library, messages: store.messages, now: context.date).latestSyncLabel)
+                Text(MailFloatingSummary.latestSyncLabel(for: latestSync, now: context.date))
             }
             Spacer(minLength: 8)
             Text("最近同步范围").help("只统计已缓存的收件箱邮件，并非服务商的完整未读总数")

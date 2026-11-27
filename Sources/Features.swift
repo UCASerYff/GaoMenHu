@@ -264,7 +264,7 @@ extension AppDelegate {
                 if let folderID, let index = next.tiles.firstIndex(where: { $0.id == folderID }) { next.tiles[index].children?.append(existing.id) }
                 else { next.tiles.append(Tile(id: existing.id, kind: "site", name: nil, children: nil)) }
                 try commitOrganization(next, reason: "重新收藏已移除网站前")
-                emit("update", ["state": state()])
+                publishLauncherState()
                 return ["ok": true, "message": "已恢复这个网站入口，原有账号和浏览器设置已保留。"]
             }
             return ["ok": true, "message": "这个网址已保存在「\(existing.name)」中。"]
@@ -275,7 +275,7 @@ extension AppDelegate {
         if let folderID, let index = next.tiles.firstIndex(where: { $0.id == folderID }) { next.tiles[index].children?.append(site.id) }
         else { next.tiles.append(Tile(id: site.id, kind: "site", name: nil, children: nil)) }
         try store.save(next); library = next; organizationHistory.removeAll()
-        emit("update", ["state": state()]); fetchIcon(site)
+        publishLauncherState(); fetchIcon(site)
         return ["ok": true, "message": "已收藏到搞门户。"]
     }
 }

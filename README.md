@@ -90,13 +90,26 @@ shasum -a 256 -c GaoMenHu-1.19.dmg.sha256
 
 `Scripts/test.sh` 执行命令行单元检查，包含主库/账本丢失与事务中断的新定向复现，不启动应用或浏览器。默认不自动运行冒烟测试；界面、浏览器及跨 App 冷启动验证只有用户明确要求后才运行，不能由隔离测试推断已通过。正式包不含 UI 自检资源。`Tests/Content.cjs` 的浏览器表单测试另需 Playwright 和 Chrome，也不属于默认检查。
 
+在 Apple Silicon 验证机（例如 GitHub 托管的 `macos-15` arm64 runner）上，可运行以下命令。编译验证使用正式构建的架构、最低系统版本和优化参数，检查主程序、原生消息宿主、邮件 C 模块及 App 版本。产物留在临时容器，完成后自动清理。
+
+```bash
+set -euo pipefail
+test "$(uname -m)" = arm64
+./Scripts/build.sh --verify-compile
+./Scripts/test.sh
+bash Scripts/test-embedded-download-core.sh
+bash Scripts/test-embedded-mail-core.sh
+```
+
 图标的可恢复源是已提交的 `Assets/AppIcon.png`、`Scripts/MakeIcon.swift` 和 `Scripts/make_icns.py`。构建从 PNG 母版生成临时 ICNS 后放入 App，不依赖未跟踪的 `Assets/AppIcon.icns`。`AGENTS.md`、用户资料、备份和本地验证记录均不公开提交。
 
 资料保护与下载结果契约见 [恢复保护与下载回送](Docs/恢复保护与下载回送.md)。缺失或中断状态不会通过新建空库、空账本或清除历史解除保护。
 
 ## 版本
 
-版本以 `VERSION` 为准，首版 V1.00，后续功能更新增加 0.01。正式更新开始时运行一次 `python3 Scripts/bump_version.py`；重复构建同一版本不会增加版本号。当前版本 V1.19。
+发行版本以 `VERSION` 为准。macOS 构建号独立保存在 `BUILD`，用于 App 的 `CFBundleVersion` 和安装核验。递增发行版本时运行一次 `python3 Scripts/bump_version.py`，只更新 macOS 构建时递增 `BUILD` 即可。重复编译沿用同一构建号。当前源码版本为 V1.19，macOS 构建 120。
+
+macOS 构建 120 增加 Chrome / Edge 资料连接诊断与修复入口，在菜单栏显示实际下载活动，并减少主窗隐藏和邮件贴边条收起时的刷新。
 
 V1.19：补齐“窗口 → 关闭窗口”（Cmd+W），关闭当前下载、邮件或设置窗口；沿用已有下载后台队列和邮件草稿保存、发送保护。
 

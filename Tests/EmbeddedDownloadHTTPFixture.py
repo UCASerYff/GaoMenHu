@@ -40,6 +40,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif path == '/416': self.send_response(416); self.send_header('Content-Length','0'); self.end_headers(); return
             else: status = 206
         payload = data[start:]
+        unknown_size = path in ('/unknown', '/slow-unknown')
         if path == '/short-range' and status == 206: payload = payload[:32768]
         self.send_response(status)
         if path != '/norange': self.send_header('ETag',etag)
@@ -49,7 +50,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             begin = start+1 if path == '/wrong' else start
             total = len(data)+1024 if path == '/changed-length' else len(data)
             self.send_header('Content-Range',f'bytes {begin}-{start+len(payload)-1}/{total}')
-        if path != '/unknown': self.send_header('Content-Length',str(len(payload)+(1024 if path == '/truncated' or path == '/network-once' and count == 1 else 0)))
+        if not unknown_size: self.send_header('Content-Length',str(len(payload)+(1024 if path == '/truncated' or path == '/network-once' and count == 1 else 0)))
         else: self.send_header('Connection','close')
         self.end_headers()
         with LOCK:
@@ -59,7 +60,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for offset in range(0,len(payload),16384):
                 self.wfile.write(payload[offset:offset+16384]); self.wfile.flush()
                 if len(data) == len(SLOW): time.sleep(.015)
-            if path in ('/unknown','/truncated') or path == '/network-once' and count == 1:
+            if unknown_size or path == '/truncated' or path == '/network-once' and count == 1:
                 self.close_connection = True
                 try: self.connection.shutdown(socket.SHUT_RDWR)
                 except OSError: pass

@@ -2,15 +2,19 @@
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(cat "$PROJECT_DIR/VERSION" | tr -d '\n')"
-BUILD_NUM="$(print "$VERSION" | tr -d '.')"
+BUILD_NUM="$(cat "$PROJECT_DIR/BUILD" | tr -d '\n')"
 SIGN_IDENTITY='A15B2B2D22B018CBC842063C9A8A589946647524'
 SIGN_TEAM='5G96498KGJ'
 if [[ ! "$VERSION" =~ '^[0-9]+\.[0-9]{2}$' ]]; then print -u2 "VERSION 格式必须为 1.00"; exit 1; fi
+if [[ ! "$BUILD_NUM" =~ '^[1-9][0-9]*$' ]]; then print -u2 "BUILD 必须为正整数"; exit 1; fi
 TEST_FLAGS=()
+VERIFY_COMPILE=false
 if (( $# > 0 )); then
-  if (( $# != 2 )) || [[ "$1" != "--app-only" ]]; then print -u2 "用法：build.sh [--app-only /绝对路径/容器.noindex/测试.app]"; exit 1; fi
-  # Resolve and check the destination before compiling or creating any App.
-  DEST="$(python3 - "$PROJECT_DIR/Scripts/install.py" "$2" <<'PY'
+  if (( $# == 1 )) && [[ "$1" == "--verify-compile" ]]; then
+    VERIFY_COMPILE=true
+  elif (( $# == 2 )) && [[ "$1" == "--app-only" ]]; then
+    # Resolve and check the destination before compiling or creating any App.
+    DEST="$(python3 - "$PROJECT_DIR/Scripts/install.py" "$2" <<'PY'
 import runpy
 import sys
 from pathlib import Path
@@ -22,7 +26,11 @@ except (RuntimeError, OSError, ValueError) as error:
     sys.exit(1)
 PY
 )"
-  TEST_FLAGS=(-D DEBUG_TESTING)
+    TEST_FLAGS=(-D DEBUG_TESTING)
+  else
+    print -u2 "用法：build.sh [--verify-compile | --app-only /绝对路径/容器.noindex/测试.app]"
+    exit 1
+  fi
 fi
 STAGING_ROOT="$(mktemp -d /private/tmp/mendao-build.XXXXXX)"
 trap 'rm -rf "$STAGING_ROOT"' EXIT
@@ -38,24 +46,12 @@ swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cac
   -import-objc-header "$PROJECT_DIR/Sources/Mail/MailNative.h" \
   "$TEST_FLAGS[@]" "$PROJECT_DIR/Tests/UITesting.swift" "$PROJECT_DIR/Tests/NativeFeatureTests.swift" \
   "$PROJECT_DIR/Sources/Models.swift" "$PROJECT_DIR/Sources/PortalTheme.swift" "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" \
-  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Sources/PortalIntegration.swift" "$PROJECT_DIR/Sources/PortalDownloadIngress.swift" "$PROJECT_DIR/Sources/PortalDownloadHost.swift" "$PROJECT_DIR/Sources/Downloads/"*.swift "$PROJECT_DIR/Sources/PortalMailHost.swift" "$PROJECT_DIR/Sources/PortalMailPreferences.swift" "$PROJECT_DIR/Sources/Mail/"*.swift "$PROJECT_DIR/Sources/App.swift" "$STAGING/MailNative.o" \
+  "$PROJECT_DIR/Sources/BridgeServer.swift" "$PROJECT_DIR/Sources/BrowserDiagnostics.swift" "$PROJECT_DIR/Sources/IconLoader.swift" "$PROJECT_DIR/Sources/LibraryOperations.swift" "$PROJECT_DIR/Sources/Features.swift" "$PROJECT_DIR/Sources/FullBackup.swift" "$PROJECT_DIR/Sources/NativeSettings.swift" "$PROJECT_DIR/Sources/FloatingLauncherLogic.swift" "$PROJECT_DIR/Sources/FloatingLauncher.swift" "$PROJECT_DIR/Sources/GaoActionPackage.swift" "$PROJECT_DIR/Sources/PortalActions.swift" "$PROJECT_DIR/Sources/PortalDownloadResults.swift" "$PROJECT_DIR/Sources/PortalIntegration.swift" "$PROJECT_DIR/Sources/PortalDownloadIngress.swift" "$PROJECT_DIR/Sources/PortalDownloadHost.swift" "$PROJECT_DIR/Sources/Downloads/"*.swift "$PROJECT_DIR/Sources/PortalMailHost.swift" "$PROJECT_DIR/Sources/PortalMailPreferences.swift" "$PROJECT_DIR/Sources/Mail/"*.swift "$PROJECT_DIR/Sources/App.swift" "$STAGING/MailNative.o" \
   -framework SwiftUI -framework AppKit -framework WebKit -framework Security -framework LocalAuthentication -framework Carbon -framework ImageIO -framework Network -framework CryptoKit -framework AuthenticationServices -framework UserNotifications -lcurl -lsqlite3 \
   -o "$APP/Contents/MacOS/MenDao"
 swiftc -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$STAGING/module-cache" \
   "$PROJECT_DIR/Sources/Socket.swift" "$PROJECT_DIR/Sources/NativeHost.swift" \
   -o "$APP/Contents/MacOS/MenDaoBridge"
-swift -module-cache-path "$STAGING/module-cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR" "$STAGING"
-python3 "$PROJECT_DIR/Scripts/make_icns.py" "$STAGING/AppIcon.iconset" "$STAGING/AppIcon.icns"
-cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/Mark.png"
-cp "$STAGING/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-cp -R "$PROJECT_DIR/Resources/"* "$APP/Contents/Resources/"
-mkdir -p "$APP/Contents/Resources/Docs/Downloads"
-cp -R "$PROJECT_DIR/Docs/Downloads/"* "$APP/Contents/Resources/Docs/Downloads/"
-mkdir -p "$APP/Contents/Resources/Docs/Mail"
-cp -R "$PROJECT_DIR/Docs/Mail/"* "$APP/Contents/Resources/Docs/Mail/"
-cp -R "$PROJECT_DIR/BrowserExtension" "$APP/Contents/Resources/BrowserExtension"
-cp "$PROJECT_DIR/BrowserExtension/extension-id.txt" "$APP/Contents/Resources/extension-id.txt"
-if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then cp "$PROJECT_DIR/Tests/UI.js" "$APP/Contents/Resources/UI.js"; fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -89,6 +85,28 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></array>
 </dict></plist>
 PLIST
+if "$VERIFY_COMPILE"; then
+  /usr/bin/plutil -lint "$APP/Contents/Info.plist"
+  [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" == "$VERSION" ]]
+  [[ "$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")" == "$BUILD_NUM" ]]
+  xcrun lipo -verify_arch arm64 "$STAGING/MailNative.o"
+  xcrun lipo -verify_arch arm64 "$APP/Contents/MacOS/MenDao"
+  xcrun lipo -verify_arch arm64 "$APP/Contents/MacOS/MenDaoBridge"
+  print "已核对 arm64 编译和版本 $VERSION ($BUILD_NUM)"
+  exit 0
+fi
+swift -module-cache-path "$STAGING/module-cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR" "$STAGING"
+python3 "$PROJECT_DIR/Scripts/make_icns.py" "$STAGING/AppIcon.iconset" "$STAGING/AppIcon.icns"
+cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/Mark.png"
+cp "$STAGING/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp -R "$PROJECT_DIR/Resources/"* "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources/Docs/Downloads"
+cp -R "$PROJECT_DIR/Docs/Downloads/"* "$APP/Contents/Resources/Docs/Downloads/"
+mkdir -p "$APP/Contents/Resources/Docs/Mail"
+cp -R "$PROJECT_DIR/Docs/Mail/"* "$APP/Contents/Resources/Docs/Mail/"
+cp -R "$PROJECT_DIR/BrowserExtension" "$APP/Contents/Resources/BrowserExtension"
+cp "$PROJECT_DIR/BrowserExtension/extension-id.txt" "$APP/Contents/Resources/extension-id.txt"
+if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then cp "$PROJECT_DIR/Tests/UI.js" "$APP/Contents/Resources/UI.js"; fi
 # Keep local extended metadata out of distributable files.
 xattr -cr "$APP"
 for SIGN_PATH SIGN_BUNDLE_ID in "$APP/Contents/MacOS/MenDaoBridge" cn.mendao.bridge "$APP" cn.mendao.launcher; do

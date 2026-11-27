@@ -6,6 +6,7 @@ final class Vault {
     private let service = "cn.mendao.launcher.passwords"
     private var authenticatedUntil = Date.distantPast
     private var memory: [String: String] = [:]
+    var didUnlock: (() -> Void)?
     let testing: Bool
     init(testing: Bool = false) { self.testing = testing }
     var unlocked: Bool { testing || authenticatedUntil > Date() }
@@ -21,7 +22,10 @@ final class Vault {
         }
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
             DispatchQueue.main.async {
-                if success { self.authenticatedUntil = Date().addingTimeInterval(300) }
+                if success {
+                    self.authenticatedUntil = Date().addingTimeInterval(300)
+                    self.didUnlock?()
+                }
                 completion(success, success ? nil : "已取消解锁。")
             }
         }

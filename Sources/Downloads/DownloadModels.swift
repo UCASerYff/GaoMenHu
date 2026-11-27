@@ -69,6 +69,32 @@ public struct DownloadItem: Codable, Identifiable, Sendable {
     public var pendingArtifact: PublishedArtifact?
     public var partialSHA256: String?
 }
+
+struct DownloadActivity: Equatable, Sendable {
+    let count: Int
+    let percent: Int?
+    static let idle = Self(count: 0, percent: nil)
+
+    static func summarize(_ items: [DownloadItem], ownedIDs: Set<UUID>) -> Self {
+        guard !ownedIDs.isEmpty else { return .idle }
+        var count = 0
+        var received = 0.0
+        var total = 0.0
+        var sizesKnown = true
+        for item in items.reversed() where ownedIDs.contains(item.id) && item.state.isActive {
+            count += 1
+            if let expected = item.expectedBytes, item.bytesReceived >= 0, item.bytesReceived <= expected {
+                received += Double(item.bytesReceived)
+                total += Double(expected)
+            } else {
+                sizesKnown = false
+            }
+            if count == ownedIDs.count { break }
+        }
+        return Self(count: count, percent: sizesKnown && total > 0 ? Int(100 * received / total) : nil)
+    }
+}
+
 struct DownloadDatabase: Codable {
     var schemaVersion = 1
     var revision: UInt64 = 0

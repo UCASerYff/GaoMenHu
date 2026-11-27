@@ -47,6 +47,7 @@ window.nativeEvent = message => {
     case 'search':if($('dialogOverlay').hidden&&$('cropOverlay').hidden){selectSection('launcher');$('search').focus();$('search').select();}break;
     case 'addSite':showEditor();break;
     case 'locked':if(S){S.unlocked=false;renderLock();}break;
+    case 'unlocked':if(S){S.unlocked=true;renderLock();}break;
   }
 };
 function updateState(state){S=state;applyAppearance();$('version').textContent='V'+S.version;applyPreferences();render();renderLock();const notice=$('recoveryNotice');if(notice){notice.hidden=!S.recoveryRequired;notice.textContent=S.recoveryRequired?S.recoveryMessage:'';}$('addButton').disabled=!!S.recoveryRequired;$('manageButton').disabled=!!S.recoveryRequired;}

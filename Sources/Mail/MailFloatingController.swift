@@ -126,13 +126,12 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private var dockMode: MailFloatingDockMode
     private var horizontalRatio: Double
     private var verticalRatio: Double
-    private var pointerTimer: Timer?
-    private var lastInsideAt = Date()
-    private var outsideSince: Date?
+    private var expandedPointerTimer: Timer?
+    private var railRevealTimer: Timer?
+    private var railHover: MailFloatingRailHover = .idle
+    private var outsideSince: TimeInterval?
     private var eventMonitors: [Any] = []
     private var requestedExpandedHeight: CGFloat = 280
-    private var revealRequiresExit = false
-    private var hoverStartedAt: Date?
     #if DEBUG_TESTING
     private var suppressPanelPresentationForTesting = false
     // Cursor-safe QA input does not move the real pointer. Pause only polling collapse for layout inspection.
@@ -185,7 +184,8 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        pointerTimer?.invalidate()
+        expandedPointerTimer?.invalidate()
+        railRevealTimer?.invalidate()
         eventMonitors.forEach { NSEvent.removeMonitor($0) }
     }
 
@@ -204,9 +204,8 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         let window = ensurePanel()
         isVisible = true
         isExpanded = false
-        revealRequiresExit = false
-        hoverStartedAt = nil
-        outsideSince = nil
+        stopExpandedPointerWatcher()
+        resetRailHover()
         window.allowsKey = false
         window.isMovableByWindowBackground = false
         window.hasShadow = false
@@ -215,21 +214,22 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.level = .floating
         window.alphaValue = Self.safeOpacity(opacity)
         presentPanel(window)
-        lastInsideAt = Date()
-        startPointerWatcher()
         startMouseObservers()
+        checkPointer()
         savedVisible = true
         defaults.set(true, forKey: Key.visible)
     }
 
     func hide() {
-        panel?.cancelInteraction()
-        panel?.orderOut(nil)
-        stopPointerWatcher()
-        stopMouseObservers()
         isVisible = false
         isExpanded = false
-        revealRequiresExit = false
+        stopExpandedPointerWatcher()
+        resetRailHover()
+        stopMouseObservers()
+        panel?.cancelInteraction()
+        panel?.orderOut(nil)
+        panel?.contentView = nil
+        panel = nil
         savedVisible = false
         persistPosition()
         defaults.set(false, forKey: Key.visible)
@@ -238,16 +238,13 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     func toggle() { isVisible ? hide() : show() }
 
     /// Reveal the card from the tiny native edge hit window, without activating the application.
-    func expand() { expand(pointer: NSEvent.mouseLocation, now: Date()) }
+    func expand() { expand(pointer: NSEvent.mouseLocation) }
 
-    private func expand(pointer: NSPoint, now: Date) {
-        guard isVisible, let panel, !panel.isPressed else { return }
-        if revealRequiresExit && panel.frame.contains(pointer) { return }
-        revealRequiresExit = false
-        hoverStartedAt = nil
-        lastInsideAt = now
+    private func expand(pointer: NSPoint) {
+        guard isVisible, !isExpanded, let panel, !panel.isPressed else { return }
+        if railHover == .needsExit && panel.frame.contains(pointer) { return }
+        resetRailHover()
         outsideSince = nil
-        guard !isExpanded else { return }
         isExpanded = true
         panel.allowsKey = true
         panel.isMovableByWindowBackground = false
@@ -255,24 +252,17 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         panel.contentView?.layer?.cornerRadius = Self.cardCornerRadius
         applyRestoredFrame(to: panel)
         presentPanel(panel)
+        startExpandedPointerWatcher()
     }
 
-    func railPointerExited() {
-        hoverStartedAt = nil
-        guard let panel, !panel.frame.contains(NSEvent.mouseLocation) else { return }
-        revealRequiresExit = false
-    }
-
-    func railPointerEntered() {
-        guard isVisible, !isExpanded, panel?.isPressed != true, !revealRequiresExit else { return }
-        hoverStartedAt = Date()
-    }
+    func railPointerChanged() { if !isExpanded { checkPointer() } }
 
     /// Keep the feature enabled while replacing the actual window frame with its 20 × 104 hit area.
-    func collapse() { collapse(pointer: NSEvent.mouseLocation, now: Date()) }
+    func collapse() { collapse(pointer: NSEvent.mouseLocation) }
 
-    private func collapse(pointer: NSPoint, now: Date) {
-        guard isVisible, let panel, !panel.isPressed else { return }
+    private func collapse(pointer: NSPoint) {
+        guard isVisible, isExpanded, let panel, !panel.isPressed else { return }
+        stopExpandedPointerWatcher()
         isExpanded = false
         panel.allowsKey = false
         panel.isMovableByWindowBackground = false
@@ -280,10 +270,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         panel.contentView?.layer?.cornerRadius = 0
         if panel.isKeyWindow { panel.resignKey() }
         applyRestoredFrame(to: panel)
-        hoverStartedAt = nil
-        lastInsideAt = now
-        outsideSince = nil
-        revealRequiresExit = panel.frame.contains(pointer)
+        resetRailHover(requiresExit: panel.frame.contains(pointer))
         presentPanel(panel)
     }
 
@@ -304,7 +291,6 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         guard let panel, !panel.isPressed else { return }
         persistPosition()
         applyRestoredFrame(to: panel)
-        lastInsideAt = Date()
     }
 
     func openInbox(accountID: UUID? = nil, messageID: String? = nil) {
@@ -327,7 +313,10 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         horizontalRatio = 1
         verticalRatio = 0.15
         isOnLeft = false
-        if let panel { applyRestoredFrame(to: panel, persistResolvedDisplay: false) }
+        if let panel {
+            applyRestoredFrame(to: panel, persistResolvedDisplay: false)
+            checkPointer()
+        }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -337,12 +326,12 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     func windowDidMove(_ notification: Notification) {
         guard !isApplyingFrame, let panel, notification.object as? NSWindow === panel else { return }
-        lastInsideAt = Date()
+        checkPointer()
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
         guard !isApplyingFrame, let panel, notification.object as? NSWindow === panel else { return }
-        lastInsideAt = Date()
+        checkPointer()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -390,11 +379,13 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         guard let panel, !panel.isPressed else { return }
         // A remembered external display may have disappeared, so choose a connected screen first.
         applyRestoredFrame(to: panel)
+        checkPointer()
     }
 
     @objc private func willTerminate() {
         persistPosition()
-        stopPointerWatcher()
+        stopExpandedPointerWatcher()
+        resetRailHover()
         stopMouseObservers()
         // Do not call hide(): a visible panel should return on the next launch.
         defaults.set(isVisible, forKey: Key.visible)
@@ -439,53 +430,80 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
                 refreshExpandedHeight()
                 if expandedHeight != previousHeight, isExpanded { applyRestoredFrame(to: panel) }
                 outsideSince = nil
+                if !isExpanded { resetRailHover(requiresExit: panel.frame.contains(pointer)) }
             }
             return
         }
         guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) else { return }
         if belongsToPanel && containsVisiblePoint(pointer) { return }
         panel.cancelInteraction()
-        hoverStartedAt = nil
-        revealRequiresExit = false
-        collapse(pointer: pointer, now: Date())
+        guard isExpanded else {
+            if !panel.frame.contains(pointer) { resetRailHover() }
+            return
+        }
+        collapse(pointer: pointer)
     }
 
-    private func startPointerWatcher() {
-        guard pointerTimer == nil else { return }
+    private func startExpandedPointerWatcher() {
+        #if DEBUG_TESTING
+        if suppressPanelPresentationForTesting || isLayoutPreviewForTesting { return }
+        #endif
+        guard expandedPointerTimer == nil else { return }
+        // Tracking events handle ordinary movement. Only the open card needs a fallback
+        // for rounded corners or a drag whose events are delivered to another app.
         let timer = Timer(timeInterval: Self.pointerInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkPointer() }
         }
         RunLoop.main.add(timer, forMode: .common)
-        pointerTimer = timer
+        expandedPointerTimer = timer
     }
 
-    private func stopPointerWatcher() {
-        pointerTimer?.invalidate()
-        pointerTimer = nil
-        hoverStartedAt = nil
+    private func stopExpandedPointerWatcher() {
+        expandedPointerTimer?.invalidate()
+        expandedPointerTimer = nil
         outsideSince = nil
     }
 
-    private func checkPointer() {
-        evaluatePointer(pointer: NSEvent.mouseLocation, now: Date())
+    private func cancelRailReveal() {
+        railRevealTimer?.invalidate()
+        railRevealTimer = nil
     }
 
-    private func evaluatePointer(pointer: NSPoint, now: Date) {
-        guard isVisible, let panel else { return }
-        guard !panel.isPressed else { hoverStartedAt = nil; outsideSince = nil; return }
-        let inside = containsVisiblePoint(pointer)
-        if !isExpanded {
-            if revealRequiresExit {
-                if !inside { revealRequiresExit = false }
-                return
+    private func resetRailHover(requiresExit: Bool = false) {
+        cancelRailReveal()
+        railHover = requiresExit ? .needsExit : .idle
+    }
+
+    private func scheduleRailReveal(after delay: TimeInterval) {
+        guard railRevealTimer == nil else { return }
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.railRevealTimer = nil
+                self.checkPointer()
             }
-            if !inside { hoverStartedAt = nil; return }
-            if hoverStartedAt == nil { hoverStartedAt = now }
-            if let hoverStartedAt, now.timeIntervalSince(hoverStartedAt) >= 0.28 { expand(pointer: pointer, now: now) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        railRevealTimer = timer
+    }
+
+    private func checkPointer() {
+        evaluatePointer(pointer: NSEvent.mouseLocation)
+    }
+
+    private func evaluatePointer(pointer: NSPoint) {
+        guard isVisible, let panel, !panel.isPressed else { return }
+        let inside = containsVisiblePoint(pointer)
+        let now = ProcessInfo.processInfo.systemUptime
+        if !isExpanded {
+            switch railHover.update(isInside: inside, now: now) {
+            case .cancel: cancelRailReveal()
+            case .wait(let deadline): scheduleRailReveal(after: max(0, deadline - now))
+            case .reveal: expand(pointer: pointer)
+            }
             return
         }
         if inside {
-            lastInsideAt = now
             outsideSince = nil
             return
         }
@@ -493,7 +511,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         if isLayoutPreviewForTesting { outsideSince = nil; return }
         #endif
         if outsideSince == nil { outsideSince = now }
-        if let outsideSince, now.timeIntervalSince(outsideSince) >= Self.leaveDelay { collapse(pointer: pointer, now: now) }
+        if let outsideSince, now - outsideSince >= Self.leaveDelay { collapse(pointer: pointer) }
     }
 
     private func containsVisiblePoint(_ point: NSPoint) -> Bool {
@@ -515,23 +533,20 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         }
         window.containsVisiblePoint = { [weak self] point in self?.containsVisiblePoint(point) ?? false }
         window.onPressChanged = { [weak self] _ in
-            self?.hoverStartedAt = nil
+            self?.resetRailHover()
             self?.outsideSince = nil
-            self?.lastInsideAt = Date()
         }
         window.onDrag = { [weak self] pointer, offset in self?.movePanel(pointer: pointer, grabOffset: offset) }
         window.onRelease = { [weak self] dragged in
             guard let self else { return }
             if dragged { self.finishDragging() }
-            else if !self.isExpanded { self.revealRequiresExit = false; self.expand() }
+            else if !self.isExpanded { self.expand() }
             self.refreshExpandedHeight()
             if self.isExpanded, let panel = self.panel { self.applyRestoredFrame(to: panel) }
             if !self.isExpanded, let panel = self.panel {
-                self.revealRequiresExit = panel.frame.contains(NSEvent.mouseLocation)
+                self.resetRailHover(requiresExit: panel.frame.contains(NSEvent.mouseLocation))
             }
-            self.hoverStartedAt = nil
             self.outsideSince = nil
-            self.lastInsideAt = Date()
         }
         window.isFloatingPanel = true
         window.hidesOnDeactivate = false
@@ -545,7 +560,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.level = .floating
         window.alphaValue = opacity
         let hosting = MailFloatingHostingView(rootView: MailFloatingView(store: store, controller: self))
-        hosting.onPointerChanged = { [weak self] pointer in self?.evaluatePointer(pointer: pointer, now: Date()) }
+        hosting.onPointerChanged = { [weak self] pointer in self?.evaluatePointer(pointer: pointer) }
         hosting.wantsLayer = true
         hosting.layer?.cornerRadius = isExpanded ? Self.cardCornerRadius : 0
         hosting.layer?.masksToBounds = true

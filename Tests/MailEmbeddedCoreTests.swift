@@ -36,7 +36,23 @@ private final class MailMemoryCredentials {
         do { try await run(); print("Embedded native mail core: \(checks) isolated checks passed; no Keychain, GUI, browser or external connection.") }
         catch { fputs("Mail embedded core failure: \(error)\n", stderr); exit(1) }
     }
+    static func checkRailHover() throws {
+        var hover = MailFloatingRailHover.idle
+        let delay = MailFloatingRailHover.delay
+        try check(hover.update(isInside: false, now: 0) == .cancel, "贴边条空闲时无需计时")
+        try check(hover.update(isInside: true, now: 1) == .wait(until: 1 + delay), "进入贴边条才启动单次揭开延时")
+        try check(hover.update(isInside: true, now: 1.1) == .wait(until: 1 + delay), "条内移动不延长悬停揭开")
+        try check(hover.update(isInside: false, now: 1.2) == .cancel, "提前离开取消悬停揭开")
+        try check(hover.update(isInside: true, now: 2) == .wait(until: 2 + delay), "再次进入重新计算延时")
+        try check(hover.update(isInside: true, now: 2 + delay) == .reveal, "条内停留到期可以揭开")
+        hover = .needsExit
+        try check(hover.update(isInside: true, now: 3) == .cancel, "收起后指针未离开不重复揭开")
+        try check(hover.update(isInside: false, now: 4) == .cancel && hover == .idle, "离开贴边条解除收起闭锁")
+        try check(hover.update(isInside: true, now: 5) == .wait(until: 5 + delay), "解除闭锁后可按正常规则重新揭开")
+    }
+
     static func run() async throws {
+        try checkRailHover()
         let fm = FileManager.default, parent = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         guard parent.path.contains(".noindex/") else { throw MailAppError.message("测试根必须位于预建.noindex容器。") }
         try fm.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -79,6 +95,16 @@ private final class MailMemoryCredentials {
                 let store = MailStore(root: root, oauth: oauth, startTimer: false, evidenceDefaults: defaults, readGoogleClientSecret: { secretReads += 1; return nil })
                 try check(store.library.accounts[0].id == account.id && store.messages.count == 1 && store.library.drafts.count == 1, "本机账号UUID缓存与草稿原样加载")
                 try check(store.messages[0].attachments[0].data == Data([1,2,3]) && !store.messages[0].isRead, "缓存附件字节及未读状态保留")
+                let rail = MailFloatingRailStatus(accounts: store.library.accounts, messages: store.messages)
+                try check(rail.hasUnread && !rail.needsAttention, "贴边条读取现有本机收件箱未读状态")
+                var readMessage = store.messages[0]; readMessage.isRead = true
+                var archivedMessage = store.messages[0]; archivedMessage.folder = "Archive"
+                var removedAccountMessage = store.messages[0]; removedAccountMessage.accountID = UUID()
+                let withoutInboxUnread = MailFloatingRailStatus(accounts: [account], messages: [readMessage, archivedMessage, removedAccountMessage])
+                try check(!withoutInboxUnread.hasUnread && !withoutInboxUnread.needsAttention, "贴边条排除已读、非收件箱和已移除账号的邮件")
+                var failingAccount = account; failingAccount.syncError = "fixture sync error"
+                try check(MailFloatingRailStatus(accounts: [failingAccount]).needsAttention, "贴边条用本机账户错误显示待检查")
+                try check(MailFloatingRailStatus(hasProblem: true).needsAttention, "贴边条保留本机操作错误状态")
                 try check(credentials.reads == 0 && credentials.writes == 0 && credentials.deletions == 0 && secretReads == 0 && browserOpens == 0, "初次打开不读写Keychain/secret或触发浏览器")
                 try check(fm.fileExists(atPath: journalURL.path), "旧OAuth事务不在打开时自动回滚或删除")
                 do { _ = try await store.connection(for: account); try check(false, "未授权连接不能通过") } catch { checks += 1 }

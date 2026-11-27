@@ -128,7 +128,10 @@ struct MailSettingsView: View {
                     Text("浅色").tag("light")
                     Text("深色").tag("dark")
                 }
-                LabeledContent("版本", value: "V" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))
+                let info = Bundle.main.infoDictionary
+                let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+                let build = info?["CFBundleVersion"] as? String ?? "?"
+                LabeledContent("版本", value: "V\(version) · 构建 \(build)")
             }
             Section("悬浮窗") {
                 Toggle("显示悬浮窗", isOn: Binding(get:{floating.isVisible},set:{$0 ? floating.show() : floating.hide()}))

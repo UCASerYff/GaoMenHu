@@ -2,6 +2,7 @@ import AppKit
 import WebKit
 import Foundation
 import Carbon
+import Combine
 import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate, NSMenuItemValidation {
@@ -15,17 +16,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var vault: Vault!
     var server: BridgeServer?
     var clients: [String: BrowserClient] = [:]
-    var launches: [String: LaunchRequest] = [:]
+    var launches: [String: LaunchRequest] = [:] { didSet { if !launches.isEmpty { startMaintenanceIfNeeded() } } }
     var statusItem: NSStatusItem!
+    private var downloadMenuItem: NSMenuItem?
+    private var downloadActivityObservation: AnyCancellable?
     var hotkey: EventHotKeyRef?
-    var timer: Timer?
+    private var maintenanceTimer: Timer?
+    private var lastVaultUnlocked = false
+    private var reportedProfiles: [ProfilePresentation] = []
+    private var launcherStatePending = false
+    private struct ProfilePresentation: Equatable {
+        let id: String
+        let browser: String
+        let label: String
+    }
+    private var cachedBrowserExtensionID: String?
     var settingsWindow: NSWindow?
     var settingsModel: PortalSettingsModel?
     var floatingLauncher: FloatingLauncherController?
     var testMode = CommandLine.arguments.contains("--ui-test")
     lazy var launchHistory = WebsiteLaunchHistory(preferences: testMode ? nil : .standard)
     var lastInteraction = Date()
-    var lastClientSignature = ""
     let iconLoader = IconLoader()
     var iconRequests: [String: (token: UUID, url: String)] = [:]
     var organizationHistory: [OrganizationEdit] = []
@@ -40,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var portalWebReady = false
     let resources = Bundle.main.resourceURL!
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.00" }
+    var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?" }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
@@ -49,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         store = LibraryStore(persistent: !testMode)
         vault = Vault(testing: testMode)
+        lastVaultUnlocked = vault.unlocked
+        vault.didUnlock = { [weak self] in
+            guard let self else { return }
+            self.refreshVaultPresentation()
+            self.startMaintenanceIfNeeded()
+        }
         var loadError: String?
         do {
             library = try store.load(defaultBrowsers: installedBrowsers().map { $0.id })
@@ -62,26 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         restoreMailFloatingIfRequested()
         if !testMode && store.isWritable {
-            do {
-                try registerNativeHosts()
-                let bridge = BridgeServer(expectedHostPath: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/MenDaoBridge").path)
-                bridge.handler = { [weak self] request in self?.handleBrowser(request) ?? ["ok": false] }
-                try bridge.start(); server = bridge
-            } catch { loadError = error.localizedDescription }
-        }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if Date().timeIntervalSince(self.lastInteraction) > 300, self.vault.unlocked, !self.testMode {
-                self.vault.lock(); self.launches.removeAll(); self.emit("locked", [:])
-            }
-            if !self.vault.unlocked { self.emit("locked", [:]) }
-            self.launches = self.launches.filter { $0.value.expires > Date() }
-            self.launchFeedback = self.launchFeedback.filter { self.launches[$0.key] != nil }
-            let signature = self.activeClients().map { $0.id + $0.label }.joined(separator: "|")
-            if signature != self.lastClientSignature {
-                self.lastClientSignature = signature
-                self.emit("profiles", ["state": self.state()])
-            }
+            var bridgeIssues: [String] = []
+            do { try startBrowserBridge() } catch { bridgeIssues.append(error.localizedDescription) }
+            do { try registerNativeHosts() } catch { bridgeIssues.append(error.localizedDescription) }
+            if !bridgeIssues.isEmpty { loadError = bridgeIssues.joined(separator: "\n") }
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(lockVault), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(lockVault), name: NSWorkspace.willSleepNotification, object: nil)
@@ -178,10 +180,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         if let image = NSImage(systemSymbolName: "door.left.hand.open", accessibilityDescription: "搞门户") { image.isTemplate = true; statusItem.button?.image = image }
         let menu = NSMenu()
         menu.addItem(withTitle: "打开搞门户  ⌃⌥Space", action: #selector(showWindow), keyEquivalent: "")
+        let downloads = menu.addItem(withTitle: "下载中心…", action: #selector(openDownloads), keyEquivalent: "")
+        downloads.target = self; downloadMenuItem = downloads
         let floating = menu.addItem(withTitle: "显示或隐藏悬浮窗", action: #selector(toggleFloatingLauncher), keyEquivalent: ""); floating.target = self
         menu.addItem(withTitle: "锁定账号库", action: #selector(lockVault), keyEquivalent: "")
         menu.addItem(.separator()); menu.addItem(withTitle: "退出搞门户", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         statusItem.menu = menu
+        showDownloadActivity(.idle)
+    }
+    @MainActor func observeDownloadActivity(_ manager: DownloadManager) {
+        downloadActivityObservation = manager.activityPublisher.sink { [weak self] activity in
+            self?.showDownloadActivity(activity)
+        }
+    }
+    private func showDownloadActivity(_ activity: DownloadActivity) {
+        guard let button = statusItem?.button else { return }
+        statusItem.length = activity.count > 0 ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        button.imagePosition = activity.count > 0 ? .imageLeading : .imageOnly
+        let progress = activity.percent.map { "\($0)%" }
+        button.title = activity.count > 0 ? [String(activity.count), progress].compactMap { $0 }.joined(separator: " · ") : ""
+        let detail = activity.count > 0 ? ["\(activity.count) 项下载进行中", progress].compactMap { $0 }.joined(separator: " · ") : nil
+        button.toolTip = detail.map { "搞门户 · \($0)" } ?? "搞门户"
+        button.setAccessibilityLabel(button.toolTip)
+        downloadMenuItem?.title = detail.map { "下载中心…  \($0)" } ?? "下载中心…"
     }
     func registerHotkey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -192,7 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }, 1, &spec, pointer, nil)
         RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x4D44414F, id: 1), GetApplicationEventTarget(), 0, &hotkey)
     }
-    @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); emit("search", [:]) }
+    @objc func showWindow() {
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if launcherStatePending { publishLauncherState() }
+        emit("search", [:])
+    }
     @objc func undoMenu() {
         if mailWindowController?.ownsKeyWindow == true {
             NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
@@ -202,7 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         vault?.lock(); launches.removeAll()
         let callbacks = externalLaunchCallbacks; externalLaunchCallbacks.removeAll()
         callbacks.values.forEach { $0(.failed("vault_locked")) }
-        emit("locked", [:])
+        refreshVaultPresentation()
     }
     @objc func about() { NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "搞门户", .applicationVersion: "V\(version)", .credits: NSAttributedString(string: "网站、账号，一点就到。\n网站启动台 · 浏览器选择 · 本地账号库")]) }
     @objc func settings() {
@@ -236,6 +262,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
+    func windowDidBecomeKey(_ notification: Notification) {
+        if launcherStatePending { publishLauncherState() }
+    }
+    func applicationDidUnhide(_ notification: Notification) {
+        if launcherStatePending { publishLauncherState() }
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if mailWindowController?.retainDraftBeforeClosing() == false { return .terminateCancel }
@@ -244,17 +276,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         Task { @MainActor in downloads.shutdown { NSApp.reply(toApplicationShouldTerminate: true) } }
         return .terminateLater
     }
-    func applicationWillTerminate(_ notification: Notification) { floatingLauncher?.stop(); timer?.invalidate(); server?.stop(); if let hotkey { UnregisterEventHotKey(hotkey) } }
+    func applicationWillTerminate(_ notification: Notification) { floatingLauncher?.stop(); maintenanceTimer?.invalidate(); server?.stop(); if let hotkey { UnregisterEventHotKey(hotkey) } }
+
+    private func startMaintenanceIfNeeded() {
+        guard maintenanceTimer == nil else { return }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.maintainActiveSessions() }
+        timer.tolerance = 0.25
+        maintenanceTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func maintainActiveSessions() {
+        let now = Date()
+        if !testMode && vault.unlocked && now.timeIntervalSince(lastInteraction) > 300 { lockVault() }
+        refreshVaultPresentation()
+        launches = launches.filter { $0.value.expires > now }
+        launchFeedback = launchFeedback.filter { launches[$0.key] != nil }
+        clients = clients.filter { now.timeIntervalSince($0.value.lastSeen) < 9 }
+        refreshBrowserProfiles()
+        if launches.isEmpty && clients.isEmpty && (testMode || !vault.unlocked) {
+            maintenanceTimer?.invalidate(); maintenanceTimer = nil
+        }
+    }
+
+    private var launcherVisible: Bool {
+        window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
+    }
+
+    func publishLauncherState() {
+        launcherStatePending = !launcherVisible
+        if !launcherStatePending { emit("update", ["state": state()]) }
+    }
+
+    private func refreshVaultPresentation() {
+        let unlocked = vault.unlocked
+        guard lastVaultUnlocked != unlocked else { return }
+        lastVaultUnlocked = unlocked
+        if settingsWindow?.isVisible == true { settingsModel?.refresh() }
+        if !launcherVisible { launcherStatePending = true }
+        else { emit(unlocked ? "unlocked" : "locked", [:]) }
+    }
+
+    private func refreshBrowserProfiles() {
+        let current = activeClients().map { ProfilePresentation(id: $0.id, browser: $0.browser, label: $0.label) }
+        guard current != reportedProfiles else { return }
+        reportedProfiles = current
+        if settingsWindow?.isVisible == true { settingsModel?.updateConnectedProfiles() }
+        publishLauncherState()
+    }
 
     func installedBrowsers() -> [Browser] { Browser.catalog.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil } }
-    func activeClients() -> [BrowserClient] { clients.values.filter { Date().timeIntervalSince($0.lastSeen) < 9 }.sorted { $0.label < $1.label } }
+    func activeClients() -> [BrowserClient] {
+        let now = Date()
+        return clients.values.filter { now.timeIntervalSince($0.lastSeen) < 9 }.sorted { ($0.label, $0.id) < ($1.label, $1.id) }
+    }
     func state() -> [String: Any] {
         let value = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(library))) ?? [:]
+        let installed = Set(installedBrowsers().map(\.id))
         return ["library": value, "version": version, "unlocked": vault.unlocked,
                 "recoveryRequired": !testMode && !store.isWritable,
                 "recoveryMessage": "资料恢复保护：主库缺失、不可读或初始化未完成。没有生成默认网站，也没有覆盖原资料；请保留原目录和备份，先核验并恢复完整主库。",
                 "browsers": Browser.catalog.map { browser -> [String: Any] in
-                    ["id": browser.id, "name": browser.name, "installed": installedBrowsers().contains(browser), "supportsFill": browser.supportsFill]
+                    ["id": browser.id, "name": browser.name, "installed": installed.contains(browser.id), "supportsFill": browser.supportsFill]
                 }, "profiles": activeClients().map { ["id": $0.id, "browser": $0.browser, "label": $0.label] },
                 "testMode": testMode, "canUndo": !organizationHistory.isEmpty, "searchKeys": searchKeys(),
                 "extensionPath": resources.appendingPathComponent("BrowserExtension").path]
@@ -565,15 +648,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         } else { perform() }
     }
 
+    private func expectedBrowserExtensionID() -> String? {
+        if let cachedBrowserExtensionID { return cachedBrowserExtensionID }
+        guard let id = try? String(contentsOf: resources.appendingPathComponent("extension-id.txt"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            id.utf8.count == 32, id.utf8.allSatisfy({ (97...112).contains($0) }) else { return nil }
+        cachedBrowserExtensionID = id
+        return id
+    }
+
     func handleBrowser(_ data: [String: Any]) -> [String: Any] {
         guard let browser = data["browser"] as? String, ["chrome", "edge"].contains(browser),
               let extensionID = data["extension"] as? String,
-              let expected = try? String(contentsOf: resources.appendingPathComponent("extension-id.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), extensionID == expected,
+              extensionID == expectedBrowserExtensionID(),
               let profileID = data["profileId"] as? String, profileID.count <= 100, UUID(uuidString: profileID) != nil else { return ["ok": false, "error": "连接身份无效。"] }
         let label = String((data["label"] as? String ?? "默认资料").prefix(80))
-        let before = Set(activeClients().map(\.id))
-        clients[profileID] = BrowserClient(id: profileID, browser: browser, label: label, lastSeen: Date())
-        if before != Set(activeClients().map(\.id)) { emit("profiles", ["state": state()]) }
+        let previous = clients[profileID]
+        let now = Date()
+        clients[profileID] = BrowserClient(id: profileID, browser: browser, label: label, lastSeen: now)
+        startMaintenanceIfNeeded()
+        if previous.map({ $0.browser != browser || $0.label != label || now.timeIntervalSince($0.lastSeen) >= 9 }) ?? true {
+            refreshBrowserProfiles()
+        }
         switch data["type"] as? String {
         case "collections":
             return ["ok": true, "folders": library.tiles.filter { $0.kind == "folder" }.map { ["id": $0.id, "name": $0.name ?? "文件夹"] }]
@@ -668,18 +764,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
-    func registerNativeHosts() throws {
-        let host = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/MenDaoBridge").path
-        let id = try String(contentsOf: resources.appendingPathComponent("extension-id.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        let object: [String: Any] = ["name": nativeHostName, "description": "搞门户浏览器助手", "path": host, "type": "stdio", "allowed_origins": ["chrome-extension://\(id)/"]]
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-        for path in ["Library/Application Support/Google/Chrome/NativeMessagingHosts", "Library/Application Support/Microsoft Edge/NativeMessagingHosts"] {
-            let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(path)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let destination = folder.appendingPathComponent(nativeHostName + ".json")
-            try data.write(to: destination, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+    func registerNativeHosts(for target: PortalBrowserTarget? = nil) throws {
+        let diagnostics = browserDiagnostics
+        let data = try diagnostics.registrationPayload()
+        var failures: [String] = []
+        for browser in target.map({ [$0] }) ?? PortalBrowserTarget.allCases {
+            do { try diagnostics.writeRegistration(data, for: browser) }
+            catch { failures.append("\(browser.name)：\(error.localizedDescription)") }
         }
+        guard failures.isEmpty else { throw AppError.message(failures.joined(separator: "\n")) }
     }
 
     func imageData(_ image: NSImage, size: Int) -> String? {
@@ -713,7 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 }
                 next.sites[index].iconSource = "website"
                 next.sites[index].iconCheckedAt = Date().timeIntervalSince1970
-                do { try self.store.save(next); self.library = next; self.emit("update", ["state": self.state()]) } catch { }
+                do { try self.store.save(next); self.library = next; self.publishLauncherState() } catch { }
             }
         }
     }

@@ -5,18 +5,28 @@ import Network
 import Darwin
 
 @MainActor final class DownloadManager: ObservableObject {
-    @Published var items: [DownloadItem] = []
+    @Published var items: [DownloadItem] = [] {
+        didSet { scheduleActivityRefresh() }
+    }
     @Published var jobs: [DownloadJob] = []
     @Published var destinations: [DestinationGrant] = []
     @Published var settings = DownloadSettings()
     @Published var recoveryIssue: String?
     @Published var lastError: String?
+    private let activitySubject = CurrentValueSubject<DownloadActivity, Never>(.idle)
+    private var activityRefreshPending = false
+    var activity: DownloadActivity { activitySubject.value }
+    var activityPublisher: AnyPublisher<DownloadActivity, Never> { activitySubject.eraseToAnyPublisher() }
     private var durableBytes: [UUID:Int64] = [:]
     private let rateLimit = NetworkRateLimit()
     private var database: DownloadDatabase?
     private var store: DownloadStore?
-    private var transfers: [UUID:HTTPTransfer] = [:]
-    private var verifying: Set<UUID> = []
+    private var transfers: [UUID:HTTPTransfer] = [:] {
+        didSet { scheduleActivityRefresh() }
+    }
+    private var verifying: Set<UUID> = [] {
+        didSet { scheduleActivityRefresh() }
+    }
     private enum StopIntent { case pause; case cancel(Bool) }
     private var stopIntents: [UUID:StopIntent] = [:]
     private var stopCompletions: [()->Void] = []
@@ -61,6 +71,20 @@ import Darwin
         // Existing work resumes only after explicit user action; no silent replay after a crash.
     }
     deinit { networkMonitor.cancel(); retryTimer?.invalidate() }
+
+    private func scheduleActivityRefresh() {
+        guard !activityRefreshPending, !transfers.isEmpty || !verifying.isEmpty || activity.count > 0 else { return }
+        activityRefreshPending = true
+        // Publish after the item and its owning worker reach a consistent state.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.activityRefreshPending = false
+            let ownedIDs = self.verifying.union(self.transfers.keys)
+            let activity = DownloadActivity.summarize(self.items, ownedIDs: ownedIDs)
+            if activity != self.activity { self.activitySubject.send(activity) }
+        }
+    }
+
     func verifyAvailability() throws {
         guard recoveryIssue == nil, let store, database != nil else { throw DownloadError.message(recoveryIssue ?? "资料不可用。") }
         do { try store.verifyAvailability() }

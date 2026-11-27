@@ -1,6 +1,7 @@
 // Real loopback transfer and isolated persistence tests for the embedded engine.
 // No GUI, external services, browser credentials or actual user directories.
 import Foundation
+import Combine
 import Darwin
 
 @main struct EmbeddedDownloadCoreTests {
@@ -97,6 +98,26 @@ import Darwin
             let req = UUID(); let jobs = try m.createJobs(urls: [base + "/file?token=private-sample"], destinationID: g.id, requestID: req)
             let replay = try m.createJobs(urls: [base + "/file?token=private-sample"], destinationID: g.id, requestID: req)
             try check(jobs == replay && m.items.count == 1, "请求幂等返回同一真实任务")
+            var small = m.items[0]
+            small.state = .pausing; small.bytesReceived = 25; small.expectedBytes = 25
+            var large = small
+            large.id = UUID(); large.state = .verifying; large.bytesReceived = 25; large.expectedBytes = 175
+            var unowned = large
+            unowned.id = UUID(); unowned.state = .running
+            var queued = large
+            queued.id = UUID(); queued.state = .queued
+            let owners: Set<UUID> = [small.id, large.id, queued.id]
+            try check(DownloadActivity.summarize([small, large, unowned, queued], ownedIDs: owners) == .init(count: 2, percent: 25),
+                      "状态栏仅统计本进程的活动任务并按字节加权")
+            large.state = .committing; large.expectedBytes = nil
+            try check(DownloadActivity.summarize([small, large], ownedIDs: owners) == .init(count: 2, percent: nil),
+                      "任一活动总长度未知时只报告真实数量")
+            large.expectedBytes = 24
+            try check(DownloadActivity.summarize([small, large], ownedIDs: owners) == .init(count: 2, percent: nil),
+                      "字节证据不一致时只报告数量")
+            small.bytesReceived = 0; small.expectedBytes = 0
+            try check(DownloadActivity.summarize([small], ownedIDs: owners) == .init(count: 1, percent: nil),
+                      "没有可用分母时不报告百分比")
             let item = try await wait(m, m.items[0].id) { $0.state == .completed }
             let data = try Data(contentsOf: m.artifactURL(item))
             try check(data.count == 524288 && item.artifact?.sha256 == downloadDigest(data), "真实URLSession落盘长度与SHA正确")
@@ -168,7 +189,9 @@ import Darwin
             do {
                 let (m, g, dest) = try fresh("migrated-range"); rootURL = m.dataRootURL; destination = dest; grantID = g.id
                 _ = try m.createJobs(urls: [base + "/range"], destinationID: g.id); itemID = m.items[0].id
-                _ = try await wait(m, itemID) { $0.state == .running && $0.bytesReceived > 65536 }
+                _ = try await wait(m, itemID) {
+                    $0.state == .running && $0.bytesReceived > 65536 && m.activity.count == 1 && (m.activity.percent ?? 0) > 0
+                }
                 m.pause(itemID); let paused = try await wait(m, itemID) { $0.state == .paused }
                 prefix = paused.partialSHA256; checkpoint = paused.bytesReceived
                 try check(prefix != nil && checkpoint > 0 && paused.etag == "\"fixture-v1\"", "暂停持久fsync断点摘要与强ETag")
@@ -190,6 +213,23 @@ import Darwin
             let values = try JSONSerialization.jsonObject(with: stats) as! [String: Any]
             try check((values["ranges"] as! [String: Int])["/range", default: 0] > 0, "HTTP服务实际收到Range请求")
             await stop(m)
+        }
+        do {
+            let (m, g, _) = try fresh("status-quit")
+            var updates: [DownloadActivity] = []
+            let subscription = m.activityPublisher.sink { updates.append($0) }
+            defer { subscription.cancel() }
+            _ = try m.createJobs(urls: [base + "/slow-unknown", base + "/range"], destinationID: g.id)
+            let id = m.items[0].id
+            try check(m.activity == .idle, "排队任务不会点亮状态栏")
+            _ = try await wait(m, id) { $0.bytesReceived > 65536 && $0.state == .running && m.activity.count == 1 }
+            try check(m.activity.percent == nil && m.items[1].state == .queued, "未知长度只显示活动数，排队项不计入")
+            var stopCompleted = false
+            m.shutdown { stopCompleted = true }
+            let paused = try await wait(m, id) { stopCompleted && $0.state == .paused && m.activity == .idle }
+            try check(paused.partialSHA256 != nil && paused.bytesReceived > 0 && m.items[1].state == .paused,
+                      "退出暂停传输和排队任务，保留哈希校验断点")
+            try check(updates == [.idle, .init(count: 1, percent: nil), .idle], "仅在状态栏摘要实际变化时发布")
         }
         do {
             let (m, g, _) = try fresh("budget"); var settings = m.settings; settings.maxItemBytes = 32768; m.updateSettings(settings)

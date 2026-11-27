@@ -6,7 +6,10 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 old = (root / "VERSION").read_text().strip()
 new = f"{Decimal(old) + Decimal('0.01'):.2f}"
+build_file = root / "BUILD"
+build = int(build_file.read_text().strip()) + 1
 (root / "VERSION").write_text(new + "\n")
+build_file.write_text(f"{build}\n")
 manifest_file = root / "BrowserExtension" / "manifest.json"
 manifest = json.loads(manifest_file.read_text())
 major, minor = new.split(".")
@@ -28,4 +31,4 @@ text = readme.read_text().replace("# 搞门户 V" + old, "# 搞门户 V" + new)
 text = text.replace("GaoMenHu-" + old + ".dmg", "GaoMenHu-" + new + ".dmg")
 text = text.replace("当前版本 V" + old, "当前版本 V" + new)
 readme.write_text(text)
-print(f"搞门户 V{old} → V{new}")
+print(f"搞门户 V{old} → V{new}（macOS 构建 {build}）")

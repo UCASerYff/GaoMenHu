@@ -61,6 +61,7 @@ extension AppDelegate {
         let coordinator = PortalDownloadCoordinator(downloads: manager, exchange: exchange)
         let controller = PortalDownloadWindowController(coordinator: coordinator)
         downloadWindowController = controller
+        observeDownloadActivity(manager)
         return controller
     }
 

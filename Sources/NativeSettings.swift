@@ -2,12 +2,64 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ConnectedBrowserProfile: Identifiable, Equatable {
+    let id: String
+    let label: String
+}
+
 final class PortalSettingsModel: ObservableObject {
     unowned let app: AppDelegate
     @Published var busy = false
     @Published var status = ""
+    @Published private(set) var checkingBrowsers = false
+    @Published private(set) var browserSnapshots: [PortalBrowserTarget: BrowserDiagnosticSnapshot] = [:]
+    @Published private(set) var connectedProfiles: [String: [ConnectedBrowserProfile]] = [:]
+
     init(app: AppDelegate) { self.app = app }
     func refresh() { objectWillChange.send() }
+
+    func updateConnectedProfiles() {
+        let profiles = Dictionary(grouping: app.activeClients(), by: \.browser).mapValues { clients in
+            clients.map { ConnectedBrowserProfile(id: $0.id, label: $0.label.isEmpty ? "默认资料" : $0.label) }
+                .sorted { $0.label == $1.label ? $0.id < $1.id : $0.label < $1.label }
+        }
+        if connectedProfiles != profiles { connectedProfiles = profiles }
+    }
+
+    func diagnoseBrowsers() {
+        updateConnectedProfiles()
+        guard !app.testMode, !checkingBrowsers else { return }
+        let diagnostics = app.browserDiagnostics
+        let workspace = NSWorkspace.shared
+        let runningIDs = Set(workspace.runningApplications.compactMap(\.bundleIdentifier))
+        let applications = Browser.catalog.compactMap { browser -> (PortalBrowserTarget, Bool, Bool)? in
+            guard let target = PortalBrowserTarget(rawValue: browser.id) else { return nil }
+            return (target, workspace.urlForApplication(withBundleIdentifier: browser.bundleID) != nil, runningIDs.contains(browser.bundleID))
+        }
+        let bridgeRunning = app.server != nil
+        checkingBrowsers = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let results = Dictionary(uniqueKeysWithValues: applications.map { target, installed, running in
+                (target, diagnostics.snapshot(for: target, installed: installed, running: running, bridgeRunning: bridgeRunning))
+            })
+            DispatchQueue.main.async {
+                self?.browserSnapshots = results
+                self?.checkingBrowsers = false
+            }
+        }
+    }
+
+    func repairBrowser(_ target: PortalBrowserTarget) {
+        guard !app.testMode, app.store.isWritable, !checkingBrowsers,
+              let snapshot = browserSnapshots[target], snapshot.canRepair else { return }
+        do {
+            if snapshot.nativeHost.status == .issue { try app.registerNativeHosts(for: target) }
+            try app.startBrowserBridge()
+            status = "已修复 \(target.name) 的本机连接配置。请在目标资料的助手弹窗中重新连接。"
+        } catch { status = error.localizedDescription }
+        diagnoseBrowsers()
+    }
+
     func change(appearance: String? = nil, density: String? = nil, iconSize: Int? = nil) {
         do { try app.updateSettings(appearance: appearance, density: density, iconSize: iconSize); refresh() }
         catch { status = error.localizedDescription }
@@ -33,25 +85,7 @@ struct PortalSettingsView: View {
                     }
                     Button("查看已移除的网站…") { app.showSettingsPage("archived") }
                 }
-                Section("浏览器助手") {
-                    Text("Chrome 和 Edge 助手支持自动填充。每个浏览器个人资料需要单独加载并连接。")
-                        .foregroundStyle(.secondary)
-                    ForEach(Browser.catalog.filter(\.supportsFill), id: \.id) { browser in
-                        HStack {
-                            Text(browser.name)
-                            Spacer()
-                            let count = app.activeClients().filter { $0.browser == browser.id }.count
-                            Text(count > 0 ? "已连接 · \(count) 个资料" : "未连接").foregroundStyle(count > 0 ? Color.green : Color.secondary)
-                            Button("重新连接") { app.reconnectBrowser(browser) }
-                                .disabled(!app.installedBrowsers().contains(browser))
-                            Button("管理扩展…") { app.openBrowserExtensions(browser) }
-                                .disabled(!app.installedBrowsers().contains(browser))
-                        }
-                    }
-                    Button("打开助手文件夹") { NSWorkspace.shared.activateFileViewerSelecting([app.resources.appendingPathComponent("BrowserExtension")]) }
-                    Text("在浏览器扩展管理页开启开发者模式，加载助手文件夹。更新后可在该页面重新加载助手。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
+                Section("浏览器助手") { BrowserDiagnosticsView(model: model) }
                 Section("悬浮窗") {
                     Toggle("显示悬浮窗", isOn: Binding(get: { app.floatingLauncher?.isVisible ?? false }, set: { app.setFloatingLauncherVisible($0); model.refresh() }))
                     Picker("停靠位置", selection: Binding(get: { app.floatingLauncher?.dockEdge.rawValue ?? "right" }, set: { app.floatingLauncher?.setDock(FloatingLauncherEdge(rawValue: $0) ?? .right); model.refresh() })) {
@@ -91,7 +125,7 @@ struct PortalSettingsView: View {
                     Picker("外观", selection: Binding(get: { app.effectiveAppearance }, set: { model.change(appearance: $0) })) {
                         Text("跟随系统").tag("system"); Text("浅色").tag("light"); Text("深色").tag("dark")
                     }
-                    LabeledContent("版本", value: "V" + app.version)
+                    LabeledContent("版本", value: "V\(app.version) · 构建 \(app.build)")
                 }
             }.formStyle(.grouped).tabItem { Text("外观") }
             Form {
@@ -121,7 +155,107 @@ struct PortalSettingsView: View {
         .tint(PortalTheme.accent)
         .background(PortalTheme.canvas)
         .frame(width: 820, height: 740)
-        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in model.refresh() }
+    }
+}
+
+private struct BrowserDiagnosticsView: View {
+    @ObservedObject var model: PortalSettingsModel
+    @State private var expanded: Set<PortalBrowserTarget> = []
+
+    var body: some View {
+        Text("Chrome 和 Edge 支持自动填充。每个资料须单独加载助手并连接。Safari 可直接启动网站，无需助手。")
+            .foregroundStyle(.secondary)
+        HStack {
+            Button("重新检测") { model.diagnoseBrowsers() }
+                .disabled(model.checkingBrowsers || model.app.testMode)
+            if model.checkingBrowsers {
+                ProgressView().controlSize(.small).accessibilityLabel("正在检测浏览器助手")
+            }
+            Button("打开助手文件夹") {
+                guard !model.app.testMode else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([model.app.browserDiagnostics.extensionDirectory])
+            }
+            .disabled(model.app.testMode)
+        }.buttonStyle(.bordered)
+        ForEach(Browser.catalog.filter(\.supportsFill), id: \.id) { browser in
+            if let target = PortalBrowserTarget(rawValue: browser.id) {
+                browserRow(browser, target: target)
+            }
+        }
+        Text("在目标资料的扩展管理页开启开发者模式并加载助手文件夹。升级后可重新加载。诊断只查看默认登记和实际连接，不能确认未回报资料的安装、停用或浏览器策略状态。")
+            .font(.callout).foregroundStyle(.secondary)
+    }
+
+    private func browserRow(_ browser: Browser, target: PortalBrowserTarget) -> some View {
+        let profiles = model.connectedProfiles[browser.id] ?? []
+        let snapshot = model.browserSnapshots[target]
+        let isExpanded = Binding(get: { expanded.contains(target) }, set: { open in
+            if open { expanded.insert(target) } else { expanded.remove(target) }
+        })
+        return DisclosureGroup(isExpanded: isExpanded) {
+            if let snapshot {
+                VStack(alignment: .leading, spacing: 8) {
+                    evidenceRow("浏览器", snapshot.browser)
+                    evidenceRow("随附扩展", snapshot.extensionPackage)
+                    evidenceRow("原生消息登记", snapshot.nativeHost)
+                    evidenceRow("本机桥接", snapshot.bridge)
+                    evidenceRow("资料连接", snapshot.connection(profileCount: profiles.count))
+                    ForEach(profiles) { profile in
+                        Label(profile.label, systemImage: "person.crop.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        if snapshot.installed {
+                            Button("打开 \(browser.name)") { model.app.openBrowserToConnect(browser) }
+                            Button("管理扩展…") { model.app.openBrowserExtensions(browser) }
+                        }
+                        if snapshot.canRepair {
+                            Button("修复本机连接") { model.repairBrowser(target) }
+                                .disabled(model.checkingBrowsers || !model.app.store.isWritable)
+                        }
+                    }.buttonStyle(.bordered).disabled(model.checkingBrowsers)
+                    if !model.app.store.isWritable {
+                        Text("资料处于恢复保护状态，暂时无法启动桥接或修复登记。")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }.padding(.vertical, 6)
+            } else {
+                Text(model.app.testMode ? "测试模式已禁用本机浏览器诊断。" : "等待检测。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        } label: {
+            HStack {
+                Text(browser.name)
+                Spacer()
+                Text(summary(snapshot, profileCount: profiles.count)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func summary(_ snapshot: BrowserDiagnosticSnapshot?, profileCount: Int) -> String {
+        if profileCount > 0 { return "已连接 · \(profileCount) 个资料" }
+        guard let snapshot else { return model.checkingBrowsers ? "正在检测" : "待检测" }
+        if !snapshot.installed && !snapshot.running { return "未找到浏览器" }
+        if snapshot.extensionPackage.status == .issue { return "随附扩展异常" }
+        if snapshot.nativeHost.status == .issue { return "登记需检查" }
+        if !snapshot.bridgeRunning { return "桥接未启动" }
+        if !snapshot.running { return "浏览器未打开" }
+        return "连接待确认"
+    }
+
+    private func evidenceRow(_ label: String, _ evidence: BrowserDiagnosticEvidence) -> some View {
+        let icon: String
+        let color: Color
+        switch evidence.status {
+        case .verified: icon = "checkmark.circle"; color = .green
+        case .issue: icon = "exclamationmark.triangle"; color = .orange
+        case .unknown: icon = "questionmark.circle"; color = .secondary
+        }
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: icon).foregroundStyle(color).accessibilityHidden(true)
+            Text(label).fontWeight(.medium).fixedSize()
+            Text(evidence.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.font(.callout)
     }
 }
 
@@ -138,7 +272,7 @@ extension AppDelegate: NSToolbarDelegate {
         }
         if let density { next.layoutDensity = density }
         if let iconSize { next.iconSize = iconSize }
-        try store.save(next); library = next; applyAppearance(); emit("update", ["state": state()])
+        try store.save(next); library = next; applyAppearance(); publishLauncherState()
     }
     func configureToolbar() {
         let toolbar = NSToolbar(identifier: "GaoMenHu.MainToolbar")
@@ -169,7 +303,8 @@ extension AppDelegate: NSToolbarDelegate {
             panel.contentView = NSHostingView(rootView: PortalSettingsView(model: model))
             panel.center(); settingsWindow = panel
         }
-        settingsModel?.refresh(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        settingsModel?.refresh(); settingsModel?.diagnoseBrowsers()
+        settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func showSettingsPage(_ page: String) {
         guard settingsModel?.busy != true else { return }
@@ -178,20 +313,47 @@ extension AppDelegate: NSToolbarDelegate {
     }
     @objc func restoreModuleBackup() { showSettingsPage("backup-restore") }
     @objc func mergeModuleBackup() { showSettingsPage("backup-merge") }
-    func openBrowserExtensions(_ browser: Browser) {
-        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID),
-              let url = URL(string: browser.id == "chrome" ? "chrome://extensions/" : "edge://extensions/") else { return }
-        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: .init(), completionHandler: nil)
+    var browserDiagnostics: BrowserDiagnostics {
+        .init(home: FileManager.default.homeDirectoryForCurrentUser,
+              systemLibrary: URL(fileURLWithPath: "/Library", isDirectory: true), resources: resources,
+              helper: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/MenDaoBridge"), hostName: nativeHostName)
     }
-    func reconnectBrowser(_ browser: Browser) {
-        do {
-            if !testMode {
-                try registerNativeHosts()
-                guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID) else { throw AppError.message("浏览器未安装。") }
-                NSWorkspace.shared.openApplication(at: url, configuration: .init())
+    func startBrowserBridge() throws {
+        guard !testMode, store.isWritable, server == nil else { return }
+        let bridge = BridgeServer(expectedHostPath: browserDiagnostics.helper.path)
+        bridge.handler = { [weak self] request in self?.handleBrowser(request) ?? ["ok": false] }
+        try bridge.start()
+        server = bridge
+    }
+    func openBrowserToConnect(_ browser: Browser) {
+        guard !testMode else { return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID) else {
+            settingsModel?.status = "系统未找到 \(browser.name)。"
+            settingsModel?.diagnoseBrowsers()
+            return
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _, error in
+            DispatchQueue.main.async {
+                self?.settingsModel?.status = error.map { "无法打开 \(browser.name)：\($0.localizedDescription)" }
+                    ?? "请在 \(browser.name) 的目标资料中打开搞门户助手，点击「重新连接」。"
+                self?.settingsModel?.diagnoseBrowsers()
             }
-            settingsModel?.status = "已检查本机连接并唤起浏览器。助手会自动重连，也可在助手弹窗中重新连接。"
-        } catch { settingsModel?.status = error.localizedDescription }
+        }
+    }
+    func openBrowserExtensions(_ browser: Browser) {
+        guard !testMode else { return }
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleID),
+              let url = URL(string: browser.id == "chrome" ? "chrome://extensions/" : "edge://extensions/") else {
+            settingsModel?.status = "无法找到 \(browser.name) 的扩展管理入口。"
+            settingsModel?.diagnoseBrowsers()
+            return
+        }
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: .init()) { [weak self] _, error in
+            DispatchQueue.main.async {
+                if let error { self?.settingsModel?.status = "无法打开扩展管理页：\(error.localizedDescription)" }
+                self?.settingsModel?.diagnoseBrowsers()
+            }
+        }
     }
     func refreshWebsiteIcons() {
         iconLoader.clearCache()
@@ -271,7 +433,7 @@ extension AppDelegate: NSToolbarDelegate {
                                 let restored = try LibraryOperations.restore(payload.library, into: self.library)
                                 try self.store.save(restored); self.library = restored
                                 self.organizationHistory.removeAll(); self.pendingLibraryChanges.removeAll(); self.launches.removeAll()
-                                self.applyAppearance(); self.emit("update", ["state": self.state()])
+                                self.applyAppearance(); self.publishLauncherState()
                                 self.settingsModel?.status = "当前资料已恢复；密码仍在本机钥匙串。"
                                 self.settingsModel?.refresh()
                             } catch { self.settingsModel?.status = "恢复未完成：" + error.localizedDescription }

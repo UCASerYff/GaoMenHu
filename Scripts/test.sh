@@ -9,6 +9,9 @@ node --check "$PROJECT_DIR/BrowserExtension/background.js"
 node --check "$PROJECT_DIR/BrowserExtension/content.js"
 node --check "$PROJECT_DIR/BrowserExtension/popup.js"
 node "$PROJECT_DIR/Tests/Extension.cjs"
+swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/BrowserDiagnostics.swift" \
+  "$PROJECT_DIR/Tests/BrowserDiagnosticsTests.swift" -o "$TEST_DIR/browser-diagnostics"
+"$TEST_DIR/browser-diagnostics"
 swiftc -swift-version 5 -module-cache-path "$TEST_DIR/cache" "$PROJECT_DIR/Sources/Models.swift" \
   "$PROJECT_DIR/Sources/Vault.swift" "$PROJECT_DIR/Sources/Socket.swift" "$PROJECT_DIR/Tests/Core.swift" \
   -framework Security -framework LocalAuthentication -o "$TEST_DIR/core"

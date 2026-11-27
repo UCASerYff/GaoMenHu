@@ -38,12 +38,12 @@ def app_info(path):
         return plistlib.load(stream)
 
 
-def verify_candidate(path, version):
+def verify_candidate(path, version, build):
     require(path.is_dir(), "发行包中缺少搞门户 App。")
     info = app_info(path)
     require(info.get("CFBundleIdentifier") == APP_ID, "候选程序的 Bundle ID 不符，停止安装。")
     require(info.get("CFBundleShortVersionString") == version, "候选程序版本与发行包不符，停止安装。")
-    require(info.get("CFBundleVersion") == version.replace(".", ""), "候选程序构建号不符，停止安装。")
+    require(info.get("CFBundleVersion") == build, "候选程序构建号不符，停止安装。")
     run(["codesign", "--verify", "--strict", str(path)])
     details = run(["codesign", "--display", "--verbose=4", "--requirements", "-", str(path)])
     text = details.stdout + details.stderr
@@ -65,6 +65,7 @@ def verify_existing(path):
 
 def verified_release():
     version = (ROOT / "VERSION").read_text().strip()
+    build = (ROOT / "BUILD").read_text().strip()
     image = ROOT / "Release" / f"GaoMenHu-{version}.dmg"
     checksum = image.with_suffix(image.suffix + ".sha256")
     expected = checksum.read_text().split()[0].lower()
@@ -73,11 +74,11 @@ def verified_release():
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     require(digest.hexdigest() == expected, "安装包 SHA-256 不符，停止安装。")
-    return version, image
+    return version, build, image
 
 
 def install(no_open=False):
-    version, image = verified_release()
+    version, build, image = verified_release()
     verify_existing(FORMAL_APP)
     verify_existing(LEGACY_APP)
     stage = Path("/Applications") / f".GaoMenHu-install-{uuid.uuid4()}.noindex"
@@ -88,10 +89,10 @@ def install(no_open=False):
         run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", str(mount), str(image)])
         mounted = True
         candidate_source = mount / "搞门户.app"
-        verify_candidate(candidate_source, version)
+        verify_candidate(candidate_source, version, build)
         candidate = stage / "搞门户.app"
         run(["ditto", str(candidate_source), str(candidate)])
-        verify_candidate(candidate, version)
+        verify_candidate(candidate, version, build)
         run(["osascript", "-e", f'if application id "{APP_ID}" is running then tell application id "{APP_ID}" to quit'])
         running = run(["osascript", "-e", f'application id "{APP_ID}" is running'])
         require(running.stdout.strip() == "false", "搞门户仍在运行；请先保留草稿并正常退出，停止替换。")
