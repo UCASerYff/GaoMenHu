@@ -80,23 +80,23 @@ def main(argv=None):
     port = args.port if args.port is not None else (0 if desktop else 18765)
     if os.name != "nt":
         return _serve(data_dir, port, False, open_browser=not (args.serve or args.no_browser), incoming=args.gaoaction)
-    with instance_lock(data_dir) as owner:
-        if owner:
-            return _serve(data_dir, port, desktop, smoke_file=args.window_smoke, incoming=args.gaoaction)
-        if not desktop and not args.gaoaction:
+    for _ in range(20):
+        with instance_lock(data_dir) as owner:
+            if owner:
+                return _serve(data_dir, port, desktop, smoke_file=args.window_smoke, incoming=args.gaoaction)
+        if args.window_smoke or (not desktop and not args.gaoaction):
             _error("该资料目录的搞门户已经在运行。")
             return 1
-        for _ in range(20):
-            try:
-                endpoint = "/api/actions/activate" if args.gaoaction else "/api/desktop/activate"
-                payload = {"path": str(args.gaoaction.absolute())} if args.gaoaction else {}
-                if exchange(data_dir, endpoint, payload).get("ok"):
-                    return 0
-            except (OSError, ValueError, KeyError):
-                pass
-            time.sleep(0.3)
-        _error("搞门户已在启动中，请稍后重试。")
-        return 1
+        try:
+            endpoint = "/api/actions/activate" if args.gaoaction else "/api/desktop/activate"
+            payload = {"path": str(args.gaoaction.absolute())} if args.gaoaction else {}
+            if exchange(data_dir, endpoint, payload).get("ok"):
+                return 0
+        except (OSError, ValueError, KeyError):
+            pass
+        time.sleep(0.3)
+    _error("搞门户已在启动或退出，请稍后重试。")
+    return 1
 
 
 def _error(message):
@@ -124,6 +124,7 @@ def _serve(data_dir, port, desktop, open_browser=False, smoke_file=None, incomin
             from .desktop import Desktop
             app = Desktop(server, smoke_file)
             server.activate_desktop = app.show_main
+            server.quit_desktop = app.request_quit
             server.appearance_changed = app.appearance_changed
             server.mail_panel_changed = app.mail_panel_changed
             app.run()
@@ -141,14 +142,15 @@ def _serve(data_dir, port, desktop, open_browser=False, smoke_file=None, incomin
             _error(f"无法打开搞门户窗口，请检查 Microsoft Edge WebView2 Runtime。\n{exc}")
         return 1
     finally:
+        service.stopping.set()
         server.shutdown()
-        if service.downloads is not None:
-            service.downloads.shutdown()
         try:
-            if rendezvous_path(data_dir).is_file():
+            service.finish_shutdown()
+        finally:
+            try:
                 path = rendezvous_path(data_dir)
                 if json.loads(path.read_text(encoding="utf-8")).get("token") == service.host_token:
                     path.unlink(missing_ok=True)
-        except (OSError, ValueError):
-            pass
+            except (OSError, ValueError):
+                pass
     return 0

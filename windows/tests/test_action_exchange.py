@@ -259,7 +259,8 @@ def test_normal_command_line_cold_and_running_handoff(tmp_path):
         runtime = post("/api/launcher/runtime")
         assert runtime["focusQuery"] == "已运行"
         post("/api/launcher/acknowledge", {"requestID": runtime["focusRequestID"]})
-        assert post("/api/actions/history")["records"][0]["status"] == "completed"
+        record = next(row for row in post("/api/actions/history")["records"] if row["id"] == runtime["focusRequestID"])
+        assert record["status"] == "completed"
     finally:
         if process.poll() is None:
             if origin and token:

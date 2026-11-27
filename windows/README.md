@@ -1,14 +1,16 @@
 # 搞门户 Windows 1.19
 
-支持 Windows 10/11 x64。安装后从开始菜单打开「搞门户」。启动台、工作场景、账号库、下载中心、邮件中心和设置在 Microsoft Edge WebView2 窗口中运行。Windows 构建 4 重新排布了这些页面的导航、搜索、列表和表单，窄窗会收起部分导航，常用操作仍可通过键盘访问。托盘可打开主窗口、下载中心和邮件中心，贴边悬浮启动台支持左侧、右侧及自由浮动。窗口内可按 `Ctrl+Alt+P` 显示或隐藏悬浮启动台。
+支持 Windows 10/11 x64。安装后从开始菜单打开「搞门户」。启动台、工作场景、账号库、下载中心、邮件中心和设置在 Microsoft Edge WebView2 窗口中运行。窄窗会收起部分导航，常用操作仍可通过键盘访问。贴边悬浮启动台支持左侧、右侧及自由浮动。窗口内可按 `Ctrl+Alt+P` 显示或隐藏悬浮启动台。
+
+关闭主窗口后，搞门户继续在 Windows 通知区域运行。在通知区域单击图标，或右键选择「打开搞门户」，即可恢复原窗口。重复打开同一资料目录时会复用原窗口。通知区域的溢出菜单也可能收纳应用图标。选择「退出搞门户」会关闭应用与悬浮窗。发送中的邮件需先完成。退出确认会保留邮件草稿，进行中的下载会暂停并保留可用断点。
 
 ## 安装和资料
 
-运行 `GaoMenHu-Windows-1.19-build4-x64-Setup.exe`。安装只针对当前用户，程序默认位于 `%LOCALAPPDATA%\Programs\GaoMenHu`，可直接覆盖升级同版本的较早 Windows 构建。若系统缺少 WebView2 Runtime，安装程序会运行随包提供的微软引导程序，下载运行时。可用 PowerShell 核对安装包的 SHA-256。
+运行 `GaoMenHu-Windows-1.19-build5-x64-Setup.exe`。安装只针对当前用户，程序默认位于 `%LOCALAPPDATA%\Programs\GaoMenHu`，可直接覆盖升级同版本的较早 Windows 构建。若系统缺少 WebView2 Runtime，安装程序会运行随包提供的微软引导程序，下载运行时。可用 PowerShell 核对安装包的 SHA-256。
 
 ```powershell
-Get-FileHash .\GaoMenHu-Windows-1.19-build4-x64-Setup.exe -Algorithm SHA256
-Get-Content .\GaoMenHu-Windows-1.19-build4-x64-Setup.exe.sha256
+Get-FileHash .\GaoMenHu-Windows-1.19-build5-x64-Setup.exe -Algorithm SHA256
+Get-Content .\GaoMenHu-Windows-1.19-build5-x64-Setup.exe.sha256
 ```
 
 网站库和下载、邮件数据继续使用 `%LOCALAPPDATA%\MenDao`。安装、升级和卸载均保留资料。安装前可在搞门户设置的「资料」中导出 ZIP。ZIP 和 JSON 导出只包含网站资料，密码由 Windows 当前用户的 DPAPI 保护。Mac 钥匙串中的密码需要在 Windows 上重新保存。
@@ -43,9 +45,9 @@ $env:GAOMENHU_UI_TEST = '1'
 python -m pytest -q
 node --test ..\Tests\Extension.cjs
 .\build.ps1 -SkipDependencies -InnoSetup 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-.\tests\install-smoke.ps1 -Setup .\dist\GaoMenHu-Windows-1.19-build4-x64-Setup.exe
+.\tests\install-smoke.ps1 -Setup .\dist\GaoMenHu-Windows-1.19-build5-x64-Setup.exe
 ```
 
 本地安装冒烟以隔离目录运行。可用 `-PreviousSetup` 验证覆盖升级及原有站点、下载和邮件数据，也可用 `-LegacyExe` 传入 Windows 初版，验证原有站点和加密凭据。默认使用独立安装标识验证卸载及资料保留。如果本机的搞门户注册项为空，可加 `-Register` 验证正式注册。安装 Playwright Core 后加 `-PlaywrightPackage` 指向该软件包目录，可在干净的 Chrome、Edge 资料中测试随包原生助手。默认测试用临时主机名连接同一个随包程序，避免改动已有的正式助手注册。托盘和中文输入可用 `tests/native_desktop_smoke.py` 进行隔离验证。`python tests/native_visual_smoke.py after <截图目录>` 可在独立桌面采集两个悬浮窗的浅、深色 150% 截图。
 
-单独运行开发窗口时，可给 `python launch.py` 传入 `--data-dir` 指向隔离资料。给独立浏览器进程设置 `GAOMENHU_DATA_DIR` 为同一绝对路径，可让其原生助手连接该资料。`--serve --no-browser` 只启动本地回环服务，适合测试。发行包版本是 1.19，Windows 内部构建号为 4。
+单独运行开发窗口时，可给 `python launch.py` 传入 `--data-dir` 指向隔离资料。给独立浏览器进程设置 `GAOMENHU_DATA_DIR` 为同一绝对路径，可让其原生助手连接该资料。`--serve --no-browser` 只启动本地回环服务，适合测试。发行包版本是 1.19，Windows 内部构建号为 5。

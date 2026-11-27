@@ -19,6 +19,25 @@ const providerConfig = {
   imap: ["其他 IMAP / SMTP","",993,"",465],
 };
 let mailSidebar, mailBody, mailToolbar;
+const mailComposers = new Map();
+
+function mailCloseState() {
+  const composers = [...mailComposers.values()];
+  return {busy:composers.some(composer=>composer.busy()), draft:composers.some(composer=>composer.dirty())};
+}
+
+if (center === "mail") window.gaoSaveDraftBeforeClose = async () => {
+  try {
+    if (mailCloseState().busy) throw new Error("邮件编辑器正在处理操作，请稍候。");
+    for (const composer of mailComposers.values()) {
+      if (composer.dirty()) await composer.save();
+    }
+    if (mailCloseState().draft) throw new Error("草稿仍有未保存的更改，请再试一次。");
+    return {ok:true};
+  } catch (error) {
+    return {ok:false,error:error.message||"无法保存草稿，请检查后重试。"};
+  }
+};
 
 function accountById(id) { return mail.state.accounts.find(account => account.id === id); }
 function identityById(id) { return mail.state.identities.find(identity => identity.id === id); }
@@ -667,25 +686,48 @@ async function mailComposer(draftId, reply, kind) {
   });
   renderAttachments();
   const collect=()=>({id:draft.id,accountID:accountSelect.value,from:from.value,to:to.value.trim(),cc:cc.value.trim(),bcc:bcc.value.trim(),
-    subject:subject.value,body:body.value,inReplyTo:draft.inReplyTo||((kind==="reply"||kind==="all")?reply?.messageID:""),attachments});
+    subject:subject.value,body:body.value,inReplyTo:draft.inReplyTo||((kind==="reply"||kind==="all")?reply?.messageID:""),attachments:[...attachments]});
   let signature=JSON.stringify(collect());
   let sending=false;
+  let saving=false;
   let closing=false;
+  const dirty=()=>signature!==JSON.stringify(collect());
   async function save() {
+    if (saving) throw new Error("请等草稿保存完成。");
     if (chooser.disabled) throw new Error("请等附件读取完成。");
-    const result=await api("draft",{draft:collect()});draft=result.draft;signature=JSON.stringify(collect());
-    return draft;
+    const snapshot=collect();
+    saving=true;
+    try {
+      const result=await api("draft",{draft:snapshot});
+      draft=result.draft;
+      signature=JSON.stringify({...snapshot,id:draft.id});
+      return draft;
+    } finally {saving=false;}
+  }
+  async function closeComposer(done) {
+    if (sending||saving||closing) return;
+    closing=true;
+    try {
+      if (dirty()) {
+        await save();
+        if (dirty()) throw new Error("草稿仍有未保存的更改，请再试一次。");
+        flash("草稿已保存。");
+      }
+      done();await refreshMail();
+    } finally {closing=false;}
   }
   const close=sheet(draftId?"继续写邮件":"新邮件",null,[
     el("div",{class:"form-grid"},field("发件邮箱",accountSelect),field("发件人",from)),
     field("收件人",to),el("div",{class:"form-grid"},field("抄送",cc),field("密送",bcc)),field("主题",subject),field("正文",body),
     field("选择附件",chooser),names,
   ],done=>[
-    button("关闭",async()=>{if (sending||closing) return;closing=true;try {
-      if (signature!==JSON.stringify(collect())) {await save();flash("草稿已保存。");}
-      done();await refreshMail();
-    } finally {closing=false;}}),
-    button("存为草稿",async()=>{if (sending) return;await save();flash("草稿已保存。");done();await refreshMail();}),
+    button("关闭",()=>closeComposer(done)),
+    button("存为草稿",async()=>{
+      if (sending||saving||closing) return;
+      await save();
+      if (dirty()) throw new Error("草稿仍有未保存的更改，请再试一次。");
+      flash("草稿已保存。");done();await refreshMail();
+    }),
     button("发送…",async()=>{
       if (sending) return;
       if (!to.value.trim()) throw new Error("请填写收件人。");
@@ -702,15 +744,12 @@ async function mailComposer(draftId, reply, kind) {
     },{primary:true}),
   ], "mail-compose-dialog");
   const dialog=sheets.lastElementChild;
+  mailComposers.set(dialog,{dirty,save,busy:()=>sending||saving||closing||chooser.disabled});
+  dialog.addEventListener("close",()=>mailComposers.delete(dialog),{once:true});
   dialog.addEventListener("cancel",async event=>{
     event.preventDefault();
-    if (sending||closing) return;
-    closing=true;
-    try {
-      if (signature!==JSON.stringify(collect())) {await save();flash("草稿已保存。");}
-      close();await refreshMail();
-    } catch(error){flash(error.message,true);}
-    finally {closing=false;}
+    try {await closeComposer(close);}
+    catch(error){flash(error.message,true);}
   });
 }
 

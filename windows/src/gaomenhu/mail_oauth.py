@@ -264,8 +264,9 @@ class MailOAuth:
                        **{key: CONFIG[provider][key] for key in HOST_KEYS}}
             credential = _pack(client, tenant, tokens)
             check_connection(account, credential["access"])
-            with self.lock:
-                if attempt["status"] != "checking" or time.monotonic() >= attempt["expires"]:
+            with self.service.lifecycle_lock, self.lock:
+                if (self.service.stopping.is_set() or attempt["status"] != "checking"
+                        or time.monotonic() >= attempt["expires"]):
                     return
                 attempt["status"] = "committing"
             with self.service.mail_lock:
@@ -311,3 +312,12 @@ class MailOAuth:
             attempt = self.attempts.get(key)
             if attempt and attempt["status"] in ("pending", "checking"):
                 attempt.update(status="failed", message="已取消网页登录。")
+
+    def cancel_pending(self):
+        with self.lock:
+            for key in self.attempts:
+                self.cancel(key)
+
+    def is_committing(self):
+        with self.lock:
+            return any(attempt["status"] == "committing" for attempt in self.attempts.values())

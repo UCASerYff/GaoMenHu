@@ -6,6 +6,16 @@ const sheets = document.querySelector("#sheets");
 const center = location.pathname.split("/")[1];
 const token = document.querySelector('meta[name="gao-token"]').content;
 const version = document.querySelector('meta[name="gao-version"]').content;
+let pendingCenterActions = 0;
+
+window.gaoCloseState = () => {
+  const composer = center === "mail" ? mailCloseState() : {};
+  return {
+    busy: pendingCenterActions > 0 || Boolean(composer.busy),
+    editing: Boolean(sheets.querySelector("dialog[data-exit-review][open]:not(.mail-compose-dialog)")),
+    draft: Boolean(composer.draft),
+  };
+};
 const icons = {
   tray: "M3 5h18l1 10v4H2v-4L3 5zm-1 10h6l2 2h4l2-2h6",
   download: "M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4",
@@ -78,6 +88,7 @@ function button(text, callback, {symbol, primary, disabled, toolbar, danger, cla
   node.addEventListener("click", async () => {
     if (node.getAttribute("aria-busy") === "true") return;
     node.setAttribute("aria-busy", "true");
+    pendingCenterActions++;
     const issue = node.closest("dialog")?.querySelector(".sheet-error");
     if (issue) issue.textContent = "";
     try { await callback(); }
@@ -85,18 +96,27 @@ function button(text, callback, {symbol, primary, disabled, toolbar, danger, cla
       if (issue) issue.textContent = error.message || "操作没有完成。";
       else flash(error.message || "操作没有完成。", true);
     }
-    finally { node.removeAttribute("aria-busy"); }
+    finally {
+      pendingCenterActions--;
+      node.removeAttribute("aria-busy");
+    }
   });
   return node;
 }
 
 async function api(action, body = {}) {
-  const result = await fetch("/api/" + center + "/" + action, {
-    method: "POST", headers: {"Content-Type": "application/json", "X-Gao-Token": token}, body: JSON.stringify(body),
-  });
-  const data = await result.json();
-  if (!data.ok) throw new Error(data.error || "操作没有完成。");
-  return data;
+  const awaited = action !== "state" && action !== "oauth-status";
+  if (awaited) pendingCenterActions++;
+  try {
+    const result = await fetch("/api/" + center + "/" + action, {
+      method: "POST", headers: {"Content-Type": "application/json", "X-Gao-Token": token}, body: JSON.stringify(body),
+    });
+    const data = await result.json();
+    if (!data.ok) throw new Error(data.error || "操作没有完成。");
+    return data;
+  } finally {
+    if (awaited) pendingCenterActions--;
+  }
 }
 
 function field(title, input) {
@@ -131,7 +151,7 @@ function titleHeading(title, detail, action) {
 }
 
 function sheet(title, description, body, actions, className) {
-  const dialog = el("dialog", {"aria-label": title, class: className});
+  const dialog = el("dialog", {"aria-label": title, class: className, "data-exit-review": actions ? "" : undefined});
   const close = () => dialog.close();
   dialog.append(el("section", {class: "sheet"}, el("header", {}, el("h2", {}, title),
     description && el("p", {class: "muted"}, description)), el("div", {class: "sheet-body"}, body),

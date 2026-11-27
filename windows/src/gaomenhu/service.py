@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import VERSION_LABEL
@@ -55,6 +56,8 @@ class PortalService:
         self.mail_vault = mail_vault(self.data_dir / "MailCenter")
         self.downloads = None
         self.mail = None
+        self.stopping = threading.Event()
+        self.lifecycle_lock = threading.Lock()
         self.center_init_lock = threading.RLock()
         self.mail_lock = threading.RLock()
         self.mail_sending = set()
@@ -75,12 +78,47 @@ class PortalService:
         self.action_notices = []
         self._action_inbound = deque()
         self._action_inbound_lock = threading.Lock()
-        self._action_worker_active = False
+        self._action_worker = None
         self.proposal = None
         self.launch_log = []
         self.page_token = secrets.token_urlsafe(24)
         self.host_token = secrets.token_urlsafe(24)
         self.store.load(self._installed())
+
+    def mail_blocks_exit(self):
+        with self.lifecycle_lock:
+            return bool(self.mail_sending) or self.mail_oauth.is_committing()
+
+    @contextmanager
+    def mail_submission(self, draft_id):
+        with self.lifecycle_lock:
+            if self.stopping.is_set():
+                raise AppError("搞门户正在退出。")
+            self.mail_sending.add(draft_id)
+        try:
+            yield
+        finally:
+            with self.lifecycle_lock:
+                self.mail_sending.discard(draft_id)
+
+    def begin_shutdown(self):
+        with self.lifecycle_lock:
+            if self.mail_sending or self.mail_oauth.is_committing():
+                return False
+            self.stopping.set()
+            return True
+
+    def finish_shutdown(self):
+        self.stopping.set()
+        self.mail_oauth.cancel_pending()
+        with self._action_inbound_lock:
+            action_worker = self._action_worker
+        if action_worker is not None:
+            action_worker.join(timeout=3)
+        if self.downloads is not None:
+            self.downloads.shutdown()
+        if self.mail_autosync is not None:
+            self.mail_autosync.join(timeout=0.5)
 
     def create_library(self):
         with self.library_lock:
@@ -474,21 +512,23 @@ class PortalService:
         if not isinstance(directory, str) or not directory or len(directory) > 32767:
             return False
         with self._action_inbound_lock:
+            if self.stopping.is_set():
+                return False
             if directory in self._action_inbound:
                 return True
             if len(self._action_inbound) >= 8:
                 return False
             self._action_inbound.append(directory)
-            if not self._action_worker_active:
-                self._action_worker_active = True
-                threading.Thread(target=self._drain_action_requests, daemon=True).start()
+            if self._action_worker is None:
+                self._action_worker = threading.Thread(target=self._drain_action_requests, daemon=True, name="Portal action delivery")
+                self._action_worker.start()
             return True
 
     def _drain_action_requests(self):
         while True:
             with self._action_inbound_lock:
                 if not self._action_inbound:
-                    self._action_worker_active = False
+                    self._action_worker = None
                     return
                 directory = self._action_inbound[0]
             try:

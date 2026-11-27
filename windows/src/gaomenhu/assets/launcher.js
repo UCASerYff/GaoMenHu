@@ -11,6 +11,15 @@ const browserCatalog = [
 let currentAccess, libraryRevision, settingsTab = 'modules';
 let lastProposal, lastAppliedQuery, previousFeedback;
 let activeActionReview, checkingActions = false;
+let pendingPortalActions = 0;
+const backgroundPortalRequests = new Set(['/api/launcher/state', '/api/launcher/runtime', '/api/launcher/acknowledge',
+  '/api/actions/queue', '/api/actions/ack-notice', '/api/sites/icon-warmup']);
+
+window.gaoCloseState = () => ({
+  busy: pendingPortalActions > 0 || preferenceFeedback.kind === 'busy',
+  editing: !$('dialogOverlay').hidden && !$('dialog').querySelector('.preferences-layout'),
+  draft: false,
+});
 
 function profileOptions(profiles) {
   return profiles.flatMap(profile => (profile.browsers || [profile.browser])
@@ -44,18 +53,24 @@ function applyPortalState(state) {
 }
 
 async function portalAPI(path, data = {}, apply = true) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: {'X-Gao-Token': portalToken, 'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  });
-  const value = await response.json();
-  const state = value.state || (Object.hasOwn(value, 'libraryRevision') ? value : null);
-  if (apply && state) applyPortalState(state);
-  if (!response.ok || !value.ok) {
-    throw Object.assign(new Error(value.error || value.message || '操作未完成，请重试。'), {code: value.code});
+  const awaited = !backgroundPortalRequests.has(path);
+  if (awaited) pendingPortalActions++;
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: {'X-Gao-Token': portalToken, 'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    const value = await response.json();
+    const state = value.state || (Object.hasOwn(value, 'libraryRevision') ? value : null);
+    if (apply && state) applyPortalState(state);
+    if (!response.ok || !value.ok) {
+      throw Object.assign(new Error(value.error || value.message || '操作未完成，请重试。'), {code: value.code});
+    }
+    return value;
+  } finally {
+    if (awaited) pendingPortalActions--;
   }
-  return value;
 }
 
 async function openPortalWindow(path) {
@@ -257,6 +272,7 @@ async function saveLocalFile(format, filename, blob, filenameHandle) {
 
 async function applyButton(button, action, success) {
   button.disabled = true;
+  pendingPortalActions++;
   try {
     const result = await action();
     toast(result?.message || success);
@@ -264,6 +280,7 @@ async function applyButton(button, action, success) {
   } catch (error) {
     toast(error.message);
   } finally {
+    pendingPortalActions--;
     if (button.isConnected) button.disabled = false;
   }
 }

@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 const https = require('node:https');
 const {execFileSync} = require('node:child_process');
 const {createHash, randomUUID, X509Certificate} = require('node:crypto');
@@ -74,6 +75,22 @@ async function until(check, message) {
   throw new Error(message);
 }
 
+async function activeDownload() {
+  const chunk = Buffer.alloc(64 * 1024, 41);
+  let transfer;
+  const server = http.createServer((_, response) => {
+    transfer = response;
+    response.writeHead(200, {'Content-Length': 2 * chunk.length, ETag: '"exit-fixture"'});
+    response.write(chunk);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return {url: `http://localhost:${server.address().port}/exit-fixture.bin`,
+    release: () => transfer?.end(chunk), close: () => { server.closeAllConnections(); server.close(); }};
+}
+
 async function run() {
   const extension = fixtureExtension();
   const html = await (await fetch(origin)).text();
@@ -81,6 +98,7 @@ async function run() {
   assert.ok(pageToken, 'The isolated portal did not return its page token');
   const fixture = await startFixture();
   const centers = {};
+  let localDownload;
   try {
     for (const [name, candidates] of Object.entries(browserPaths)) {
       const executablePath = candidates.find(candidate => fs.existsSync(candidate));
@@ -99,6 +117,7 @@ async function run() {
       const browserVersion = await root.send('Browser.getVersion');
       const worker = context.serviceWorkers().find(entry => entry.url().startsWith(`chrome-extension://${id}/`)) ||
         await context.waitForEvent('serviceworker', {predicate: entry => entry.url().startsWith(`chrome-extension://${id}/`), timeout: 15_000});
+      centers[name].worker = worker;
       centers[name].profile = await until(async () => {
         const id = await worker.evaluate(async () => (await chrome.storage.local.get('profileId')).profileId);
         const state = await api('/api/launcher/runtime');
@@ -123,6 +142,7 @@ async function run() {
       const launch = await api('/api/sites/launch', {siteID, browserID: name});
       assert.ok(launch.requestID, 'GaoMenHu did not create an extension launch grant');
       const page = await pageReady;
+      centers[name].form = page;
       await page.waitForURL(loginURL, {timeout: 12_000, waitUntil: 'domcontentloaded'});
       await page.waitForFunction(expected => document.querySelector('input[type=password]')?.value === expected, `fixture-only-${name}`, {timeout: 12_000});
       assert.equal(await page.locator('[autocomplete=username]').inputValue(), `${name}@example.test`);
@@ -132,8 +152,42 @@ async function run() {
         `${name} did not return a filled acknowledgement`);
       console.log(`${name} opened the selected profile, filled the isolated HTTPS form and returned the filled acknowledgement`);
     }
+    for (const {worker} of Object.values(centers)) {
+      assert.ok(await worker.evaluate(() => Boolean(globalThis.gaoShutdownProbeConnection = port)));
+    }
+    localDownload = await activeDownload();
+    const downloadDir = fs.mkdtempSync(path.join(workDir, 'quit-transfer-'));
+    const grant = (await api('/api/downloads/destination', {path: downloadDir})).destination;
+    const task = (await api('/api/downloads/create', {urls: [localDownload.url], destinationID: grant.id})).items
+      .find(item => item.destinationID === grant.id);
+    await until(async () => (await api('/api/downloads/state')).items.some(item =>
+      item.id === task.id && item.state === 'running' && item.bytesReceived === 65536), 'The fixture download did not reach an active checkpoint');
+    await api('/api/shutdown');
+    const queueFile = path.join(dataDir, 'DownloadCenter', 'downloads.json');
+    const checkpoint = await until(() => {
+      const record = JSON.parse(fs.readFileSync(queueFile, 'utf8'));
+      const payload = Buffer.from(record.payload, 'base64');
+      assert.equal(createHash('sha256').update(payload).digest('hex'), record.sha256);
+      return JSON.parse(payload).items.find(item => item.id === task.id && item.state === 'paused' && item.bytesReceived === 65536);
+    }, 'The exiting portal did not pause its download');
+    localDownload.release();
+    await until(() => !fs.existsSync(`${dataDir}.native.json`), 'The app did not remove its Native Messaging endpoint');
+    assert.equal(checkpoint.etag, '"exit-fixture"');
+    assert.ok(!fs.existsSync(path.join(downloadDir, 'exit-fixture.bin')));
+    console.log('A real loopback transfer was paused at its 64 KiB checkpoint before process exit');
+    for (const [name, {worker, form}] of Object.entries(centers)) {
+      assert.equal(await form.locator('[autocomplete=username]').inputValue(), `${name}@example.test`);
+      const offline = await worker.evaluate(async () => {
+        const result = await request('poll');
+        return {sameConnection: port === globalThis.gaoShutdownProbeConnection, available: result.ok, error: result.error};
+      });
+      assert.ok(offline.sameConnection && offline.available === false && offline.error.includes('没有在运行'),
+        `${name} did not keep its own browser and helper connection after the portal exited`);
+      console.log(`${name} retained its tab and browser-owned helper after the portal endpoint shut down`);
+    }
   } finally {
     await Promise.allSettled(Object.values(centers).map(value => value.context.close()));
+    localDownload?.close();
     fixture.server.close();
   }
 }

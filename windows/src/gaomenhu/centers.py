@@ -421,8 +421,7 @@ def _sync(service, store, account_id, folder="INBOX"):
 
 
 def _autosync(service):
-    while True:
-        time.sleep(15)
+    while not service.stopping.wait(15):
         if not service.mail_lock.acquire(blocking=False):
             continue
         try:
@@ -430,6 +429,8 @@ def _autosync(service):
             interval = store.library["preferences"].get("syncMinutes", 15) * 60
             accounts = [account for account in store.library["accounts"] if account.get("enabled") and account["id"] in store.authorized]
             for account in accounts if interval else []:
+                if service.stopping.is_set():
+                    return
                 last = max(account.get("lastSync") or 0, service.mail_last_attempt.get(account["id"], 0))
                 if service.clock() - last >= interval:
                     try:
@@ -449,6 +450,8 @@ def sync_mail_floating(service):
             raise AppError("请先在邮箱管理连接邮箱。")
         completed = 0
         for account in accounts:
+            if service.stopping.is_set():
+                raise AppError("搞门户正在退出。")
             try:
                 _sync(service, store, account["id"])
                 completed += 1
@@ -486,31 +489,29 @@ def _detail(service, store, message_id, allow_network=False):
 
 def _send(service, store, draft_id):
     draft = store.draft(draft_id)
-    account = store.account(draft.get("accountID"))
-    credential = _credential(service, account)
-    try:
-        outgoing = prepare_outgoing(account, draft)
-    except (TypeError, ValueError) as exc:
-        raise AppError("请核对发件人与收件人地址。") from exc
-    record = store.stage_submission(draft_id)
-    service.mail_sending.add(draft_id)
-    try:
-        send_mail(account, credential, draft, outgoing)
-    except Exception as exc:
-        record["phase"] = "uncertain"
-        store._write_submissions()
-        raise AppError("未能确认邮件发送结果。发送记录已保留，请到邮箱服务商核对。") from exc
-    finally:
-        service.mail_sending.discard(draft_id)
-    store.complete_submission(record["id"])
-    store.messages.append({
-        **draft,
-        "id": "__local_sent__|" + record["id"], "folder": "__local_sent__", "isRead": True, "loaded": True,
-        "date": service.clock(), "from": str(outgoing["From"]), "to": str(outgoing["To"]),
-        "cc": str(outgoing["Cc"] or ""), "messageID": str(outgoing["Message-ID"]),
-    })
-    store._write_cache()
-    return record
+    with service.mail_submission(draft["id"]):
+        account = store.account(draft.get("accountID"))
+        credential = _credential(service, account)
+        try:
+            outgoing = prepare_outgoing(account, draft)
+        except (TypeError, ValueError) as exc:
+            raise AppError("请核对发件人与收件人地址。") from exc
+        record = store.stage_submission(draft_id)
+        try:
+            send_mail(account, credential, draft, outgoing)
+        except Exception as exc:
+            record["phase"] = "uncertain"
+            store._write_submissions()
+            raise AppError("未能确认邮件发送结果。发送记录已保留，请到邮箱服务商核对。") from exc
+        store.complete_submission(record["id"])
+        store.messages.append({
+            **draft,
+            "id": "__local_sent__|" + record["id"], "folder": "__local_sent__", "isRead": True, "loaded": True,
+            "date": service.clock(), "from": str(outgoing["From"]), "to": str(outgoing["To"]),
+            "cc": str(outgoing["Cc"] or ""), "messageID": str(outgoing["Message-ID"]),
+        })
+        store._write_cache()
+        return record
 
 
 def _platform_csv(store, text=None):

@@ -62,9 +62,11 @@ def run_floating(service, open_main, stop_event, open_downloads=None, open_mail=
                     panel.mail_panel = mail_panel
             root.mainloop()
         finally:
-            if mail_panel is not None:
-                mail_panel.close()
-            panel.native.close()
+            try:
+                if mail_panel is not None:
+                    mail_panel.close()
+            finally:
+                panel.native.close()
     finally:
         root.destroy()
         # Release Tk callback cycles on this thread before WinForms or process teardown.
@@ -179,7 +181,7 @@ class FloatingPanel:
         if event == "open":
             self.show_main()
         elif event == "tray-state" and self.on_tray_state:
-            self.on_tray_state(self.native.tray_available)
+            self.on_tray_state(self.native.tray_available, self.native.window)
         elif event == "session-lock":
             if self.on_session_lock:
                 self.on_session_lock()

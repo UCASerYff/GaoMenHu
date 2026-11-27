@@ -41,6 +41,7 @@ class PortalServer:
         self.httpd.service = service
         self.port = self.httpd.server_address[1]
         self.activate_desktop = None
+        self.quit_desktop = None
         self.appearance_changed = None
         self.mail_panel_changed = None
 
@@ -105,6 +106,9 @@ class PortalServer:
         path = urlparse(handler.path).path
         if not self._local_host(handler):
             self._json(handler, 403, {"ok": False, "error": "只接受本机请求。"})
+            return
+        if self.service.stopping.is_set():
+            self._json(handler, 503, {"ok": False, "error": "搞门户正在退出。"})
             return
         try:
             length = int(handler.headers.get("Content-Length") or 0)
@@ -292,6 +296,10 @@ class PortalServer:
                 self.mail_panel_changed()
             return result
         if path == "/api/shutdown":
+            if self.quit_desktop:
+                return {"ok": self.quit_desktop()}
+            if not service.begin_shutdown():
+                raise AppError("正在发送邮件或保存邮箱授权，完成后即可退出。")
             threading_shutdown(self)
             return {"ok": True}
         raise AppError("没有这个接口。")

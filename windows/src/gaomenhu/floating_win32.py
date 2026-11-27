@@ -2,6 +2,7 @@
 
 import ctypes as C
 import logging
+from collections import deque
 from contextlib import contextmanager
 from ctypes import wintypes as W
 
@@ -85,6 +86,10 @@ LAYERED = 0x00080000
 TOOL_WINDOW = 0x00000080
 APP_WINDOW = 0x00040000
 TRAY_MESSAGE = 0x8050
+NIM_ADD = 0
+NIM_MODIFY = 1
+NIM_DELETE = 2
+TRAY_RETRY_MILLISECONDS = 1000
 
 
 def enable_per_monitor_dpi():
@@ -192,6 +197,11 @@ class DesktopWindow:
         self.event = event
         self.allows_activation = allows_activation
         self.taskbar_message = register_message("TaskbarCreated") if tray else 0
+        self.tray_available = False
+        self.tray_retry = None
+        self.tray_refresh_requested = False
+        self.closed = False
+        self.events = deque()
         self.procedure = WNDPROC(self.dispatch)
         self.original = set_window_long(self.window, -4, C.cast(self.procedure, C.c_void_p).value)
         if not self.original:
@@ -199,26 +209,65 @@ class DesktopWindow:
         self.custom_icon = load_image(None, str(icon_path), 1, 0, 0, 0x0010 | 0x0040) if tray and icon_path else None
         self.icon = NotifyIcon(size=C.sizeof(NotifyIcon), window=self.window, id=1, flags=7,
                                message=TRAY_MESSAGE, icon=self.custom_icon or load_icon(None, 32512), tip="搞门户") if tray else None
-        self.tray_available = bool(self.icon and notify_icon(0, C.byref(self.icon)))
         self.session_registered = bool(register_session(self.window, 0))
+        if self.icon is not None:
+            self._refresh_tray(announce=False)
+        self.event_poll = self.root.after_idle(self._deliver_events)
+
+    def _schedule_tray_refresh(self, delay):
+        if self.tray_retry is not None:
+            self.root.after_cancel(self.tray_retry)
+        self.tray_retry = self.root.after(delay, self._refresh_tray)
+
+    def _refresh_tray(self, *, announce=True):
+        self.tray_retry = None
+        if self.closed:
+            return
+        data = C.byref(self.icon)
+        # Windows also sends TaskbarCreated after a DPI change. Update this
+        # HWND and icon ID if Explorer has already kept the original icon.
+        available = bool(notify_icon(NIM_ADD, data) or notify_icon(NIM_MODIFY, data))
+        changed = available != self.tray_available
+        self.tray_available = available
+        if not available:
+            self._schedule_tray_refresh(TRAY_RETRY_MILLISECONDS)
+        if announce and changed:
+            self.event("tray-state")
+
+    def _deliver_events(self):
+        self.event_poll = None
+        try:
+            if self.tray_refresh_requested:
+                self.tray_refresh_requested = False
+                self._schedule_tray_refresh(0)
+            while self.events and not self.closed:
+                event = self.events.popleft()
+                if event not in ("open", "tray") or self.tray_available:
+                    self.event(event)
+        finally:
+            if not self.closed:
+                self.event_poll = self.root.after(25, self._deliver_events)
 
     def dispatch(self, window, message, wparam, lparam):
+        # The HWND callback can reenter Tk's native message loop. Queue work
+        # here and call Tcl only from a callback scheduled by Tk itself.
         try:
             if message == 0x0021:  # WM_MOUSEACTIVATE
                 return 1 if self.allows_activation(pointer()) else 3
-            if message == TRAY_MESSAGE:
+            if message == TRAY_MESSAGE and not self.closed and self.tray_available:
                 if lparam == 0x0202:  # WM_LBUTTONUP
-                    self.root.after_idle(self.event, "open")
+                    self.events.append("open")
                 if lparam == 0x0205:  # WM_RBUTTONUP
-                    self.root.after_idle(self.event, "tray")
+                    self.events.append("tray")
                 return 0
-            if self.taskbar_message and message == self.taskbar_message:
-                self.tray_available = bool(notify_icon(0, C.byref(self.icon)))
-                self.root.after_idle(self.event, "tray-state")
+            if self.taskbar_message and message == self.taskbar_message and not self.closed:
+                # Let Explorer finish the broadcast before calling the Shell back.
+                self.tray_refresh_requested = True
+                return 0
             if message == 0x02B1 and wparam == 7:  # WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK
-                self.root.after_idle(self.event, "session-lock")
+                self.events.append("session-lock")
             if message in (0x007E, 0x001A, 0x02E0):  # display, settings or DPI change
-                self.root.after_idle(self.event, "display")
+                self.events.append("display")
         except Exception:
             LOG.exception("Floating window message failed")
         return call_window(self.original, window, message, wparam, lparam)
@@ -249,10 +298,21 @@ class DesktopWindow:
             destroy_menu(menu)
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        if self.event_poll is not None:
+            self.root.after_cancel(self.event_poll)
+            self.event_poll = None
+        self.events.clear()
+        if self.tray_retry is not None:
+            self.root.after_cancel(self.tray_retry)
+            self.tray_retry = None
         if self.session_registered:
             unregister_session(self.window)
         if self.icon is not None:
-            notify_icon(2, C.byref(self.icon))
+            notify_icon(NIM_DELETE, C.byref(self.icon))
+        self.tray_available = False
         if self.custom_icon:
             destroy_icon(self.custom_icon)
         set_window_long(self.window, -4, self.original)

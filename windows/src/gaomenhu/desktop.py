@@ -22,6 +22,7 @@ WINDOWS = {
     "/mail#settings": ("邮件设置", 820, 740, (620, 500)),
     "/mail#floating": ("搞门户 · 邮件 · 悬浮窗", 450, 530, (350, 350)),
 }
+LOG = logging.getLogger(__name__)
 
 
 def local_window_key(path):
@@ -46,10 +47,17 @@ class Desktop:
         self.ready = threading.Event()
         self.stop = threading.Event()
         self.mail_panel_commands = queue.SimpleQueue()
+        self.dock_open_requests = queue.SimpleQueue()
         self.windows = {}
         self.create_lock = threading.RLock()
         self.dock_thread = None
+        self.dock_open_thread = None
+        self.tray_starting = not smoke_file
         self.tray_registered = False
+        self.tray_window = None
+        self.hidden_while_tray_starting = False
+        self.exit_lock = threading.Lock()
+        self.exit_pending = False
         self.webview = None
 
     def run(self):
@@ -70,8 +78,11 @@ class Desktop:
                           icon=str(icon) if icon.is_file() else None)
         finally:
             self.stop.set()
+            self.dock_open_requests.put(None)
             if self.dock_thread:
                 self.dock_thread.join(timeout=3)
+            if self.dock_open_thread:
+                self.dock_open_thread.join(timeout=3)
 
     def _create(self, path, hidden=False):
         key = local_window_key(path)
@@ -134,17 +145,35 @@ class Desktop:
             return
         from .floating import run_floating
 
-        self.dock_thread = threading.Thread(target=run_floating, args=(self.service, self.show_main, self.stop), kwargs={
-            "open_downloads": lambda: self.open_window("/downloads"),
-            "open_mail": lambda: self.open_window("/mail"),
-            "quit_app": self.quit,
-            "icon_path": asset_root() / "GaoMenHu.ico",
-            "on_tray_state": self._tray_status,
-            "on_session_lock": self.service.vault.lock,
-            "mail_commands": self.mail_panel_commands,
-            "open_center": self.open_window,
-        }, daemon=True, name="Portal tray and floating launcher")
+        def open_from_dock():
+            while (path := self.dock_open_requests.get()) is not None:
+                try:
+                    self.open_window(path)
+                except Exception:
+                    LOG.exception("Could not open a window from the notification area")
+
+        def run_dock():
+            try:
+                run_floating(self.service, lambda: self._queue_dock_open("/"), self.stop,
+                             open_downloads=lambda: self._queue_dock_open("/downloads"),
+                             open_mail=lambda: self._queue_dock_open("/mail"), quit_app=self.request_quit,
+                             icon_path=asset_root() / "GaoMenHu.ico", on_tray_state=self._tray_status,
+                             on_session_lock=self.service.vault.lock, mail_commands=self.mail_panel_commands,
+                             open_center=self._queue_dock_open)
+            except Exception:
+                LOG.exception("The notification area worker stopped unexpectedly")
+            finally:
+                if not self.stop.is_set():
+                    self._tray_worker_stopped()
+
+        self.dock_open_thread = threading.Thread(target=open_from_dock, daemon=True, name="Portal tray window requests")
+        self.dock_open_thread.start()
+        self.dock_thread = threading.Thread(target=run_dock, daemon=True, name="Portal tray and floating launcher")
         self.dock_thread.start()
+
+    def _queue_dock_open(self, path):
+        if not self.stop.is_set() and not self.exit_pending:
+            self.dock_open_requests.put(path)
 
     def _smoke(self):
         window = self.windows["/"]
@@ -182,7 +211,7 @@ class Desktop:
         except Exception as exc:
             Path(self.smoke_file).write_text(str(exc), encoding="utf-8")
         finally:
-            self.quit()
+            self._destroy_windows()
 
     def show_main(self):
         return self.open_window("/")
@@ -232,16 +261,20 @@ class Desktop:
         key = local_window_key(path)
         if not key or self.stop.is_set() or not self.ready.wait(5):
             return False
-        if key == "/mail#floating" and not self.smoke_file:
-            self.mail_panel_commands.put("show")
-            return True
         with self.create_lock:
+            if self.stop.is_set() or self.exit_pending:
+                return False
+            if key == "/mail#floating" and not self.smoke_file:
+                self.mail_panel_commands.put("show")
+                return True
             window = self.windows.get(key)
             if window is None:
                 window = self._create(path, hidden=bool(self.smoke_file))
             elif key != "/" and path != key:
                 window.load_url(self.origin + path)
             if not self.smoke_file and window.events.shown.is_set():
+                if key == "/":
+                    self.hidden_while_tray_starting = False
                 if window.native is not None and str(window.native.WindowState) == "Minimized":
                     window.restore()
                 window.show()
@@ -262,22 +295,143 @@ class Desktop:
     def _close_main(self):
         if self.stop.is_set():
             return True
-        if self.tray_registered:
-            self.windows["/"].hide()
-            return False
-        if getattr(self.service, "mail_sending", None):
-            return False
-        self.stop.set()
+        if self.tray_registered or self.tray_starting:
+            window = self.windows["/"]
+            self.hidden_while_tray_starting = not self.tray_registered
+            window.hide()
+            # Explorer startup can complete while the UI callback is hiding
+            # the window. Restore it if the app ended up without a tray.
+            if not self.tray_registered and not self.tray_starting:
+                self.hidden_while_tray_starting = False
+                window.show()
+        else:
+            self.request_quit()
+        return False
+
+    def _tray_status(self, is_registered, handle):
+        # The shell can temporarily lose the icon during an Explorer restart.
+        self.tray_window = handle
+        self.tray_registered |= is_registered
+        self.tray_starting = False
+        self._recover_without_tray()
+
+    def _tray_worker_stopped(self):
+        restore = self.tray_registered or self.hidden_while_tray_starting
+        self.tray_registered = self.tray_starting = False
+        self.tray_window = None
+        self.hidden_while_tray_starting = restore
+        self._recover_without_tray()
+
+    def _recover_without_tray(self):
+        if not self.tray_registered and not self.tray_starting and self.hidden_while_tray_starting:
+            self._queue_dock_open("/")
+
+    def request_quit(self):
+        with self.exit_lock:
+            if self.exit_pending or self.stop.is_set():
+                return True
+            self.exit_pending = True
+        # Native closing events and the Tk notification callback must return
+        # before WinForms can evaluate the page or destroy its windows.
+        threading.Thread(target=self._quit, daemon=True, name="Portal exit").start()
         return True
 
-    def _tray_status(self, is_registered):
-        self.tray_registered = is_registered
+    def _quit(self):
+        try:
+            self._confirm_exit()
+        except Exception:
+            LOG.exception("Could not complete the desktop exit")
+            self._exit_prompt("无法确认窗口中的更改。请在关闭表单或保存后重试。")
+        finally:
+            with self.exit_lock:
+                self.exit_pending = False
+            self._recover_without_tray()
 
-    def quit(self):
-        if getattr(self.service, "mail_sending", None):
-            ctypes.windll.user32.MessageBoxW(None, "正在发送邮件，完成后即可退出。", "搞门户", 0x40)
-            return False
-        self.stop.set()
-        for window in reversed(tuple(self.windows.values())):
-            window.destroy()
-        return True
+    def _confirm_exit(self):
+        if self.service.mail_blocks_exit():
+            self._exit_prompt("正在发送邮件或保存邮箱授权，完成后即可退出。")
+            return
+        pages = self._exit_states()
+        if any(state.get("busy") for state in pages.values()):
+            self._exit_prompt("窗口中的操作仍在进行。请等待操作完成后再退出。")
+            return
+        if any(state.get("editing") or state.get("draft") for state in pages.values()):
+            details = []
+            if any(state.get("draft") for state in pages.values()):
+                details.append("当前撰写的邮件会保存为草稿。")
+            if any(state.get("editing") for state in pages.values()):
+                details.append("其他未保存的更改将丢弃。")
+            if not self._exit_prompt("\n".join(details + ["确定退出搞门户？"]), confirm=True):
+                return
+            current = self._exit_states()
+            if self._new_exit_activity(pages, current):
+                self._exit_prompt("有新的编辑或尚未完成的操作，请核对窗口后再退出。")
+                return
+            pages = current
+        for window, state in pages.items():
+            if not state.get("draft"):
+                continue
+            result = self._evaluate_for_exit(window, "window.gaoSaveDraftBeforeClose()", promise=True)
+            if result.get("ok") is not True:
+                self._exit_prompt("邮件草稿未能保存，窗口已保留。请保存后重试。")
+                return
+        current = self._exit_states()
+        if self._new_exit_activity(pages, current) or any(state.get("draft") for state in current.values()):
+            self._exit_prompt("有新的编辑或尚未完成的操作，请核对窗口后再退出。")
+            return
+        if not self.service.begin_shutdown():
+            self._exit_prompt("正在发送邮件或保存邮箱授权，完成后即可退出。")
+            return
+        self._destroy_windows()
+
+    def _exit_states(self):
+        return {window: self._evaluate_for_exit(window, "window.gaoCloseState?.() || {}")
+                for window in tuple(self.windows.values()) if window.events.loaded.is_set() and not window.events.closed.is_set()}
+
+    @staticmethod
+    def _new_exit_activity(previous, current):
+        return any(state.get("busy") or any(state.get(key) and not previous.get(window, {}).get(key)
+                                            for key in ("editing", "draft")) for window, state in current.items())
+
+    @staticmethod
+    def _evaluate_for_exit(window, script, *, promise=False):
+        responses = queue.SimpleQueue()
+
+        def evaluate():
+            try:
+                if promise:
+                    window.evaluate_js(script, callback=lambda value: responses.put((value, None)))
+                else:
+                    responses.put((window.evaluate_js(script), None))
+            except Exception as exc:
+                responses.put((None, exc))
+
+        # WebView2 6.1 can wait indefinitely while a renderer modal is open.
+        threading.Thread(target=evaluate, daemon=True, name="Portal exit page check").start()
+        response, error = responses.get(timeout=10)
+        if error is not None:
+            raise error
+        if not isinstance(response, dict):
+            raise AppError("无法确认窗口状态。")
+        return response
+
+    def _exit_prompt(self, message, *, confirm=False):
+        window = self.windows.get("/")
+        form = window.native if window else None
+        owner = int(form.Handle.ToInt64()) if form is not None else None
+        box = ctypes.windll.user32.MessageBoxW
+        box.argtypes = ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint
+        response = box(owner, message, "搞门户", 0x134 if confirm else 0x40)
+        return response == 6  # IDYES
+
+    def _destroy_windows(self):
+        with self.create_lock:
+            if self.tray_window:
+                from .floating_win32 import post_message
+
+                post_message(self.tray_window, 0x001F, 0, 0)  # WM_CANCELMODE
+            self.stop.set()
+            windows = tuple(self.windows.values())
+        for window in reversed(windows):
+            if not window.events.closed.is_set():
+                window.destroy()

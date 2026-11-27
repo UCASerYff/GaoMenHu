@@ -232,7 +232,6 @@ try {
         Write-Output 'Upgrade preserved the previous download job and destination, mail account, theme, preview setting and draft.'
     }
     if ($Register) { Test-InstalledAction }
-    if ($PlaywrightPackage) { Test-InstalledBrowser $hostInfo }
     $info = Get-Content -LiteralPath "$dataDir.native.json" -Raw | ConvertFrom-Json
     function Call-Helper($Message, $Browser = 'chrome') {
         $Message.profileId = $profileID
@@ -250,6 +249,7 @@ try {
     $credential = Call-Helper @{ type = 'credentials'; requestId = $requestID; tabId = 6; url = 'https://example.test/login' }
     if ($credential.password -ne 'isolated-test-secret') { throw "Isolated DPAPI autofill failed" }
     if ((Get-Content -LiteralPath (Join-Path $dataDir 'library.json') -Raw) -match 'isolated-test-secret') { throw 'Password leaked into library file' }
+    if ($PlaywrightPackage) { Test-InstalledBrowser $hostInfo }
     Stop-Portal $launcher
     $launcher = $null
     $starter = Start-Process -FilePath $app -ArgumentList @('--data-dir', ('"' + $dataDir + '"'), '--window-smoke', ('"' + $report + '"')) -PassThru -WindowStyle Hidden
