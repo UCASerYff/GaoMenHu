@@ -19,11 +19,21 @@ final class PortalSettingsModel: ObservableObject {
     func refresh() { objectWillChange.send() }
 
     func updateConnectedProfiles() {
-        let profiles = Dictionary(grouping: app.activeClients(), by: \.browser).mapValues { clients in
-            clients.map { ConnectedBrowserProfile(id: $0.id, label: $0.label.isEmpty ? "默认资料" : $0.label) }
-                .sorted { $0.label == $1.label ? $0.id < $1.id : $0.label < $1.label }
+        let clients: [BrowserClient] = app.activeClients()
+        let grouped: [String: [BrowserClient]] = Dictionary(grouping: clients) { $0.browser }
+        var profilesByBrowser: [String: [ConnectedBrowserProfile]] = [:]
+        for (browser, browserClients) in grouped {
+            let profiles: [ConnectedBrowserProfile] = browserClients.map { client in
+                let label: String = client.label.isEmpty ? "默认资料" : client.label
+                return ConnectedBrowserProfile(id: client.id, label: label)
+            }
+            let sortedProfiles: [ConnectedBrowserProfile] = profiles.sorted { left, right in
+                if left.label == right.label { return left.id < right.id }
+                return left.label < right.label
+            }
+            profilesByBrowser[browser] = sortedProfiles
         }
-        if connectedProfiles != profiles { connectedProfiles = profiles }
+        if connectedProfiles != profilesByBrowser { connectedProfiles = profilesByBrowser }
     }
 
     func diagnoseBrowsers() {
@@ -31,17 +41,22 @@ final class PortalSettingsModel: ObservableObject {
         guard !app.testMode, !checkingBrowsers else { return }
         let diagnostics = app.browserDiagnostics
         let workspace = NSWorkspace.shared
-        let runningIDs = Set(workspace.runningApplications.compactMap(\.bundleIdentifier))
-        let applications = Browser.catalog.compactMap { browser -> (PortalBrowserTarget, Bool, Bool)? in
+        let runningIDs: Set<String> = Set(workspace.runningApplications.compactMap(\.bundleIdentifier))
+        let applications = Browser.catalog.compactMap { browser -> (target: PortalBrowserTarget, installed: Bool, running: Bool)? in
             guard let target = PortalBrowserTarget(rawValue: browser.id) else { return nil }
-            return (target, workspace.urlForApplication(withBundleIdentifier: browser.bundleID) != nil, runningIDs.contains(browser.bundleID))
+            let installed = workspace.urlForApplication(withBundleIdentifier: browser.bundleID) != nil
+            let running = runningIDs.contains(browser.bundleID)
+            return (target, installed, running)
         }
         let bridgeRunning = app.server != nil
         checkingBrowsers = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let results = Dictionary(uniqueKeysWithValues: applications.map { target, installed, running in
-                (target, diagnostics.snapshot(for: target, installed: installed, running: running, bridgeRunning: bridgeRunning))
-            })
+            var snapshots: [PortalBrowserTarget: BrowserDiagnosticSnapshot] = [:]
+            for application in applications {
+                snapshots[application.target] = diagnostics.snapshot(for: application.target,
+                    installed: application.installed, running: application.running, bridgeRunning: bridgeRunning)
+            }
+            let results = snapshots
             DispatchQueue.main.async {
                 self?.browserSnapshots = results
                 self?.checkingBrowsers = false
@@ -187,9 +202,9 @@ private struct BrowserDiagnosticsView: View {
     }
 
     private func browserRow(_ browser: Browser, target: PortalBrowserTarget) -> some View {
-        let profiles = model.connectedProfiles[browser.id] ?? []
+        let profiles: [ConnectedBrowserProfile] = model.connectedProfiles[browser.id] ?? []
         let snapshot = model.browserSnapshots[target]
-        let isExpanded = Binding(get: { expanded.contains(target) }, set: { open in
+        let isExpanded: Binding<Bool> = Binding(get: { expanded.contains(target) }, set: { open in
             if open { expanded.insert(target) } else { expanded.remove(target) }
         })
         return DisclosureGroup(isExpanded: isExpanded) {
