@@ -10,7 +10,9 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import MAIL_CREDENTIAL_SERVICE, PASSWORD_SERVICE
@@ -39,15 +41,17 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
 
     crypt32 = ctypes.windll.crypt32
     kernel32 = ctypes.windll.kernel32
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    kernel32.LocalFree.restype = ctypes.c_void_p
     buffer = ctypes.create_string_buffer(data, len(data))
     blob_in = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)))
     blob_out = DATA_BLOB()
     function = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
     description = ctypes.c_wchar_p("GaoMenHu")
     if protect:
-        ok = function(ctypes.byref(blob_in), description, None, None, None, 0, ctypes.byref(blob_out))
+        ok = function(ctypes.byref(blob_in), description, None, None, None, 1, ctypes.byref(blob_out))
     else:
-        ok = function(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out))
+        ok = function(ctypes.byref(blob_in), None, None, None, None, 1, ctypes.byref(blob_out))
     if not ok:
         raise AppError("无法使用 Windows 数据保护接口保存凭据。")
     try:
@@ -126,44 +130,64 @@ class Vault:
         self.service = service
         self.cache = None
         self.unlocked_until = 0
+        self._mutex = threading.RLock()
+
+    @contextmanager
+    def maintain_lock_state(self, now):
+        with self._mutex:
+            was_unlocked = self.is_unlocked(now)
+            try:
+                yield
+            finally:
+                if not was_unlocked:
+                    self.lock()
 
     def unlock(self, now):
-        self.cache = self._read()
-        self.unlocked_until = now + 300
+        with self._mutex:
+            self.cache = self._read()
+            self.unlocked_until = now + 300
         return True
 
     def lock(self):
-        self.cache = None
-        self.unlocked_until = 0
+        with self._mutex:
+            self.cache = None
+            self.unlocked_until = 0
 
     def is_unlocked(self, now):
-        if self.cache is None or now > self.unlocked_until:
-            self.lock()
-            return False
-        return True
+        with self._mutex:
+            if self.cache is None or now > self.unlocked_until:
+                self.lock()
+                return False
+            return True
 
     def save(self, account_id, secret, now):
         if not isinstance(secret, str) or not secret:
             raise AppError("密码不可用，请重新输入。")
-        if not self.is_unlocked(now):
-            self.unlock(now)
-        self.cache[account_id] = secret
-        self._write(self.cache)
+        with self._mutex:
+            if not self.is_unlocked(now):
+                self.unlock(now)
+            items = {**self.cache, account_id: secret}
+            self._write(items)
+            self.cache = items
 
     def read(self, account_id, now):
-        if not self.is_unlocked(now):
-            raise AppError("账号库已锁定，请回到搞门户解锁。")
-        secret = self.cache.get(account_id, "")
-        if not secret:
-            raise AppError("密码不可用，请在搞门户中重新保存该账号密码。")
-        return secret
+        with self._mutex:
+            if not self.is_unlocked(now):
+                raise AppError("账号库已锁定，请回到搞门户解锁。")
+            secret = self.cache.get(account_id, "")
+            if not secret:
+                raise AppError("密码不可用，请在搞门户中重新保存该账号密码。")
+            return secret
 
     def remove(self, account_id, now):
-        if not self.is_unlocked(now):
-            self.unlock(now)
-        previous = self.cache.pop(account_id, None)
-        self._write(self.cache)
-        return previous
+        with self._mutex:
+            if not self.is_unlocked(now):
+                self.unlock(now)
+            items = self.cache.copy()
+            previous = items.pop(account_id, None)
+            self._write(items)
+            self.cache = items
+            return previous
 
     def _read(self):
         if not self.path.exists():

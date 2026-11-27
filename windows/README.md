@@ -1,83 +1,46 @@
-# 搞门户 Windows 版
+# 搞门户 Windows 1.19
 
-营销版本与当前 Mac 版同为 **1.19**。Windows 构建号为 **1**，关于页和接口里的版本字符串是 `1.19+1`。
+支持 Windows 10/11 x64。安装后从开始菜单打开「搞门户」。启动台、工作场景、账号库和设置使用 macOS v1.19 的界面资源，在 Microsoft Edge WebView2 窗口中运行。托盘可打开主窗口、下载中心和邮件中心，贴边悬浮启动台支持左侧、右侧及自由浮动。窗口内可按 `Ctrl+Alt+P` 显示或隐藏悬浮启动台。
 
-Windows 代码都在这个目录。业务用 **Python 3.12 标准库**，界面是只监听 `127.0.0.1` 的本地网页，GitHub Actions 在 `windows-latest` 上用 **PyInstaller** 打出 `GaoMenHu.exe` 和 `GaoMenHu-cli.exe`。没有改 Mac 版 Swift 源码。
+## 安装和资料
 
-## 运行
+运行 `GaoMenHu-Windows-1.19-x64-Setup.exe`。安装只针对当前用户，程序默认位于 `%LOCALAPPDATA%\Programs\GaoMenHu`。若系统缺少 WebView2 Runtime，安装程序会运行随包提供的微软引导程序，下载运行时。可用 PowerShell 核对安装包的 SHA-256。
 
-从源码：
+```powershell
+Get-FileHash .\GaoMenHu-Windows-1.19-x64-Setup.exe -Algorithm SHA256
+Get-Content .\GaoMenHu-Windows-1.19-x64-Setup.exe.sha256
+```
+
+网站库和下载、邮件数据继续使用 `%LOCALAPPDATA%\MenDao`。安装、升级和卸载均保留资料。安装前可在搞门户设置的「资料」中导出 ZIP。ZIP 和 JSON 导出只包含网站资料，密码由 Windows 当前用户的 DPAPI 保护。Mac 钥匙串中的密码需要在 Windows 上重新保存。
+
+目录缺失时，首次运行创建六个示例网站。目录存在但完全为空时，页面提供「创建网站资料」。历史初始化证据、损坏的资料或中断的写入会进入恢复保护，并提示先检查资料。窗口选项和打开记录沿用旁边的 `MenDao.preferences.json`。
+
+## 浏览器助手
+
+安装程序向 Chrome 和 Edge 注册 `cn.mendao.bridge`，并把相同的 v1.19 扩展存放在安装目录下的 `BrowserExtension`。在要使用的 Chrome 或 Edge 个人资料中打开扩展管理页，启用开发者模式，点「加载已解压的扩展程序」并选择该目录。可在「设置 → 浏览器」打开管理页和助手所在目录。
+
+在各浏览器资料中打开扩展弹窗查看连接状态，必要时点「重新连接」。多个资料连接后，可在网站编辑器中指定资料。浏览器必须在所选网站的允许列表中。保存了网站密码时，在搞门户确认解锁，再从搞门户启动网站。助手在匹配的 HTTPS 登录页填入账号，用户自行完成提交。Firefox 支持打开网站。Safari 在 Windows 上显示为不可用。
+
+## 下载和邮件
+
+- 下载中心支持 HTTP/HTTPS 直链复核、路径确认、暂停、继续、取消、重试、强 ETag 续传、SHA-256 校验和同名保护。Windows 以所选目录与卷标识识别路径，下次接入异常时可重新确认目录。下载中心单独保存队列。跨应用下载可在中心复核请求并导出回执。
+- 邮件中心可查看缓存、管理账号、收发、同步文件夹、编辑草稿、处理附件、提取验证码和管理别名。账号启用、网络连接、网页 OAuth 授权和发信均由用户触发。Google/Microsoft 授权使用系统浏览器。服务商配置可在邮件设置中查看。密码与 OAuth 令牌由 Windows DPAPI 保护。
+- Windows 使用通知区域代替 Mac 菜单栏，系统窗口边框、字体、模糊材质及缩放行为会有可见差异。账号解锁使用 Windows 当前用户的 DPAPI 和应用内确认。网站图标支持常见位图及 ICO。Mac 文档包可通过设置里的目录选择打开。Windows 通过文件交付跨应用回执，跨应用投递和 Mac 的结果汇总窗口仍有差距。
+
+## 开发与回归
+
+在 Windows x64 上使用 Python 3.12 和 Inno Setup 6.5。PowerShell 7 可按下面的命令运行测试、构建安装包并在项目目录内冒烟。
 
 ```powershell
 cd windows
-py -3.12 -m pip install -r requirements-dev.txt
-py -3.12 -m pytest -q
-py -3.12 launch.py --data-dir $env:LOCALAPPDATA\MenDao
+python -m pip install -r requirements-dev.txt
+$env:GAOMENHU_UI_TEST = '1'
+python -m pytest -q
+node --test ..\Tests\Extension.cjs
+.\build.ps1 -SkipDependencies -InnoSetup 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+.\tests\install-smoke.ps1 -Setup .\dist\GaoMenHu-Windows-1.19-x64-Setup.exe
 ```
 
-打包：
+本地安装冒烟以隔离目录运行，并用安装程序的 `/PORTABLE=1` 跳过快捷方式和浏览器注册。GitHub Actions 的独立测试账号另外执行浏览器注册与卸载校验。安装冒烟可用 `-LegacyExe` 传入 Windows 初版可执行文件，验证已有网站库及其加密凭据可以继续读取。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-.\dist\GaoMenHu.exe
-```
-
-资料目录默认是 `%LOCALAPPDATA%\MenDao`，对应 Mac 的 `~/Library/Application Support/MenDao`。初始化证据、悬浮偏好和使用次数放在目录旁边的 `MenDao.preferences.json`，不写进 `library.json`。
-
-- 目录还不存在时，第一次启动会写入 6 个示例网站。
-- 目录已经存在但是空的，不会自动写入。页面上的「创建网站资料」或 `POST /api/library/create` 只在目录完全为空、没有初始化证据、没有历史偏好时创建。这是为了避免把残留目录当成首次使用。
-- 主库缺失、schema 不是 1、或存在 `.gaomenhu-library-write-*` / `.gaomenhu-library-init-*` / `.gaomenhu-restore-*` 时进入恢复保护，不再自动保存。
-
-密码不进入 `library.json`、JSON 导出或 ZIP。Windows 上用当前用户的 DPAPI 加密，服务名仍是 `cn.mendao.launcher.passwords`。邮件凭据分开保存，服务名仍是 `com.gaoseries.GaoYouJian.credentials`。
-
-## 功能对照
-
-| 功能 | 状态 | 说明 |
-| --- | --- | --- |
-| 启动台网站、文件夹、分页、搜索 | 已实现 | 名称、网址、简称、账号名；汉字用拼音全拼和首字母。拖动重排不会增减网站 |
-| schema 1 `library.json` | 已实现 | 与 Mac 一样，未知字段在读入后丢弃。默认浏览器必须属于允许列表 |
-| 紧凑 / 宽松、60 / 76 / 92 图标、系统 / 浅色 / 深色 | 已实现 | 外观写入资料库 |
-| 多选移出、改默认浏览器、放入文件夹、撤销最近 30 次整理 | 已实现 | 撤销只恢复排列和浏览器选择 |
-| 工作场景 | 已实现 | 1–20 个网站，各自用自己的默认浏览器。指定浏览器未安装时不改用别的 |
-| 账号元数据与密码 | 已实现 | JSON 只留 `hasPassword`。解锁后 300 秒内可读取 |
-| Chrome / Edge 收藏栏导入 | 已实现 | 读取 `%LOCALAPPDATA%` 下 Chrome、Edge 的 `Bookmarks`。重复网址保留现有账号和浏览器 |
-| JSON 合并、恢复预览、ZIP 完整资料 | 已实现 | ZIP 只有 `manifest.json` 和 `library.json`，format 2，`snapshotCount` 为 0。不制作自动备份 |
-| GaoAction V1 | 已实现 | `portal.openSite`、`portal.openWorkspace`、`portal.focusSearch`、`portal.proposeSite`、`portal.prepareDownload`。建议新站只打开编辑，不静默写入。参数里出现密码字段会拒绝。`../` 附件路径会拒绝 |
-| 最小目录导出 | 已实现 | 只导出被点名的网站或场景的编号和显示名，不含网址和账号 |
-| 悬浮启动 | 替代 | `/float` 是单独的本地页面。排序仍是最近 3 个，再用打开次数补到最多 8 个。没有置顶原生窗口 |
-| 使用次数 | 已实现 | 只记录从搞门户成功发起的打开，存在偏好文件，不进网站资料备份 |
-| 下载队列 | 已实现 | HTTP/HTTPS 直链，复核查询参数，暂停、继续、取消、重试，Range + 强 ETag，SHA-256，同名不覆盖。崩溃或重新打开后，正在下载和排队的任务改为暂停，不自动续传 |
-| 下载迁移 | 已实现 | 目标已有 `downloads.json` 时拒绝覆盖。迁入后目录标记为需要重新确认，未完成任务进入 `waitingForDestination` |
-| 邮件缓存、明确连接、草稿、验证码、别名 | 已实现 | 未连接不登录服务器。连接后用标准库 IMAP 收取信头、SMTP 发送。发送先写记录，未完成不自动重发 |
-| OAuth 授权地址 | 部分 | 能生成 Google / Microsoft 的 PKCE S256 地址。没有把浏览器回调、令牌刷新和 JWKS 校验做成完整登录 |
-| 浏览器助手 | 部分 | 原生消息帧、`poll` / `credentials` / `saveBookmark` 与扩展协议一致，填充前核对 HTTPS 来源。需要自行注册主机，见下文 |
-| 高清站点图标 | 部分 | 可保存自定义图片数据。自动拉取只接受 HTTPS，失败时保留色块，没有 Mac 那套位图裁剪窗口 |
-
-## 没有对齐的部分
-
-这些依赖 macOS，Windows 版没有假装实现：
-
-- **Safari、菜单栏、Dock、触控板横向滑动、⌘Z 以外的系统快捷键。** 撤销在页面里。Safari 仍出现在浏览器目录中，但这台电脑没有 Safari，指定它会失败，不会改用 Chrome 或 Edge。
-- **原生悬浮窗。** 没有贴边 32 pt、悬停 0.45 秒、移出约 0.15 秒的系统窗口，也没有菜单栏开关。替代品是本地页面里的悬浮条。
-- **macOS 钥匙串和 Touch ID。** 已有 Mac 密码不能被 Windows 读出。DPAPI 只保护这台电脑上的当前用户。
-- **WKWebView 邮件正文。** 页面会去掉脚本、事件属性和远程图片，不是带 CSP 的系统 WebView。
-- **security-scoped bookmark、APFS 的 inode / volume UUID、同卷重新挂载证明。** 下载目录用路径授权。换盘或路径失效后要重新选择目录。
-- **`.noindex`、Spotlight、LaunchServices、DistributedNotificationCenter。**
-- **与正在运行的 macOS 搞门户同时写同一份资料。** 可以把目录放在一起看，但不要两边同时写。
-- **`gaomenhu://` 一类 URL 协议。** 没有注册。
-- **Chrome / Edge 助手不会在安装时自动获得 Mac 那种“打开浏览器并重连”的系统集成。** 扩展 ID 仍是 `ipggjapdbehjdikobhedllpdbchkoigf`。在 Chrome 或 Edge 加载仓库里的 `BrowserExtension`，再把主机清单注册到当前用户：
-
-```text
-HKCU\Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge
-HKCU\Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge
-```
-
-清单里的 `path` 指向 `GaoMenHu.exe`，`allowed_origins` 为 `chrome-extension://ipggjapdbehjdikobhedllpdbchkoigf/`。主机名是 `cn.mendao.bridge`。Windows 的原生消息协议不告诉主机这是 Chrome 还是 Edge，因此一个已连接的资料会同时记在这两个浏览器下。只开一个浏览器、并在网站上绑定该资料时，填充规则与 Mac 相同。
-
-OAuth 收信没有做成完整回路：需要本人的客户端标识、本机回调和提供方公钥校验。现在可以用 IMAP/SMTP 密码或应用专用密码，在页面里先保存账号，再点连接。
-
-## 测试
-
-`windows/` 下的单元测试覆盖资料保护、合并与恢复、拼音和悬浮排序、密码不落盘、浏览器不回退、交接包、收藏导入、下载与迁移、验证码和别名、本地 HTTP 接口。
-
-`.github/workflows/windows.yml` 在 `windows-latest` 上跑这些测试，打包两个 exe，再用临时空目录启动 `GaoMenHu.exe`：页面必须返回 200 和会话令牌，创建资料库，写入一个网站，再从 `library.json` 和接口读回。产物名称是 `GaoMenHu-Windows-1.19`。工作流不发布 GitHub Release。
+单独运行开发窗口时，可给 `python launch.py` 传入 `--data-dir` 指向隔离资料。`--serve --no-browser` 只启动本地回环服务，适合测试。发行包版本是 1.19，Windows 内部构建号为 2。

@@ -7,6 +7,7 @@
 import json
 import os
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -38,6 +39,7 @@ class Preferences:
     def __init__(self, path: Path):
         self.path = path
         self.data = {}
+        self._lock = threading.Lock()
         if path.is_file() and not path.is_symlink():
             try:
                 loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -66,8 +68,7 @@ class Preferences:
     def write_evidence(self, phase):
         if phase not in PHASES:
             raise RecoveryError()
-        self.data[INIT_KEY] = {"format": 1, "phase": phase}
-        self._flush()
+        self.set(INIT_KEY, {"format": 1, "phase": phase})
         if self.read_evidence()["phase"] != phase:
             raise RecoveryError()
 
@@ -75,18 +76,23 @@ class Preferences:
         return self.data.get(key, default)
 
     def set(self, key, value):
-        self.data[key] = value
-        self._flush()
+        self.update({key: value})
 
-    def _flush(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(self.path.name + f".tmp-{uuid.uuid4().hex}")
-        payload = json.dumps(self.data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-        with open(temporary, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.path)
+    def update(self, changes):
+        with self._lock:
+            data = self.data | changes
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(self.path.name + f".tmp-{uuid.uuid4().hex}")
+            payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+            try:
+                with open(temporary, "wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            self.data = data
 
 
 def _kind(path: Path):
@@ -149,6 +155,16 @@ class LibraryStore:
         self.baseline = None
         self.library = None
         self.message = ""
+        self._last_baseline = None
+        self._revision = 0
+
+    @property
+    def baseline_identity(self):
+        baseline = self.baseline
+        if baseline is not self._last_baseline:
+            self._last_baseline = baseline
+            self._revision += 1
+        return self._revision
 
     def load(self, browsers):
         if self.access == "blocked":

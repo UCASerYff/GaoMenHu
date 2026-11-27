@@ -1,2 +1,7 @@
-pytest>=8.2
-pyinstaller>=6.10
+pytest==8.3.4
+PyInstaller==6.11.1
+Pillow==11.3.0
+pywebview==6.1; sys_platform == 'win32'
+pythonnet==3.2.1; sys_platform == 'win32'
+PyJWT[crypto]==2.10.1
+websocket-client==1.9.0

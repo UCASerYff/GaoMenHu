@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import stat
 import time
 import uuid
 import zipfile
@@ -63,12 +64,19 @@ def read_zip(archive: bytes, current_version=MARKETING_VERSION):
         with zipfile.ZipFile(io.BytesIO(archive)) as handle:
             infos = handle.infolist()
             names = [info.filename for info in infos]
-            if any(info.is_dir() or info.filename != info.filename.replace("\\", "/") for info in infos):
-                raise AppError("资料包必须只包含清单和当前网站资料。")
             if sorted(names) != ["library.json", "manifest.json"]:
                 raise AppError("资料包必须只包含清单和当前网站资料。")
-            files = {name: handle.read(name) for name in names}
-    except zipfile.BadZipFile as exc:
+            limits = {"library.json": MAX_LIBRARY_BYTES, "manifest.json": 100_000}
+            if any(info.file_size > limits[info.filename] or info.is_dir() or info.flag_bits & 1
+                   or stat.S_IFMT(info.external_attr >> 16) not in (0, stat.S_IFREG)
+                   or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                   for info in infos):
+                raise AppError("资料包包含不支持的条目或超过大小限制。")
+            files = {}
+            for name in names:
+                with handle.open(name) as entry:
+                    files[name] = entry.read(limits[name] + 1)
+    except (zipfile.BadZipFile, RuntimeError) as exc:
         raise AppError("当前资料 ZIP 格式无效或已损坏。") from exc
     except AppError:
         raise

@@ -1,10 +1,13 @@
 """搜索和悬浮窗排序。拼音表代替 macOS 的 toLatin 转写。"""
 
+import math
 import unicodedata
 
 from .pinyin_data import load_pinyin
 
 _PINYIN = None
+MAX_USAGE_RECORDS = 5000
+MAX_OPEN_COUNT = 2**63 - 1
 
 
 def pinyin_table():
@@ -92,7 +95,19 @@ def _valid_usage(record):
         return False
     count = record.get("openCount")
     opened = record.get("lastOpenedAt")
-    return isinstance(count, int) and count >= 0 and isinstance(opened, (int, float)) and opened >= 0
+    return type(count) is int and 0 <= count <= MAX_OPEN_COUNT and type(opened) in (int, float) and 0 <= opened < math.inf
+
+
+def _recent_usage_key(item):
+    site, usage = item
+    return -usage["lastOpenedAt"], -usage["openCount"], site
+
+
+def normalized_usage(raw):
+    if not isinstance(raw, dict):
+        return {}
+    records = [(key, record) for key, record in raw.items() if key and _valid_usage(record)]
+    return dict(sorted(records, key=_recent_usage_key)[:MAX_USAGE_RECORDS])
 
 
 def floating_sites(library, query="", usage=None, limit=8):
@@ -102,10 +117,11 @@ def floating_sites(library, query="", usage=None, limit=8):
     if terms:
         matched = []
         for site in ordered:
-            text = search_text(site)
+            base = fold(site.get("name", "") + " " + (site.get("aliases") or "") + " " + site.get("url", ""))
+            text = base + " " + search_key(site)
             if all(term in text for term in terms):
                 matched.append(site)
-        return matched[: max(0, limit)] if limit is not None else matched
+        return matched
     capacity = max(0, limit)
     if capacity == 0:
         return []
@@ -138,15 +154,15 @@ def floating_sites(library, query="", usage=None, limit=8):
 
 
 def record_launch(usage, site_id, at):
-    if not site_id or not isinstance(at, (int, float)) or at < 0:
+    if not site_id or type(at) not in (int, float) or not 0 <= at < math.inf:
         return usage
     usage = dict(usage or {})
     old = usage.get(site_id) if _valid_usage(usage.get(site_id)) else None
-    if old is None and len(usage) >= 5000:
-        oldest = sorted(usage.items(), key=lambda item: (item[1].get("lastOpenedAt", 0), item[1].get("openCount", 0), item[0]))[0][0]
+    if old is None and len(usage) >= MAX_USAGE_RECORDS:
+        oldest = max(usage.items(), key=_recent_usage_key)[0]
         usage.pop(oldest, None)
     count = old["openCount"] if old else 0
-    if count < 2**31 - 1:
+    if count < MAX_OPEN_COUNT:
         count += 1
     usage[site_id] = {"openCount": count, "lastOpenedAt": float(at)}
     return usage

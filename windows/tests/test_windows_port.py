@@ -403,20 +403,39 @@ def test_credentials_require_matching_https_origin(tmp_path):
     site = json.loads(json.dumps(app.store.library["sites"][1]))
     site["accounts"] = [{"id": "acc", "label": "a", "username": "me", "loginHosts": ["chatgpt.com"], "hasPassword": True}]
     site["defaultAccount"] = "acc"
-    site["profiles"] = {"chrome": "profile-1"}
+    profile = "87038a19-5047-4b93-9183-5b14582ec7d2"
+    site["profiles"] = {"chrome": profile}
     app.save_site({"site": site, "passwords": [{"id": "acc", "password": "secret-value"}]})
-    app.native_message({"type": "poll", "profileId": "profile-1", "label": "默认"}, "chrome")
-    app.launch_site(site["id"], "chrome")
-    launch_id = next(iter(app.launches))
+    poll = {"type": "poll", "profileId": profile, "label": "默认"}
+    app.native_message(poll, "chrome")
+    app.lock()
+    with pytest.raises(AppError) as locked:
+        app.launch_site(site["id"], "chrome")
+    assert locked.value.code == "vault_locked"
+    app.unlock()
+    launch_id = app.launch_site(site["id"], "chrome")["requestID"]
+    assert not app.usage.get(site["id"])
+    assert "launch" not in app.native_message(poll, "edge")
+    assert app.native_message(poll, "chrome")["launch"]["id"] == launch_id
+    grant = {"profileId": profile, "requestId": launch_id, "tabId": 42}
+    credentials = {**grant, "type": "credentials", "url": "https://chatgpt.com/login"}
+    assert app.native_message(credentials, "chrome")["ok"] is False
+    assert app.native_message({**grant, "type": "bind"}, "edge")["ok"] is False
+    assert app.native_message({**grant, "type": "bind"}, "chrome")["ok"] is True
+    assert app.native_message({**credentials, "tabId": 43}, "chrome")["ok"] is False
+    assert app.native_message({**grant, "type": "launchStatus", "status": "opened"}, "chrome")["ok"] is True
+    assert app.usage[site["id"]]["openCount"] == 1
     denied = app.native_message({
-        "type": "credentials", "profileId": "profile-1", "requestId": launch_id, "url": "https://evil.example/login",
+        **credentials, "url": "https://other.example/login",
     }, "chrome")
     assert denied["ok"] is False
-    allowed = app.native_message({
-        "type": "credentials", "profileId": "profile-1", "requestId": launch_id, "url": "https://chatgpt.com/login",
-    }, "chrome")
+    allowed = app.native_message(credentials, "chrome")
     assert allowed["username"] == "me"
     assert allowed["password"] == "secret-value"
+    assert app.native_message({**grant, "type": "filled", "passwordFilled": False}, "chrome")["ok"] is True
+    assert app.native_message(credentials, "chrome")["ok"] is True
+    assert app.native_message({**grant, "type": "filled", "passwordFilled": True}, "chrome")["ok"] is True
+    assert app.native_message(credentials, "chrome")["ok"] is False
     assert "secret-value" not in (app.data_dir / "library.json").read_text(encoding="utf-8")
 
 
@@ -429,24 +448,28 @@ def test_oauth_authorization_url_uses_s256():
     assert "client_secret" not in url
 
 
-def test_native_message_framing():
-    from gaomenhu.cli import _write_message
-    import io
-    payload = {"type": "poll", "profileId": "abc"}
-    buffer = io.BytesIO()
-    original = __import__("sys").stdout
-    class Fake:
-        def __init__(self):
-            self.buffer = buffer
-    __import__("sys").stdout = Fake()
-    try:
-        _write_message(payload)
-    finally:
-        __import__("sys").stdout = original
-    __import__("sys").stdin = io.TextIOWrapper(io.BytesIO(buffer.getvalue()), encoding="utf-8")
-    # buffer was written as binary; read via the helper's stdin.buffer
+def test_native_message_framing(tmp_path):
+    import struct
+    import subprocess
     import sys
-    sys.stdin = io.TextIOWrapper(io.BytesIO(buffer.getvalue()))
-    # TextIOWrapper.buffer is available
-    assert json.loads(buffer.getvalue()[4:].decode())["type"] == "poll"
-    assert int.from_bytes(buffer.getvalue()[:4], "little") == len(buffer.getvalue()) - 4
+    from gaomenhu.native import publish_host
+
+    app = service(tmp_path)
+    server = PortalServer(app, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    publish_host(app.data_dir, server.port, app.host_token)
+    try:
+        profile = "87038a19-5047-4b93-9183-5b14582ec7d2"
+        payload = json.dumps({"rid": "42", "type": "poll", "profileId": profile, "label": "测试"}).encode("utf-8")
+        launch_path = Path(__file__).resolve().parents[1] / "launch.py"
+        child = subprocess.run([
+            sys.executable, str(launch_path), "--native-host", "--browser", "edge", "--data-dir", str(app.data_dir),
+        ], input=struct.pack("<I", len(payload)) + payload, capture_output=True, timeout=10, check=True)
+        assert len(child.stdout) > 4
+        assert struct.unpack("<I", child.stdout[:4])[0] == len(child.stdout) - 4
+        response = json.loads(child.stdout[4:])
+        assert response["ok"] and response["rid"] == "42"
+        assert [item["browser"] for item in app.state()["profiles"]] == ["edge"]
+    finally:
+        server.shutdown()

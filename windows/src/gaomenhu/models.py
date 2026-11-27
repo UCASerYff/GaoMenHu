@@ -41,13 +41,13 @@ def valid_web_url(value):
         return False
     if any(ord(ch) < 32 for ch in value):
         return False
-    parts = urlsplit(value)
-    scheme = parts.scheme.lower()
-    if scheme not in ("http", "https") or not parts.hostname:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
         return False
-    if parts.username or parts.password:
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         return False
-    return True
+    return not (parts.username or parts.password)
 
 
 def normalized_host(value):
@@ -60,7 +60,10 @@ def normalized_host(value):
     if not valid_web_url(source):
         return None
     parts = urlsplit(source)
-    if parts.port is not None:
+    try:
+        if parts.port is not None:
+            return None
+    except ValueError:
         return None
     if parts.path not in ("", "/") or parts.query or parts.fragment:
         return None

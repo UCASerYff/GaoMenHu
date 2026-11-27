@@ -1,8 +1,8 @@
-"""搞门户 Windows 版。业务使用 Python 标准库，界面由本机网页提供。"""
+"""搞门户 Windows 版。"""
 
 MARKETING_VERSION = "1.19"
-WINDOWS_BUILD = "1"
-VERSION_LABEL = "1.19+1"
+WINDOWS_BUILD = "2"
+VERSION_LABEL = f"{MARKETING_VERSION}+{WINDOWS_BUILD}"
 APP_ID = "cn.mendao.launcher"
 NATIVE_HOST_NAME = "cn.mendao.bridge"
 EXTENSION_ID = "ipggjapdbehjdikobhedllpdbchkoigf"
