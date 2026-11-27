@@ -89,9 +89,9 @@ if "$VERIFY_COMPILE"; then
   /usr/bin/plutil -lint "$APP/Contents/Info.plist"
   [[ "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" == "$VERSION" ]]
   [[ "$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist")" == "$BUILD_NUM" ]]
-  xcrun lipo -verify_arch arm64 "$STAGING/MailNative.o"
-  xcrun lipo -verify_arch arm64 "$APP/Contents/MacOS/MenDao"
-  xcrun lipo -verify_arch arm64 "$APP/Contents/MacOS/MenDaoBridge"
+  xcrun lipo "$STAGING/MailNative.o" -verify_arch arm64
+  xcrun lipo "$APP/Contents/MacOS/MenDao" -verify_arch arm64
+  xcrun lipo "$APP/Contents/MacOS/MenDaoBridge" -verify_arch arm64
   print "已核对 arm64 编译和版本 $VERSION ($BUILD_NUM)"
   exit 0
 fi
