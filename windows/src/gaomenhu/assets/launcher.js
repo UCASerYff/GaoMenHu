@@ -82,7 +82,7 @@ native = async function windowsNative(action, data = {}) {
   if (endpoints[action]) return portalAPI(endpoints[action], data);
   switch (action) {
     case 'state':
-      return portalAPI('/api/launcher/state');
+      return settingsWindow ? loadSettingsWindow() : portalAPI('/api/launcher/state');
     case 'launch':
       return launchWithVault('/api/sites/launch', {...data, browserID: data.browser});
     case 'launchWorkspace':
@@ -268,8 +268,15 @@ async function applyButton(button, action, success) {
   }
 }
 
-function settingGroup(title, rows) {
-  return '<section class="setting-group"><h3>' + esc(title) + '</h3><div>' + rows.join('') + '</div></section>';
+const preferenceTabs = [['modules', '功能与助手'], ['appearance', '外观'], ['data', '资料与交接']];
+const preferenceScroll = new Map();
+let preferenceWrites = Promise.resolve();
+let preferenceWriteID = 0;
+let preferenceFeedback = {text: '', kind: ''};
+
+function settingGroup(title, rows, description = '') {
+  return '<section class="setting-group"><header><h3>' + esc(title) + '</h3>'
+    + (description ? '<p>' + esc(description) + '</p>' : '') + '</header><div>' + rows.join('') + '</div></section>';
 }
 
 function settingChoice(id, title, choices, selected) {
@@ -287,20 +294,16 @@ function settingsContent(tab) {
   const row = (label, value) => '<div class="setting-row"><strong>' + esc(label) + '</strong><span>' + esc(value) + '</span></div>';
   const buttonRow = (...buttons) => '<div class="setting-row settings-buttons">' + buttons.join('') + '</div>';
   if (tab === 'appearance') {
-    return settingGroup('外观', [
-      row('语言', '简体中文'),
-      settingChoice('settingsAppearance', '外观', [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']], S.library.appearance),
-      row('版本', 'V' + S.version)
-    ]);
+    return settingGroup('窗口主题', [
+      settingChoice('settingsAppearance', '主题', [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']], S.library.appearance)
+    ], '适用于启动台与搞门户设置。') + settingGroup('应用信息', [row('语言', '简体中文'), row('版本', 'V' + S.version)]);
   }
   if (tab === 'data') {
     return settingGroup('当前资料', [
-      note('ZIP 包含当前网站、账号元数据、图标、文件夹、工作场景与外观。密码由 Windows 凭据保护保管。'),
       buttonRow(settingButton('exportZip', '导出当前资料…'), settingButton('restoreZip', '从资料恢复…'))
-    ]) + settingGroup('JSON 格式', [
-      note('导出当前网站资料，可合并导入或预览恢复。'),
+    ], 'ZIP 保留网站、图标、文件夹、场景、账号资料及外观。密码留在当前 Windows 用户的凭据库。') + settingGroup('JSON 格式', [
       buttonRow(settingButton('exportJson', '导出 JSON…'), settingButton('mergeJson', '导入 JSON…'), settingButton('restoreJson', '恢复 JSON…'))
-    ]) + settingGroup('跨 App 交接', [
+    ], '可合并导入，也可在恢复前查看预览。') + settingGroup('跨 App 交接', [
       buttonRow(settingButton('openActionPackage', '打开交接包…'), settingButton('actionHistory', '查看交接结果…'), settingButton('sendDownloadAction', '交接下载网址…')),
       buttonRow(settingButton('exportSitesCatalog', '导出授权网站目录…'), settingButton('exportWorkspacesCatalog', '导出授权场景目录…'))
     ]) + settingGroup('数据目录', [buttonRow(settingButton('revealData', '打开数据目录'))]);
@@ -311,35 +314,30 @@ function settingsContent(tab) {
     buttonRow(settingButton('importBookmarks', '导入浏览器收藏…'), settingButton('refreshIcons', '刷新网站图标')),
     buttonRow(settingButton('archivedSites', '查看已移除的网站…'))
   ]) + settingGroup('浏览器助手', [
-    note('Chrome 和 Edge 助手支持自动填充。每个浏览器个人资料需要单独加载并连接。'),
     ...S.browsers.filter(browser => browser.supportsFill).map(browser =>
-      '<div class="setting-row settings-browser-row"><strong>' + esc(browser.name) + '</strong><span class="connection" data-settings-connection="' + browser.id + '"></span><div class="setting-actions">'
+      '<div class="setting-row settings-browser-row"><div class="settings-browser-name"><strong>' + esc(browser.name) + '</strong><span class="connection" data-settings-connection="' + browser.id + '"></span></div><div class="setting-actions">'
       + settingButton('reconnect-' + browser.id, '重新连接') + settingButton('extensions-' + browser.id, '管理扩展…') + '</div></div>'),
     buttonRow(settingButton('extensionFolder', '打开助手文件夹')),
-    note('在浏览器扩展管理页开启开发者模式，加载助手文件夹。更新后可在该页面重新加载助手。')
-  ]) + settingGroup('悬浮窗', [
-    '<label class="setting-row"><strong>显示悬浮窗</strong><input type="checkbox" id="settingsDockEnabled"></label>',
+    note('在扩展管理页开启开发者模式，再加载助手文件夹。')
+  ], '每个浏览器资料需单独连接，才能自动填充。') + settingGroup('悬浮窗', [
+    '<label class="setting-row"><strong>显示悬浮窗</strong><input type="checkbox" role="switch" id="settingsDockEnabled"></label>',
     settingChoice('settingsDock', '停靠位置', [['left', '左侧'], ['right', '右侧'], ['none', '自由浮动']], S.floating.dock),
-    buttonRow(settingButton('resetDock', '重置悬浮窗位置'), '<span class="settings-key">Ctrl + Alt + P 显示或隐藏</span>'),
-    note('悬停约 0.45 秒或点击展开。移出实际窗口约 0.15 秒收起。展开时拖动顶部、两侧或底部空白处，靠近侧边时吸附。')
-  ]) + settingGroup('下载中心', [
-    buttonRow(settingButton('settingsDownloads', '打开下载队列…')),
-    note('HTTP / HTTPS 文件直链。复核保存目录后传输。')
-  ]) + settingGroup('邮件', [
-    buttonRow(settingButton('settingsMail', '打开邮件…'), settingButton('settingsMailPreferences', '邮件设置…')),
-    note('管理收件箱、身份、草稿与关联平台。首次显示缓存。连接邮箱须明确确认。')
+    buttonRow(settingButton('resetDock', '重置位置'), '<span class="settings-key"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>P</kbd> 显示或隐藏</span>')
+  ], '悬停或点击展开，移开后收起。可拖到屏幕两侧吸附。') + settingGroup('下载与邮件', [
+    '<div class="setting-row"><strong>下载中心</strong>' + settingButton('settingsDownloads', '打开下载队列…') + '</div>',
+    '<div class="setting-row"><strong>邮件中心</strong><div class="setting-actions">' + settingButton('settingsMail', '打开邮件…')
+    + settingButton('settingsMailPreferences', '邮件设置…') + '</div></div>'
   ]) + settingGroup('账号库', [
-    '<div class="setting-row"><strong id="settingsLockState"></strong>' + settingButton('settingsLock', '锁定账号库') + '</div>',
-    note('密码由 Windows 凭据保护保管。解锁 5 分钟后自动锁定。填入账号密码后，由你自行完成登录。')
-  ]);
+    '<div class="setting-row"><strong id="settingsLockState"></strong>' + settingButton('settingsLock', '锁定账号库') + '</div>'
+  ], '密码由 Windows 凭据保护。解锁 5 分钟后自动锁定。');
 }
 
-function refreshSettingsState() {
+function refreshSettingsState(force = false) {
   if (!$('launcherSettingsTabs')) return;
   for (const indicator of document.querySelectorAll('[data-settings-connection]')) {
     const browser = S.browsers.find(item => item.id === indicator.dataset.settingsConnection);
     const count = S.profiles.filter(profile => profile.browser === browser.id).length;
-    indicator.textContent = count ? '已连接 · ' + count + ' 个资料' : '未连接';
+    indicator.textContent = count ? '已连接 · ' + count + ' 个资料' : browser.installed ? '未连接' : '未安装';
     indicator.classList.toggle('offline', !count);
     $('reconnect-' + browser.id).disabled = !browser.installed;
     $('extensions-' + browser.id).disabled = !browser.installed;
@@ -350,12 +348,16 @@ function refreshSettingsState() {
     $('settingsLock').disabled = !S.unlocked;
     $('settingsLockState').textContent = S.unlocked ? '已解锁' : '已锁定';
   }
+  if ($('preferencesRecovery')) {
+    $('preferencesRecovery').hidden = currentAccess === 'ready' || !S.recoveryMessage;
+    $('preferencesRecovery').textContent = S.recoveryMessage || '';
+  }
   for (const [id, value] of [
     ['settingsAppearance', S.library.appearance],
     ['settingsDensity', S.library.layoutDensity || 'compact'],
     ['settingsIconSize', S.library.iconSize || 76]
   ]) {
-    if ($(id) && $(id) !== document.activeElement) $(id).value = value;
+    if ($(id) && (force || $(id) !== document.activeElement)) $(id).value = value;
   }
   for (const id of ['settingsAppearance', 'settingsDensity', 'settingsIconSize', 'importBookmarks', 'refreshIcons',
       'exportZip', 'restoreZip', 'exportJson', 'mergeJson', 'restoreJson', 'exportSitesCatalog', 'exportWorkspacesCatalog']) {
@@ -363,43 +365,103 @@ function refreshSettingsState() {
   }
 }
 
+function setPreferenceFeedback(text, kind) {
+  preferenceFeedback = {text, kind};
+  if (!$('preferencesStatus')) return;
+  $('preferencesStatus').textContent = text;
+  $('preferencesStatus').dataset.kind = kind;
+}
+
+function savePreference(action) {
+  const id = ++preferenceWriteID;
+  setPreferenceFeedback('正在保存…', 'busy');
+  preferenceWrites = preferenceWrites.then(action).then(() => {
+    if (id === preferenceWriteID) setPreferenceFeedback('设置已保存', 'saved');
+  }).catch(error => {
+    if (id === preferenceWriteID) {
+      setPreferenceFeedback(error.message, 'error');
+      refreshSettingsState(true);
+    }
+  }).finally(refreshSettingsState);
+  return preferenceWrites;
+}
+
+function markSettingsSurface() {
+  const root = $('dialog');
+  root.classList.add('launcher-settings');
+  if (settingsWindow) {
+    root.removeAttribute('aria-modal');
+    root.setAttribute('role', 'main');
+  }
+}
+
+async function loadSettingsWindow() {
+  document.body.classList.toggle('dark', matchMedia('(prefers-color-scheme: dark)').matches);
+  openDialog('<div class="preferences-layout" id="preferencesStartup"><header class="preferences-header"><h2>设置</h2></header>'
+    + '<div class="preferences-startup"><p id="settingsStartupStatus" role="status">正在读取设置…</p>'
+    + '<button id="settingsRetry" type="button" class="soft-button" hidden>重试</button></div></div>');
+  markSettingsSurface();
+  try {
+    const result = await portalAPI('/api/launcher/state');
+    if (!S) throw new Error('无法读取设置，请重试。');
+    renderWindowsSettings();
+    return result;
+  } catch (error) {
+    const status = $('settingsStartupStatus');
+    const retry = $('settingsRetry');
+    status.setAttribute('role', 'alert');
+    status.textContent = '无法读取设置。' + (error instanceof TypeError ? '' : error.message);
+    retry.hidden = false;
+    retry.onclick = loadSettingsWindow;
+    retry.focus();
+  }
+}
+
+const compactSettingsLayout = matchMedia('(max-width: 530px)');
+compactSettingsLayout.addEventListener('change', event => {
+  $('launcherSettingsTabs')?.setAttribute('aria-orientation', event.matches ? 'horizontal' : 'vertical');
+});
+
 function renderWindowsSettings(tab = settingsTab) {
   if (!S) return;
-  settingsTab = tab;
   const root = $('dialog');
   const previous = root.querySelector('.settings-pane');
-  const scrollTop = previous?.scrollTop || 0;
-  const content = '<div class="settings-tabs" id="launcherSettingsTabs" role="tablist" aria-label="设置">'
-    + [['modules', '模块设置'], ['appearance', '外观'], ['data', '数据']].map(([key, label]) =>
-      '<button type="button" role="tab" id="settings-tab-' + key + '" data-settings-tab="' + key + '" aria-controls="launcherSettingsPane" aria-selected="' + (key === tab) + '">' + label + '</button>').join('')
-    + '</div><div class="settings-pane" id="launcherSettingsPane" role="tabpanel" aria-labelledby="settings-tab-' + tab + '">' + settingsContent(tab) + '</div>';
-  openDialog((settingsWindow ? '' : head('', '搞门户设置', '')) + content);
-  root.classList.add('launcher-settings');
-  if (settingsWindow) root.removeAttribute('aria-modal');
-  root.querySelector('.settings-pane').scrollTop = scrollTop;
+  if (previous) preferenceScroll.set(settingsTab, previous.scrollTop);
+  settingsTab = tab;
+  const heading = '<header class="preferences-header"><h2 id="preferencesTitle">设置</h2>'
+    + (settingsWindow ? '' : '<button type="button" class="icon-button close" data-close aria-label="关闭设置">×</button>') + '</header>';
+  const navigation = '<nav class="settings-tabs" id="launcherSettingsTabs" role="tablist" aria-label="设置类别" aria-orientation="'
+    + (compactSettingsLayout.matches ? 'horizontal' : 'vertical') + '">'
+    + preferenceTabs.map(([key, label]) => '<button type="button" role="tab" id="settings-tab-' + key + '" data-settings-tab="' + key
+      + '" aria-controls="launcherSettingsPane" aria-selected="' + (key === tab) + '" tabindex="' + (key === tab ? 0 : -1) + '">' + label + '</button>').join('') + '</nav>';
+  const content = '<div class="settings-pane" id="launcherSettingsPane" role="tabpanel" aria-labelledby="settings-tab-' + tab + '">'
+    + '<p class="preferences-recovery" id="preferencesRecovery" role="status" hidden></p>'
+    + '<div class="preferences-groups" data-kind="' + tab + '">' + settingsContent(tab) + '</div></div>';
+  openDialog('<div class="preferences-layout">' + heading + '<div class="preferences-main">' + navigation + content
+    + '</div><footer class="preferences-footer"><span id="preferencesStatus" role="status" aria-live="polite"></span></footer></div>');
+  markSettingsSurface();
+  root.querySelector('.settings-pane').scrollTop = preferenceScroll.get(tab) || 0;
+  setPreferenceFeedback(preferenceFeedback.text, preferenceFeedback.kind);
   root.querySelectorAll('[data-settings-tab]').forEach(button => {
     button.onclick = () => renderWindowsSettings(button.dataset.settingsTab);
     button.onkeydown = event => {
       const buttons = Array.from(button.parentElement.querySelectorAll('button'));
       const i = buttons.indexOf(button);
-      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      const edge = {Home: 0, End: buttons.length - 1}[event.key];
+      const shift = {ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1}[event.key];
+      if (edge === undefined && shift === undefined) return;
       event.preventDefault();
-      const next = (i + (event.key === 'ArrowLeft' ? -1 : 1) + buttons.length) % buttons.length;
+      const next = edge ?? ((i + shift + buttons.length) % buttons.length);
       renderWindowsSettings(buttons[next].dataset.settingsTab);
     };
   });
-  setTimeout(() => $('settings-tab-' + tab)?.focus(), 40);
   const bind = (id, action, success) => {
     const button = $(id);
     if (button) button.onclick = () => applyButton(button, action, success);
   };
-  const preferences = async () => {
-    try {
-      await portalAPI('/api/preferences', {layoutDensity: $('settingsDensity').value, iconSize: Number($('settingsIconSize').value)});
-    } catch (error) {
-      renderWindowsSettings();
-      toast(error.message);
-    }
+  const preferences = () => {
+    const values = {layoutDensity: $('settingsDensity').value, iconSize: Number($('settingsIconSize').value)};
+    return savePreference(() => portalAPI('/api/preferences', values));
   };
   if (tab === 'modules') {
     $('settingsDensity').onchange = preferences;
@@ -420,15 +482,24 @@ function renderWindowsSettings(tab = settingsTab) {
         refreshSettingsState();
       }
     };
-    $('settingsDockEnabled').onchange = event => floating({enabled: event.target.checked}).catch(error => toast(error.message));
-    $('settingsDock').onchange = event => floating({dock: event.target.value}).catch(error => toast(error.message));
+    $('settingsDockEnabled').onchange = event => {
+      const enabled = event.target.checked;
+      savePreference(() => floating({enabled}));
+    };
+    $('settingsDock').onchange = event => {
+      const dock = event.target.value;
+      savePreference(() => floating({dock}));
+    };
     bind('resetDock', () => floating({reset: true, enabled: true}), '悬浮窗位置已重置。');
     bind('settingsDownloads', () => native('openDownloads'));
     bind('settingsMail', () => native('openMail'));
     bind('settingsMailPreferences', () => openPortalWindow('/mail#settings'));
     bind('settingsLock', () => native('lock'), '账号库已锁定。');
   }
-  if (tab === 'appearance') $('settingsAppearance').onchange = event => setAppearance(event.target.value);
+  if (tab === 'appearance') $('settingsAppearance').onchange = event => {
+    const appearance = event.target.value;
+    savePreference(() => portalAPI('/api/appearance', {appearance}));
+  };
   if (tab === 'data') {
     bind('exportZip', () => saveBackupFile('zip'));
     bind('restoreZip', () => startBackupPreview('restore'));
@@ -642,7 +713,7 @@ function chooseCatalog(kind) {
 
 const closeMacDialog = closeDialog;
 closeDialog = function closeWindowsDialog() {
-  const leavingSettings = Boolean($('launcherSettingsTabs'));
+  const leavingSettings = Boolean($('launcherSettingsTabs') || $('preferencesStartup'));
   if (activeActionReview) {
     const id = activeActionReview;
     activeActionReview = null;
@@ -741,11 +812,7 @@ document.addEventListener('keydown', event => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (settingsWindow) {
-    const waitForSettings = setInterval(() => {
-      if (S) {clearInterval(waitForSettings); renderWindowsSettings();}
-    }, 50);
-  } else if (!new URLSearchParams(location.search).has('offline')) {
+  if (!settingsWindow && !new URLSearchParams(location.search).has('offline')) {
     portalAPI('/api/sites/icon-warmup', {}, false).catch(logBackgroundIssue);
   }
   setInterval(() => pollLauncherRuntime().catch(logBackgroundIssue), 2300);

@@ -3,6 +3,13 @@
 from dataclasses import dataclass
 from math import inf
 
+LAUNCHER_WIDTH = 364
+LAUNCHER_LIST_TOP = 80
+LAUNCHER_FOOTER = 36
+LAUNCHER_ROW_STEP = 42
+LAUNCHER_ROW_HEIGHT = 38
+LAUNCHER_EMPTY_HEIGHT = 64
+
 
 @dataclass(frozen=True)
 class Rect:
@@ -85,11 +92,13 @@ def save_anchor(screen, frame, dock):
 def panel_size(screen, expanded, site_count):
     if not expanded:
         return screen.px(20), screen.px(104)
-    return screen.px(364), screen.px(92 + (min(site_count, 8) * 46 if site_count else 64))
+    body_height = min(site_count, 8) * LAUNCHER_ROW_STEP if site_count else LAUNCHER_EMPTY_HEIGHT
+    return screen.px(LAUNCHER_WIDTH), screen.px(LAUNCHER_LIST_TOP + body_height + LAUNCHER_FOOTER)
 
 
 def visible_rows(screen, height):
-    return next((count for count in range(8, 0, -1) if screen.px(92 + count * 46) <= height), 1)
+    fixed_height = LAUNCHER_LIST_TOP + LAUNCHER_FOOTER
+    return next((count for count in range(8, 0, -1) if screen.px(fixed_height + count * LAUNCHER_ROW_STEP) <= height), 1)
 
 
 def panel_frame(screen, anchor, dock, expanded, site_count):

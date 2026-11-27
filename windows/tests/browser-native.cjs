@@ -7,10 +7,10 @@ const https = require('node:https');
 const {execFileSync} = require('node:child_process');
 const {createHash, randomUUID, X509Certificate} = require('node:crypto');
 
-const [playwrightPackage, installDir, dataDir, workDir, origin] = process.argv.slice(2);
+const [playwrightPackage, installDir, dataDir, workDir, origin, hostAlias] = process.argv.slice(2);
 const {chromium} = require(playwrightPackage);
 const extensionId = 'ipggjapdbehjdikobhedllpdbchkoigf';
-const extension = path.join(installDir, 'BrowserExtension');
+const bundledExtension = path.join(installDir, 'BrowserExtension');
 const browserPaths = {
   chrome: [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean)
     .map(root => path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe')),
@@ -18,6 +18,19 @@ const browserPaths = {
     .map(root => path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe')),
 };
 let pageToken;
+
+function fixtureExtension() {
+  if (!hostAlias) return bundledExtension;
+  assert.match(hostAlias, /^cn\.mendao\.bridge\.smoke_[a-f0-9]{32}$/);
+  const fixture = path.join(workDir, 'IsolatedExtension');
+  fs.cpSync(bundledExtension, fixture, {recursive: true});
+  const background = path.join(fixture, 'background.js');
+  const script = fs.readFileSync(background, 'utf8');
+  const productionHost = "'cn.mendao.bridge'";
+  assert.equal(script.split(productionHost).length, 2, 'Expected exactly one configured native host');
+  fs.writeFileSync(background, script.replace(productionHost, `'${hostAlias}'`), 'utf8');
+  return fixture;
+}
 
 async function startFixture() {
   fs.writeFileSync(path.join(workDir, 'browser-fixture.cnf'), '[req]\ndistinguished_name=fixture_dn\nprompt=no\n[fixture_dn]\nCN=127.0.0.1\n');
@@ -62,6 +75,7 @@ async function until(check, message) {
 }
 
 async function run() {
+  const extension = fixtureExtension();
   const html = await (await fetch(origin)).text();
   pageToken = html.match(/name="gao-token" content="([^"]+)"/)?.[1];
   assert.ok(pageToken, 'The isolated portal did not return its page token');

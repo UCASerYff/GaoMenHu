@@ -276,7 +276,10 @@ class PortalServer:
             settings = service.set_floating(payload)
             return {"ok": True, "sites": [site["id"] for site in service.floating_sites(query if isinstance(query, str) else "")], "floating": settings}
         if path.startswith("/api/downloads/"):
-            return download_route(service, path.removeprefix("/api/downloads/"), payload)
+            response = download_route(service, path.removeprefix("/api/downloads/"), payload)
+            if path == "/api/downloads/settings" and self.appearance_changed:
+                self.appearance_changed("/downloads")
+            return response
         if path == "/api/mail/oauth-url":
             return {"ok": True, "url": authorization_url(
                 payload.get("provider"), payload.get("clientID") or "", payload.get("redirectURI") or "http://127.0.0.1/oauth",

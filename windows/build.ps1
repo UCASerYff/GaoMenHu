@@ -31,6 +31,7 @@ try {
     Invoke-Checked $Python @("prepare_release.py")
     $version = (Get-Content -Raw -LiteralPath "..\VERSION").Trim()
     $fileVersion = (Get-Content -Raw -LiteralPath "$releaseAssets\version.txt").Trim()
+    $windowsBuild = $fileVersion.Split('.')[-1]
     $icon = Join-Path $releaseAssets "GaoMenHu.ico"
     $common = @("-m", "PyInstaller", "--noconfirm", "--paths", "src", "--distpath", $releaseBin,
                 "--icon", $icon, "--version-file", (Join-Path $releaseAssets "version-info.txt"))
@@ -64,8 +65,9 @@ try {
         throw "WebView2 Bootstrapper signature verification failed"
     }
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-    Invoke-Checked $InnoSetup @("/DProductVersion=$version", "/DFileVersion=$fileVersion", "/O$OutputDirectory", "installer.iss")
-    $setup = Get-Item -LiteralPath (Join-Path $OutputDirectory "GaoMenHu-Windows-$version-x64-Setup.exe")
+    Invoke-Checked $InnoSetup @("/DProductVersion=$version", "/DFileVersion=$fileVersion", "/DWindowsBuild=$windowsBuild",
+                               "/O$OutputDirectory", "installer.iss")
+    $setup = Get-Item -LiteralPath (Join-Path $OutputDirectory "GaoMenHu-Windows-$version-build$windowsBuild-x64-Setup.exe")
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup.FullName).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$($setup.FullName).sha256", "$hash  $($setup.Name)`n", [Text.Encoding]::ASCII)
     Write-Output $setup.FullName

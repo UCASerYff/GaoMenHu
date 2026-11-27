@@ -3,7 +3,7 @@
 const mail = {
   route: "overview", mailbox: "", folder: "INBOX", identity: "", query: "", detail: null, formatting: false,
   state: {accounts:[], identities:[], platforms:[], drafts:[], messages:[], submissions:[], authorized:[], preferences:{}},
-  busy: false, sidebarHidden: false,
+  busy: false, sidebarHidden: false, detailRequest: 0,
 };
 const mailPages = [
   ["overview","总览","home"], ["inbox","邮件","tray"], ["accounts","邮箱管理","mail"],
@@ -57,19 +57,21 @@ async function mutateMail(action, values = {}) {
 }
 
 function setMailPage(route, mailbox = "") {
+  mail.detailRequest++;
   mail.route = route;
   mail.mailbox = mailbox;
   mail.folder = "INBOX";
   mail.detail = null;
   mail.query = "";
   renderMail();
+  mailBody.scrollTop = 0;
 }
 
 function startMail() {
   document.title = "搞门户 · 邮件";
-  mailToolbar = el("header", {class: "toolbar"});
+  mailToolbar = el("header", {class: "toolbar"}, centerBrand("邮件中心"));
   mailSidebar = el("aside", {"aria-label": "邮件导航"});
-  mailBody = el("main", {class: "body"});
+  mailBody = el("main", {class: "body"}, loadingView("正在读取本机邮件资料"));
   const mainWindow = el("div", {class: "mail-window"}, mailToolbar, el("div", {class: "shell mail"}, mailSidebar, mailBody));
   root.replaceChildren(mainWindow);
   async function openMailLink() {
@@ -109,7 +111,7 @@ function startMail() {
       if (location.hash === "#floating" || mail.route === "inbox") refreshMail().catch(error => flash(error.message, true));
     }, 15000);
   }).catch(error => {
-    mailToolbar.replaceChildren(el("strong", {}, document.title));
+    mailToolbar.replaceChildren(centerBrand("邮件中心"));
     mailBody.replaceChildren(empty("warning","邮件资料需要恢复，已停止写入",error.message));
   });
   window.addEventListener("hashchange", () => openMailLink().catch(error => flash(error.message, true)));
@@ -117,7 +119,12 @@ function startMail() {
     if (!mail.busy && !sheets.querySelector("dialog[open]")) refreshMail().catch(error => flash(error.message, true));
   });
   window.addEventListener("keydown", event => {
-    if (!event.ctrlKey || sheets.querySelector("dialog[open]")) return;
+    if (event.isComposing || sheets.querySelector("dialog[open]")) return;
+    if (event.key === "Escape" && mail.route === "inbox" && mail.detail && document.activeElement?.closest(".mail-reader")) {
+      closeMailReader();
+      return;
+    }
+    if (!event.ctrlKey) return;
     if (event.key.toLowerCase() === "n") { event.preventDefault(); mailComposer().catch(error => flash(error.message,true)); }
     if (event.key === ",") { event.preventDefault(); showMailSettings(); }
     if (event.key.toLowerCase() === "f") {
@@ -143,37 +150,55 @@ function renderMail() {
   if (location.hash === "#floating") { renderFloatingMail(); return; }
   const shell = mailSidebar.parentElement;
   shell.classList.toggle("hide-sidebar", mail.sidebarHidden);
+  const focused = document.activeElement;
+  const searchFocused = focused?.matches(".center-search input");
+  const searchPosition = searchFocused ? [focused.selectionStart, focused.selectionEnd] : null;
+  const focusedRoute = focused?.dataset.mailRoute;
+  const focusedTool = focused?.closest(".toolbar") && focused.getAttribute("aria-label");
   mailToolbar.replaceChildren(...domChildren(
-    button(mail.sidebarHidden ? "显示侧边栏" : "隐藏侧边栏", () => { mail.sidebarHidden = !mail.sidebarHidden; renderMail(); },
-      {symbol:"window", toolbar:true}),
-    mail.sidebarHidden && ["inbox","platforms"].includes(mail.route) && mailSearch(),
-    el("span", {class: "space"}),
-    button(mail.state.preferences.floatingVisible ? "隐藏悬浮窗" : "显示悬浮窗", toggleMailFloating, {symbol:"window",toolbar:true}),
-    button(mail.busy ? "正在同步…" : "同步", () => syncMail(), {symbol:"refresh",toolbar:true,disabled:mail.busy}),
-    button("写信", () => mailComposer(), {symbol:"edit",toolbar:true}),
-    button("更多操作", showMailActions, {symbol:"plus",toolbar:true}),
-    button("邮件设置", showMailSettings, {symbol:"gear",toolbar:true})));
+    el("div", {class: "mail-toolbar-brand"},
+      button(mail.sidebarHidden ? "显示导航" : "隐藏导航", () => {
+        mail.sidebarHidden = !mail.sidebarHidden;
+        renderMail();
+        mailToolbar.querySelector(".navigation-toggle")?.focus();
+      }, {symbol:"window", toolbar:true, className:"compact-action navigation-toggle"}), centerBrand("邮件中心")),
+    ["inbox","platforms"].includes(mail.route) ? el("div", {class:"center-search"}, icon("search"), mailSearch()) : el("div", {class:"space"}),
+    el("div", {class:"toolbar-actions"},
+      button("写信", () => mailComposer(), {symbol:"edit",toolbar:true,primary:true}),
+      button(mail.busy ? "正在同步…" : "同步", () => syncMail(), {symbol:"refresh",toolbar:true,disabled:mail.busy}),
+      button(mail.state.preferences.floatingVisible ? "隐藏悬浮窗" : "显示悬浮窗", toggleMailFloating, {symbol:"window",toolbar:true,className:"compact-action"}),
+      button("更多操作", showMailActions, {symbol:"plus",toolbar:true,className:"compact-action"}),
+      button("邮件设置", showMailSettings, {symbol:"gear",toolbar:true,className:"compact-action"}))));
   const counts = {inbox:unread().length, accounts:mail.state.accounts.length, platforms:mail.state.platforms.length,
     drafts:mail.state.drafts.filter(draft => !mail.state.submissions.some(record => record.draftID === draft.id && record.phase === "completed")).length};
-  mailSidebar.replaceChildren(...domChildren(
-    el("div", {class:"brand row nowrap"}, el("img",{src:"/portal-assets/Mark.png",alt:""}),
-      el("div",{class:"title-copy"},el("strong",{},"搞门户 · 邮件"),el("small",{},"邮箱 · 身份 · 平台"))),
-    ["inbox","platforms"].includes(mail.route) && mailSearch(),
-    el("div",{class:"group"},"邮箱管理"),
-    ...mailPages.map(([route,title,symbol]) => nav(title,symbol,mail.route===route,() => setMailPage(route),counts[route])),
-    el("div",{class:"group spaced identity-heading"},"我的身份",
-      button("添加身份", () => identityEditor(), {symbol:"plus",toolbar:true})),
-    nav("全部身份","person",!mail.identity,() => {mail.identity=""; mail.mailbox=""; mail.detail=null; renderMail();},mail.state.accounts.length),
-    ...mail.state.identities.map(identity => nav(identity.name,"person",mail.identity===identity.id,() => {
-      mail.identity=identity.id; mail.mailbox=""; mail.detail=null; renderMail();
-    },mail.state.accounts.filter(account=>account.identityID===identity.id).length)),
-    el("footer",{class:"mail-sidebar-status"},el("div",{class:"row nowrap"},
+  const scope = select([["","全部身份"],...mail.state.identities.map(identity => [identity.id,identity.name])],mail.identity);
+  scope.setAttribute("aria-label", "筛选身份");
+  scope.addEventListener("change", () => {
+    mail.identity = scope.value;
+    setMailPage(mail.route);
+    mailSidebar.querySelector("select")?.focus();
+  });
+  mailSidebar.replaceChildren(el("nav", {class:"mail-nav", "aria-label":"邮件分区"}, mailPages.map(([route,title,symbol]) => {
+      const item = nav(title,symbol,mail.route===route,() => setMailPage(route),counts[route]);
+      item.dataset.mailRoute = route;
+      return item;
+    })),
+    el("div", {class:"identity-scope"}, field("身份", scope),
+      button("添加身份", () => identityEditor(), {symbol:"plus",toolbar:true,className:"compact-action"})),
+    el("footer",{class:"mail-sidebar-status",role:"status"},
       el("span",{class:"mail-status-dot", "data-syncing":String(mail.busy), "aria-hidden":"true"}),
-      el("small",{},mail.busy ? "正在同步邮箱" :
-        mail.state.accounts.length+" 个邮箱 · "+mail.state.accounts.filter(account=>account.enabled).length+" 个开启收发")),
-      el("small",{},"身份与平台资料保存在本机"))));
+      el("small",{},mail.busy ? "正在同步邮箱" : mail.state.authorized.length ? `${mail.state.authorized.length} 个邮箱已连接` : "使用本机缓存")));
   const render = {overview:renderOverview,inbox:renderInbox,accounts:renderAccounts,platforms:renderPlatforms,drafts:renderDrafts};
   render[mail.route]();
+  if (searchPosition) {
+    const field = mailToolbar.querySelector("input[type=search]");
+    field?.focus({preventScroll:true});
+    field?.setSelectionRange(...searchPosition);
+  } else if (focusedRoute) {
+    mailSidebar.querySelector(`[data-mail-route="${CSS.escape(focusedRoute)}"]`)?.focus({preventScroll:true});
+  } else if (focusedTool) {
+    mailToolbar.querySelector(`[aria-label="${CSS.escape(focusedTool)}"]`)?.focus({preventScroll:true});
+  }
 }
 
 function showMailActions() {
@@ -187,48 +212,52 @@ function renderOverview() {
   const accounts = filteredAccounts();
   const accountIDs = new Set(accounts.map(account => account.id));
   const metrics = [
-    ["我的邮箱",accounts.length,"mail",accounts.filter(account=>account.enabled).length+" 个开启收发"],
-    ["关联平台",mail.state.platforms.filter(item=>!mail.identity || accountIDs.has(item.accountID)).length,"link","由你维护的账号关联"],
-    ["未读邮件",unread().filter(item=>accountIDs.has(item.accountID)).length,"tray","已同步到本机"],
+    ["邮箱",accounts.length,"mail","accounts"],
+    ["关联平台",mail.state.platforms.filter(item=>!mail.identity || accountIDs.has(item.accountID)).length,"link","platforms"],
+    ["缓存未读",unread().filter(item=>accountIDs.has(item.accountID)).length,"tray","inbox"],
   ];
-  mailBody.replaceChildren(el("div",{class:"content mail-overview"}, el("header",{class:"row between mail-overview-heading"},
-    el("div",{class:"title-copy"},el("h1",{},"每个邮箱，都有自己的身份。"),
-      el("p",{class:"muted"},"学校、工作与生活，在这里各归其位。")),
-    button("添加邮箱",addMailAccount,{symbol:"plus"})),
-    el("div",{class:"card-grid mail-overview-metrics"},metrics.map(([title,count,symbol,description]) =>
-      el("div",{class:"card metric","data-symbol":symbol},el("div",{class:"row between"},el("span",{class:"muted"},title),icon(symbol)),
-        el("strong",{},String(count)),el("small",{},description)))),
-    el("div",{class:"row between"},el("h3",{},"按身份整理"),button("管理身份", showIdentities,{className:"link"})),
-    mail.state.identities.length > 0 && el("div",{class:"card-grid"},mail.state.identities.map(identity=>
-      el("button",{type:"button",class:"card mail-identity-card",onclick:()=>{mail.identity=identity.id;setMailPage("accounts");}},
-        el("div",{class:"row between"},el("span",{class:"mark"},icon("person")),icon("up-right")),
-        el("div",{class:"row between"},el("strong",{},identity.name),el("small",{},mail.state.accounts.filter(account=>account.identityID===identity.id).length+" 个邮箱"))))),
-    mail.state.accounts.length === 0 && el("div",{class:"card mail-overview-welcome"},el("span",{class:"mail-welcome-icon"},icon("mail-open")),
-      el("div",{class:"stack"},el("h2",{},"从你的第一个邮箱开始"),
-        el("p",{class:"muted"},"可以先登记邮箱和用途，再连接收发。把注册过的网站与 App 记下来，以后就不用猜用了哪个邮箱。"),
-        el("div",{class:"actions"},button("添加邮箱",addMailAccount,{primary:true}),button("了解账号授权",()=>showMailSettings("module"),{className:"link"})))),
-    mail.state.accounts.length > 0 && el("div",{class:"row between"},el("h3",{},"我的邮箱"),button("查看全部",()=>setMailPage("accounts"),{className:"link"})),
-    ...accounts.slice(0,4).map(accountCard)));
+  const scope = identityById(mail.identity)?.name;
+  mailBody.replaceChildren(titleHeading("邮件总览", scope && "当前身份 · " + scope,
+    button("添加邮箱",addMailAccount,{symbol:"plus",primary:true})),
+    el("div",{class:"content mail-overview"},
+      el("div",{class:"mail-overview-metrics"},metrics.map(([title,count,symbol,route]) =>
+        el("button",{type:"button",class:"metric",onclick:()=>setMailPage(route)},
+          el("span",{class:"mark"},icon(symbol)),el("span",{class:"metric-caption"},title),el("strong",{},String(count)),icon("up-right")))),
+      mail.state.accounts.length === 0 && el("div",{class:"card mail-overview-welcome"},el("span",{class:"mark"},icon("mail-open")),
+        el("div",{class:"stack"},el("h2",{},"还没有邮箱"),
+          el("p",{class:"muted"},"添加后可登记关联账号，或按需连接邮件收发。"),
+          button("了解连接与授权",()=>showMailSettings("module"),{className:"link"}))),
+      mail.state.accounts.length > 0 && el("section",{class:"overview-section"},el("header",{class:"row between"},el("h2",{},"邮箱"),
+        accounts.length > 0 && button("查看全部",()=>setMailPage("accounts"),{className:"link"})),
+        accounts.length > 0 ? el("div",{class:"account-list"},accounts.slice(0,4).map(accountCard)) :
+          el("p",{class:"muted"},"此身份还没有关联邮箱。")),
+      el("section",{class:"overview-section"},el("header",{class:"row between"},el("h2",{},"身份"),
+        button("管理身份", showIdentities,{className:"link"})),
+        mail.state.identities.length > 0 ? el("div",{class:"identity-list"},mail.state.identities.map(identity=>
+          el("button",{type:"button",class:"mail-identity-card",onclick:()=>{mail.identity=identity.id;setMailPage("accounts");}},
+            icon("person"),el("strong",{},identity.name),el("small",{},mail.state.accounts.filter(account=>account.identityID===identity.id).length+" 个邮箱"),icon("up-right")))) :
+          el("p",{class:"muted"},"创建身份可按用途整理邮箱。"))));
 }
 
 function accountCard(account) {
   const authorized = mail.state.authorized.includes(account.id);
   const status = !account.enabled ? "仅登记" : account.syncError ? "需要处理"
     : !authorized ? "本次尚未连接" : account.lastSync ? "已连接" : "待验证";
-  return el("article",{class:"card mail-account-card"},
-    el("div",{class:"row nowrap"},el("span",{class:"mark"},icon("mail")),
-      el("div",{class:"title-copy space"},el("h3",{class:"truncate"},accountLabel(account)),el("small",{class:"truncate"},account.email)),
-      el("span",{class:"badge "+(account.syncError?"warning":"")},status),button("编辑",()=>editAccount(account))),
-    account.syncError && el("small",{class:"warning"},account.syncError),
-    el("div",{class:"row"},el("small",{},providerConfig[account.provider]?.[0] || account.provider || "IMAP"),
-      identityById(account.identityID) && el("span",{class:"badge"},identityById(account.identityID).name),
-      el("small",{},mail.state.platforms.filter(record=>record.accountID===account.id).length+" 个关联平台"),
-      account.lastSync && el("small",{},"同步于 "+displayDate(account.lastSync,true))),
-    el("div",{class:"actions"},
+  return el("article",{class:"mail-account-card"},
+    el("span",{class:"mark"},icon("mail")),
+    el("div",{class:"account-description"},el("h3",{},accountLabel(account)),
+      accountLabel(account) !== account.email && el("small",{},account.email),
+      el("div",{class:"row account-meta"},el("small",{},providerConfig[account.provider]?.[0] || account.provider || "IMAP"),
+        identityById(account.identityID) && el("small",{},identityById(account.identityID).name),
+        account.lastSync && el("small",{},"同步于 "+displayDate(account.lastSync,true))),
+      account.syncError && el("small",{class:"warning"},account.syncError)),
+    el("div",{class:"actions account-primary"},el("span",{class:"badge "+(account.syncError?"warning":authorized?"good":"")},status),
       account.enabled && !authorized && button("连接邮箱…",()=>connectAccount(account),{primary:true}),
       account.enabled && authorized && button("同步",()=>syncMail(account.id)),
+      button("编辑",()=>editAccount(account))),
+    el("div",{class:"actions account-links"},
       ["google","microsoft"].includes(account.auth) && button("重新授权…",()=>authorizeOAuth(account.auth,account)),
-      button("查看关联平台",()=>setMailPage("platforms",account.id),{className:"link"}),
+      button("关联平台 · " + mail.state.platforms.filter(record=>record.accountID===account.id).length,()=>setMailPage("platforms",account.id),{className:"link"}),
       button("别名助手",()=>aliasHelper(account.id),{className:"link"}),
       button("移除邮箱…",()=>confirmSheet("移除这个邮箱？","将清除本机连接凭据及邮件缓存，保留平台资料与草稿。",
         "移除邮箱",()=>mutateMail("account-delete",{id:account.id}),true),{danger:true})));
@@ -236,10 +265,10 @@ function accountCard(account) {
 
 function renderAccounts() {
   const accounts = filteredAccounts();
-  mailBody.replaceChildren(titleHeading("你的邮箱，各有归属","连接收发，或先登记身份和关联平台。",
+  mailBody.replaceChildren(titleHeading("邮箱管理", `${accounts.length} 个邮箱`,
     button("添加邮箱",addMailAccount,{symbol:"plus",primary:true})));
-  if (!accounts.length) mailBody.append(empty("mail","还没有邮箱","添加邮箱来登记身份，或开启邮件收发。",button("添加邮箱",addMailAccount,{primary:true})));
-  else mailBody.append(el("div",{class:"content"},accounts.map(accountCard)));
+  if (!accounts.length) mailBody.append(empty("mail","没有可显示的邮箱","添加邮箱，或选择其他身份。"));
+  else mailBody.append(el("div",{class:"content"},el("div",{class:"account-list"},accounts.map(accountCard))));
 }
 
 function connectAccount(account) {
@@ -359,7 +388,7 @@ function identityEditor(identity) {
 }
 
 function renderPlatforms() {
-  const box = titleHeading("这个账号，用的是哪个邮箱？","手动记下关联，随时双向查找。",
+  const box = titleHeading("关联平台",null,
     el("div",{class:"actions"},button("导入／导出 CSV",platformCSV,{symbol:"exchange"}),
       button("登记平台",()=>platformEditor(),{symbol:"plus",primary:true})));
   const mailbox = select(accountChoices("所有邮箱"),mail.mailbox);
@@ -381,7 +410,7 @@ function renderPlatforms() {
           ()=>mutateMail("record-delete",{kind:"platforms",id:record.id}),true),{danger:true})));
   }));
   mailBody.replaceChildren(box,list);
-  if (!items.length) mailBody.append(empty("link","没有关联平台","登记使用邮箱注册的网站或 App。",button("登记平台",()=>platformEditor(),{primary:true})));
+  if (!items.length) mailBody.append(empty("link","没有关联平台","登记使用邮箱注册的网站或应用。"));
 }
 
 function platformEditor(record = {}) {
@@ -445,38 +474,71 @@ function renderInbox() {
   const messages = filteredMessages();
   const account = accountById(mail.mailbox);
   const mailbox = select(accountChoices("统一收件箱"),mail.mailbox);
-  mailbox.addEventListener("change",()=>{mail.mailbox=mailbox.value;mail.folder="INBOX";mail.detail=null;renderInbox();});
+  mailbox.addEventListener("change",()=>{
+    mail.mailbox=mailbox.value;mail.folder="INBOX";mail.detail=null;mail.detailRequest++;renderInbox();
+    mailBody.querySelector(".inbox-filters select")?.focus();
+  });
   const folders=[["INBOX","收件箱"],["__local_sent__","本机发送记录"],
     ...(account?.folders||[]).filter(folder=>folder.selectable && folder.path.toUpperCase()!=="INBOX").map(folder=>[folder.path,folder.displayName])];
   const folder=select(folders,mail.folder);
   folder.addEventListener("change",async()=>{
-    mail.folder=folder.value;mail.detail=null;renderInbox();
+    mail.folder=folder.value;mail.detail=null;mail.detailRequest++;renderInbox();
+    mailBody.querySelector(".inbox-filters select[name=folder]")?.focus();
     if (folder.value!=="__local_sent__" && mail.state.authorized.includes(mail.mailbox)) {
       try { await syncMail(mail.mailbox); } catch(error) { flash(error.message,true); }
     }
   });
-  const filter=el("div",{class:"heading row between"},
-    el("div",{class:"actions"},field("邮箱",mailbox),account&&field("文件夹",folder)),el("small",{},"最近 "+messages.length+" 封"));
-  const previousScroll=mailBody.querySelector(".list")?.scrollTop||0;
-  const list=el("div",{class:"list"},messages.slice(0,500).map(message=>el("button",{type:"button",class:"tile",
-    "aria-pressed":mail.detail?.id===message.id,onclick:()=>selectMessage(message.id).catch(error=>flash(error.message,true))},
-    el("div",{class:"row nowrap"},!message.isRead&&el("span",{class:"unread","aria-label":"未读"}),
-      el("strong",{class:"truncate space"},message.from||"未知发件人"),message.isFlagged&&icon("star"),el("small",{},displayDate(message.date))),
-    el("span",{},message.subject||"（无主题）"),
-    el("small",{class:"truncate"},message.preview||accountById(message.accountID)?.email||""),
-    message.code&&el("span",{class:"badge mono"},icon("key"),message.code))));
-  if (!messages.length) list.append(el("p",{class:"muted empty-rows"},mail.query?"没有匹配的邮件。":"没有缓存邮件。"));
-  const detail=el("div",{class:"detail"});
-  detail.append(mail.detail ? messageDetail(mail.detail) : empty("mail","选择一封邮件","在邮件列表中选择邮件查看详情。"));
-  mailBody.replaceChildren(filter,el("div",{class:"split mail-inbox"},list,detail));
-  list.scrollTop=previousScroll;
+  folder.name = "folder";
+  const previousList = mailBody.querySelector(".mail-message-list");
+  const previousReader = mailBody.querySelector(".mail-reader");
+  const oldScroll = previousList?.scrollTop || 0;
+  const readScroll = previousReader?.dataset.openMessage === mail.detail?.id ? previousReader?.scrollTop || 0 : 0;
+  const focus = document.activeElement;
+  const focusedMessage = focus?.dataset.mailMessage;
+  const focusedAction = focus?.closest(".mail-reader") && focus.getAttribute("aria-label");
+  const filter=el("div",{class:"inbox-filters"},field("邮箱",mailbox),account&&field("文件夹",folder));
+  const list=el("div",{class:"list mail-message-list", "aria-label":"邮件列表"},messages.slice(0,500).map(message=>el("button",{
+    type:"button",class:"tile mail-message", "aria-pressed":mail.detail?.id===message.id,
+    "data-mail-message":message.id,"data-unread":String(!message.isRead),
+    onclick:()=>selectMessage(message.id).catch(error=>flash(error.message,true))},
+    el("div",{class:"row nowrap mail-message-from"},!message.isRead&&el("span",{class:"unread","aria-label":"未读"}),
+      el("strong",{class:"truncate space",title:message.from},message.from||"未知发件人"),message.isFlagged&&icon("star"),el("small",{},displayDate(message.date))),
+    el("span",{class:"mail-subject truncate",title:message.subject},message.subject||"（无主题）"),
+    el("div",{class:"row nowrap"},el("small",{class:"truncate space"},message.preview||accountById(message.accountID)?.email||""),
+      message.code&&el("span",{class:"badge mono"},icon("key"),message.code)))));
+  listKeyboard(list, "[data-mail-message]");
+  if (!messages.length) list.append(empty(mail.query ? "search" : "mail",mail.query?"没有匹配的邮件":"没有缓存邮件",
+    mail.query ? "尝试发件人、主题或验证码。" : "连接邮箱并同步后，邮件会显示在这里。"));
+  const rail=el("section",{class:"mail-message-rail"},el("header",{class:"message-rail-header"},
+    el("div",{class:"title-line"},el("h1",{},mail.query?"搜索邮件":"邮件"),el("small",{},`${messages.length} 封`)),filter),list);
+  const reader=el("div",{class:"detail mail-reader","aria-label":"邮件详情","data-open-message":mail.detail?.id},
+    mail.detail ? messageDetail(mail.detail) : empty("mail-open","选择一封邮件"));
+  mailBody.replaceChildren(el("div",{class:"split mail-inbox"+(mail.detail?" reading":"")},rail,reader));
+  list.scrollTop=oldScroll;
+  reader.scrollTop=readScroll;
+  if (focusedMessage) list.querySelector(`[data-mail-message="${CSS.escape(focusedMessage)}"]`)?.focus({preventScroll:true});
+  if (focusedAction) reader.querySelector(`[aria-label="${CSS.escape(focusedAction)}"]`)?.focus({preventScroll:true});
 }
 
 async function selectMessage(id, load = false) {
+  const sequence = ++mail.detailRequest;
+  const moveFocus = mail.detail?.id !== id && matchMedia("(max-width: 870px)").matches;
   const result=await api("message",{id,load});
+  if (mail.route !== "inbox" || sequence !== mail.detailRequest) return;
   mail.detail=result.message;
   if (load) mail.state.messages= (await api("state")).messages;
+  if (mail.route === "inbox" && sequence === mail.detailRequest) {
+    renderInbox();
+    if (moveFocus) mailBody.querySelector(".mail-reader-close")?.focus();
+  }
+}
+
+function closeMailReader() {
+  const id=mail.detail?.id;
+  mail.detail=null;
+  mail.detailRequest++;
   renderInbox();
+  if (id) mailBody.querySelector(`[data-mail-message="${CSS.escape(id)}"]`)?.focus({preventScroll:true});
 }
 
 function messageDetail(message) {
@@ -515,7 +577,11 @@ function messageDetail(message) {
     if (html) html.srcdoc="<!doctype html><meta charset=utf-8><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\"><style>:root{color-scheme:light dark}body{font:14px/1.65 Segoe UI,sans-serif;overflow-wrap:anywhere;margin:12px}pre{white-space:pre-wrap}table{max-width:100%}</style>"+message.html;
     if (mail.formatting&&html) plain.hidden=true;
     content=el("div",{class:"stack"},
-      html&&button(mail.formatting?"纯文本":"排版视图",()=>{mail.formatting=!mail.formatting;renderInbox();}),
+      html&&button(mail.formatting?"纯文本":"排版视图",()=>{
+        mail.formatting=!mail.formatting;
+        renderInbox();
+        mailBody.querySelector(".message-format")?.focus({preventScroll:true});
+      },{className:"message-format"}),
       plain,html,
       message.attachments?.length>0&&el("h3",{},"附件 · "+message.attachments.length),
       (message.attachments||[]).map(attachment=>button(attachment.filename+" · "+bytes(attachment.byteCount),async()=>{
@@ -523,17 +589,19 @@ function messageDetail(message) {
         await saveFile(result.attachment.filename,result.attachment.base64,"application/octet-stream",true);
       },{symbol:"attachment"})));
   }
-  return el("article",{class:"stack"},actions,el("hr"),el("h1",{},message.subject||"（无主题）"),
-    el("div",{class:"title-copy muted"},el("small",{},"发件人："+(message.from||"")),el("small",{},"收件人："+(message.to||"")),
-      message.cc&&el("small",{},"抄送："+message.cc),el("small",{},displayDate(message.date,true))),
-    codeSection,content);
+  return el("article",{class:"message-article"},el("header",{class:"message-header"},
+    el("div",{class:"detail-title"},el("h1",{},message.subject||"（无主题）"),
+      button("关闭详情",closeMailReader,{symbol:"close",toolbar:true,className:"compact-action mail-reader-close"})),
+    el("dl",{class:"message-addresses"},[["发件人",message.from||"未知发件人"],["收件人",message.to],["抄送",message.cc],["时间",displayDate(message.date,true)]]
+      .filter(([,value])=>value).map(([label,value])=>el("div",{class:"pair"},el("dt",{},label),el("dd",{},value))))),
+    actions,codeSection,content);
 }
 
 function renderDrafts() {
   const drafts=mail.state.drafts.slice().reverse().filter(draft=>!mail.state.submissions.find(record=>record.draftID===draft.id&&record.phase==="completed"));
-  mailBody.replaceChildren(titleHeading("留给下一次继续写",null,button("新建邮件",()=>mailComposer(),{primary:true,symbol:"edit"})));
+  mailBody.replaceChildren(titleHeading("草稿",`${drafts.length} 份草稿`));
   if (!drafts.length) {
-    mailBody.append(empty("file","还没有草稿","可以先把编辑中的邮件保存到本机。",button("新建邮件",()=>mailComposer(),{primary:true})));
+    mailBody.append(empty("file","还没有草稿","编辑中的邮件可以存为本机草稿。"));
     return;
   }
   mailBody.append(el("div",{class:"content"},drafts.map(draft=>{
@@ -632,7 +700,7 @@ async function mailComposer(draftId, reply, kind) {
         finally { sending=false; }
       });
     },{primary:true}),
-  ]);
+  ], "mail-compose-dialog");
   const dialog=sheets.lastElementChild;
   dialog.addEventListener("cancel",async event=>{
     event.preventDefault();
@@ -702,6 +770,7 @@ function showMailSettings(initial="module") {
   const microsoftClient=el("input",{value:prefs.microsoftClientID||""});
   const tenant=el("input",{value:prefs.microsoftTenant||"common"});
   function choose(next) {
+    const keepTabFocus = tabbar.contains(document.activeElement);
     tab=next;
     tabbar.replaceChildren(...choices.map(([id,title])=>{
       const option=button(title,()=>choose(id));option.setAttribute("aria-pressed",tab===id);return option;
@@ -722,9 +791,10 @@ function showMailSettings(initial="module") {
       button("导出／恢复资料",mailBackup,{symbol:"exchange"}),button("导入／导出 CSV",platformCSV,{symbol:"exchange"}),
       button("打开数据文件夹",()=>api("reveal"),{symbol:"folder"}));
     if (tab==="about") body.replaceChildren(el("h2",{},"搞门户 · 邮件"),el("p",{},version),el("small",{},"邮箱 · 身份 · 平台"));
+    if (keepTabFocus) tabbar.querySelector('[aria-pressed="true"]')?.focus();
   }
   choose(tab);
-  sheet("邮件设置",null,el("div",{class:"mail-settings-content"},tabbar,body),close=>[
+  sheet("邮件设置",null,settingsLayout(tabbar,body),close=>[
     button("关闭",close),button("保存设置",async()=>{
       await mutateMail("settings",{preferences:{syncMinutes:Number(sync.value),fetchLimit:Number(fetch.value),appearance:theme.value,
         floatingVisible:visible.checked,showPreviews:preview.checked,keepOnTop:top.checked,
@@ -732,7 +802,7 @@ function showMailSettings(initial="module") {
         microsoftClientID:microsoftClient.value.trim(),microsoftTenant:tenant.value.trim()||"common"},googleSecret:googleSecret.value||undefined});
       close();
     },{primary:true}),
-  ]);
+  ], "settings-dialog mail-settings-dialog");
 }
 
 function mailBackup() {

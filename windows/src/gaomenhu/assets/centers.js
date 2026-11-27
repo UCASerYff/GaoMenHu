@@ -76,14 +76,16 @@ function button(text, callback, {symbol, primary, disabled, toolbar, danger, cla
     class: [primary && "primary", toolbar && "tool-icon", danger && "danger", className].filter(Boolean).join(" ")
   }, symbol && icon(symbol), toolbar ? el("span", {class: "tool-label"}, text) : text);
   node.addEventListener("click", async () => {
-    node.disabled = true;
+    if (node.getAttribute("aria-busy") === "true") return;
+    node.setAttribute("aria-busy", "true");
+    const issue = node.closest("dialog")?.querySelector(".sheet-error");
+    if (issue) issue.textContent = "";
     try { await callback(); }
     catch (error) {
-      const issue = node.closest("dialog")?.querySelector(".sheet-error");
       if (issue) issue.textContent = error.message || "操作没有完成。";
       else flash(error.message || "操作没有完成。", true);
     }
-    finally { node.disabled = Boolean(disabled); }
+    finally { node.removeAttribute("aria-busy"); }
   });
   return node;
 }
@@ -115,7 +117,7 @@ function select(choices, value) {
 function nav(title, symbol, current, choose, count) {
   const row = button(title, choose, {symbol, className: "nav-row"});
   if (current) row.setAttribute("aria-current", "page");
-  if (count !== undefined) row.append(el("i", {class: "space"}), el("small", {}, count));
+  if (count > 0) row.append(el("small", {class: "nav-count"}, count));
   return row;
 }
 
@@ -128,16 +130,44 @@ function titleHeading(title, detail, action) {
     el("h1", {}, title), detail && el("p", {class: "muted"}, detail)), action);
 }
 
-function sheet(title, description, body, actions) {
-  const dialog = el("dialog", {"aria-label": title});
+function sheet(title, description, body, actions, className) {
+  const dialog = el("dialog", {"aria-label": title, class: className});
   const close = () => dialog.close();
   dialog.append(el("section", {class: "sheet"}, el("header", {}, el("h2", {}, title),
-    description && el("p", {class: "muted"}, description)), body, el("div", {class: "sheet-error warning", role: "status"}),
-    el("footer", {}, actions?.(close) || [button("关闭", close)])));
+    description && el("p", {class: "muted"}, description)), el("div", {class: "sheet-body"}, body),
+    el("footer", {}, el("div", {class: "sheet-error warning", role: "status"}),
+      actions?.(close) || [button("关闭", close)])));
   dialog.addEventListener("close", () => dialog.remove(), {once: true});
   sheets.append(dialog);
   dialog.showModal();
   return close;
+}
+
+function centerBrand(title) {
+  return el("div", {class: "center-brand"}, el("img", {alt: "", src: "/portal-assets/Mark.png"}), el("strong", {}, title));
+}
+
+function loadingView(text) {
+  return el("div", {class: "loading-view", role: "status"}, el("span", {"aria-hidden": "true"}), text);
+}
+
+function settingsLayout(tabs, panel) {
+  tabs.setAttribute("role", "group");
+  tabs.setAttribute("aria-label", "设置分类");
+  listKeyboard(tabs, "button", ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]);
+  return el("div", {class: "settings-layout"}, tabs, panel);
+}
+
+function listKeyboard(list, selector, keys = ["ArrowUp", "ArrowDown", "Home", "End"]) {
+  const movement = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1, Home: -Infinity, End: Infinity};
+  list.addEventListener("keydown", event => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing || !keys.includes(event.key)) return;
+    const row = event.target.closest(selector);
+    if (!row) return;
+    const rows = Array.from(list.querySelectorAll(selector));
+    event.preventDefault();
+    rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + movement[event.key]))]?.focus();
+  });
 }
 
 function confirmSheet(title, detail, confirm, action, danger = false) {
@@ -201,8 +231,8 @@ async function saveFile(filename, data, type = "application/octet-stream", encod
 
 const downloadSections = [
   ["all", "全部任务", "tray", () => true],
-  ["active", "正在下载", "download", entry => ["queued", "running", "pausing", "verifying", "committing"].includes(entry.state)],
-  ["paused", "已暂停 / 等待", "pause", entry => ["paused", "waitingForNetwork", "waitingForDestination", "retryScheduled"].includes(entry.state)],
+  ["active", "进行中", "download", entry => ["running", "pausing", "verifying", "committing"].includes(entry.state)],
+  ["paused", "已暂停 / 等待", "pause", entry => ["queued", "paused", "waitingForNetwork", "waitingForDestination", "retryScheduled"].includes(entry.state)],
   ["completed", "已完成", "check", entry => entry.state === "completed"],
   ["failed", "失败 / 取消", "warning", entry => ["failed", "cancelled", "partial"].includes(entry.state)],
   ["exchange", "跨应用请求", "exchange"],
@@ -233,18 +263,20 @@ async function mutateDownload(action, body) {
 
 function startDownloads() {
   document.title = "搞门户 · 下载中心";
-  downloadSidebar = el("aside", {"aria-label": "下载分类"});
-  downloadBody = el("div", {class: "body"});
+  downloadSidebar = el("nav", {class: "download-tabs", "aria-label": "下载分类"});
+  downloadBody = el("div", {class: "body"}, loadingView("正在读取下载任务"));
   downloadStatusbar = el("footer", {class: "statusbar"});
   const search = el("input", {type: "search", placeholder: "搜索文件名或来源", "aria-label": "搜索文件名或来源"});
   search.addEventListener("input", () => { download.query = search.value; renderDownloadState(); });
-  const toolbar = el("header", {class: "toolbar"}, el("span", {class: "space"}),
-    search, button("新建下载", () => composeDownload(), {symbol: "plus", toolbar: true}),
-    button("暂停全部", () => mutateDownload("pause-all"), {symbol: "pause", toolbar: true}),
-    button("恢复全部", () => mutateDownload("resume-all"), {symbol: "play", toolbar: true}),
-    button("下载设置", showDownloadSettings, {symbol: "gear", toolbar: true}));
+  const toolbar = el("header", {class: "toolbar"}, centerBrand("下载中心"),
+    el("div", {class: "center-search"}, icon("search"), search),
+    el("div", {class: "toolbar-actions"},
+      button("新建下载", () => composeDownload(), {symbol: "plus", toolbar: true, primary: true}),
+      button("暂停全部", () => mutateDownload("pause-all"), {symbol: "pause", toolbar: true, className: "batch-control"}),
+      button("恢复全部", () => mutateDownload("resume-all"), {symbol: "play", toolbar: true, className: "batch-control"}),
+      button("下载设置", showDownloadSettings, {symbol: "gear", toolbar: true, className: "compact-action"})));
   root.replaceChildren(el("div", {class: "download-window"}, toolbar,
-    el("div", {class: "shell"}, downloadSidebar, el("main", {}, downloadBody, downloadStatusbar))));
+    downloadSidebar, el("main", {}, downloadBody, downloadStatusbar)));
   async function openDownloadLink() {
     const params = new URLSearchParams(location.search);
     if (params.has("site") || params.has("review")) {
@@ -272,30 +304,49 @@ function startDownloads() {
   });
   window.addEventListener("hashchange", () => openDownloadLink().catch(error => flash(error.message, true)));
   window.addEventListener("keydown", event => {
-    if (!event.ctrlKey || sheets.querySelector("dialog[open]")) return;
+    if (event.isComposing || sheets.querySelector("dialog[open]")) return;
+    if (event.key === "Escape" && download.selected && document.activeElement?.closest(".download-detail")) {
+      closeDownloadDetail();
+      return;
+    }
+    if (!event.ctrlKey) return;
     if (event.key.toLowerCase() === "n") { event.preventDefault(); composeDownload(); }
     if (event.key === ",") { event.preventDefault(); showDownloadSettings(); }
     if (event.key.toLowerCase() === "f") { event.preventDefault(); search.focus(); }
   });
 }
 
+function closeDownloadDetail() {
+  const id = download.selected;
+  download.selected = null;
+  renderDownloadState();
+  downloadBody.querySelector(`[data-download-id="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
+}
+
 function renderDownloadState() {
   if (!downloadSidebar) return;
   const scroll = downloadBody.querySelector(".list")?.scrollTop || 0;
-  const focus = document.activeElement?.dataset?.downloadId;
+  const detailScroll = downloadBody.querySelector(".download-detail")?.scrollTop || 0;
+  const active = document.activeElement;
+  const focusedTab = active?.dataset?.section;
+  const focusedTask = active?.dataset?.downloadId;
+  const focusedAction = active?.closest(".download-detail") && active.getAttribute("aria-label");
   const selected = downloadSections.find(section => section[0] === download.section);
   const items = download.state.items;
   const records = download.state.requests;
-  downloadSidebar.replaceChildren(el("div", {class: "group"}, "下载"),
-    ...downloadSections.flatMap(([id, title, symbol, match]) => [
-      id === "exchange" && el("div", {class: "group spaced"}, "交接"),
-      nav(title, symbol, id === download.section, () => {
+  downloadSidebar.replaceChildren(...downloadSections.map(([id, title, symbol, match]) => {
+      const item = nav(title, symbol, id === download.section, () => {
         download.section = id; download.selected = null; download.limit = 100; renderDownloadState();
-      }, match ? items.filter(match).length : records.filter(entry => entry.stage === "awaitingReview").length),
-    ]).filter(Boolean), el("footer", {}, el("hr"), el("div", {class: "row"}, icon("info"), "仅在应用运行时下载"),
-      el("small", {}, "退出会暂停，重新打开后由你恢复。")));
-  downloadStatusbar.replaceChildren(el("span", {}, items.filter(entry => entry.state === "running").length + " 项传输中"),
-    el("span", {}, "校验和正式落盘完成后才记为完成"));
+      }, match ? items.filter(match).length : records.filter(entry => entry.stage === "awaitingReview").length);
+      item.dataset.section = id;
+      return item;
+    }));
+  if (focusedTab) downloadSidebar.querySelector(`[data-section="${CSS.escape(focusedTab)}"]`)?.focus({preventScroll: true});
+  const running = items.filter(entry => entry.state === "running").length;
+  const speed = items.reduce((total, entry) => total + (entry.state === "running" ? Number(entry.speed) || 0 : 0), 0);
+  downloadStatusbar.replaceChildren(el("span", {class: "transfer-status", "data-active": String(running > 0)},
+      el("i", {"aria-hidden": "true"}), running ? `${running} 项传输中${speed ? ` · ${bytes(speed)}/s` : ""}` : "没有正在传输的任务"),
+    el("span", {}, "退出应用会暂停未完成任务"));
   if (download.section === "exchange") {
     renderExchange(records);
     return;
@@ -303,32 +354,44 @@ function renderDownloadState() {
   const query = download.query.trim().toLocaleLowerCase();
   const matching = items.filter(selected[3]).filter(entry =>
     !query || [entry.suggestedName, entry.displayURL].some(value => value.toLocaleLowerCase().includes(query))).reverse();
-  downloadBody.replaceChildren(el("header", {class: "heading"},
-    el("div", {class: "title-line"}, el("h1", {}, selected[1]), el("small", {}, matching.length + " 个任务")),
+  downloadBody.replaceChildren(el("header", {class: "heading download-heading"},
+    el("div", {class: "title-line"}, el("h1", {}, query ? "搜索任务" : selected[1]), el("small", {}, matching.length + " 个任务")),
     download.state.settings.speedLimitBytesPerSecond ? el("small", {}, "限速 " + bytes(download.state.settings.speedLimitBytesPerSecond) + "/s") : null));
   if (!matching.length) {
-    downloadBody.append(empty(query ? "search" : "file", query ? "没有匹配的任务" : "从一个链接开始",
-      query ? "尝试文件名或来源主机名。" : "粘贴 HTTP 或 HTTPS 文件直链，确认保存位置后下载。",
-      !query && button("新建下载…", () => composeDownload(), {primary: true})));
+    const titles = {all: "暂无下载任务", active: "没有进行中的任务", paused: "没有暂停或等待的任务",
+      completed: "暂无已完成任务", failed: "没有失败或取消的任务"};
+    const description = query ? "尝试文件名或来源主机名。" : download.section === "all" ? "新建下载后，粘贴文件直链并选择保存目录。" : "";
+    downloadBody.append(empty(query ? "search" : selected[2], query ? "没有匹配的任务" : titles[download.section], description));
     return;
   }
   const current = matching.find(entry => entry.id === download.selected);
-  const list = el("div", {class: "list"});
+  const list = el("div", {class: "list download-list", "aria-label": "下载任务"});
+  list.append(el("div", {class: "download-columns", "aria-hidden": "true"}, el("span", {}, "文件与来源"),
+    el("span", {}, "状态"), el("span", {}, "已传输")));
+  listKeyboard(list, "[data-download-id]");
   for (const item of matching.slice(0, download.limit)) {
+    const fileName = item.artifact?.fileName || item.suggestedName;
     const row = el("button", {class: "tile", type: "button", "aria-pressed": item.id === current?.id,
-      "data-download-id": item.id, onclick: () => { download.selected = item.id; renderDownloadState(); }},
-      el("div", {class: "row nowrap"},
+      "data-download-id": item.id, onclick: () => {
+        download.selected = item.id;
+        renderDownloadState();
+        if (matchMedia("(max-width: 740px)").matches) downloadBody.querySelector(".download-detail-close")?.focus();
+      }},
+      el("div", {class: "download-file"},
         el("span", {class: "download-glyph", "data-state": item.state}, icon("file")),
-        el("div", {class: "stack space"}, el("strong", {class: "truncate"}, item.artifact?.fileName || item.suggestedName),
-          el("small", {class: "truncate"}, item.displayURL)),
-        el("span", {class: "download-row-state", "data-state": item.state}, downloadStatus[item.state] || item.state)),
-      downloadProgress(item), el("small", {}, downloadCounts(item)));
+        el("span", {class: "download-file-name"}, el("strong", {class: "truncate", title: fileName}, fileName),
+          el("small", {class: "truncate", title: item.displayURL}, item.displayURL))),
+      el("span", {class: "download-row-state", "data-state": item.state}, downloadStatus[item.state] || item.state),
+      el("span", {class: "download-meter"}, el("small", {}, downloadCounts(item)), downloadProgress(item)));
     list.append(row);
   }
   if (matching.length > download.limit) list.append(button("再显示 100 个", () => { download.limit += 100; renderDownloadState(); }));
   downloadBody.append(el("div", {class: "split" + (current ? " with-detail" : "")}, list, current && downloadDetail(current)));
   list.scrollTop = scroll;
-  if (focus) list.querySelector('[data-download-id="' + CSS.escape(focus) + '"]')?.focus({preventScroll: true});
+  const detail = downloadBody.querySelector(".download-detail");
+  if (detail) detail.scrollTop = detailScroll;
+  if (focusedTask) list.querySelector(`[data-download-id="${CSS.escape(focusedTask)}"]`)?.focus({preventScroll: true});
+  if (focusedAction) detail?.querySelector(`[aria-label="${CSS.escape(focusedAction)}"]`)?.focus({preventScroll: true});
 }
 
 function downloadCounts(item) {
@@ -343,14 +406,16 @@ function downloadProgress(item) {
 
 function downloadDetail(item) {
   const destination = download.state.destinations.find(grant => grant.id === item.destinationID);
-  const active = downloadSections[1][3](item);
+  const active = item.state === "queued" || downloadSections[1][3](item);
   const terminal = ["completed", "partial", "failed", "cancelled"].includes(item.state);
   const working = download.state.busy.includes(item.id);
   const current = (action, options) => mutateDownload(action, {id: item.id, ...options});
   const rows = [["来源", item.displayURL], ["保存位置", destination?.displayPath || "未授权"],
     ["已收到", downloadCounts(item)], ["SHA-256", item.artifact?.sha256], ["完成文件", item.artifact?.fileName]];
-  return el("section", {class: "detail"}, el("h2", {}, item.artifact?.fileName || item.suggestedName),
-    el("div", {class: "row"}, el("span", {class: "badge"}, downloadStatus[item.state] || item.state)),
+  return el("section", {class: "detail download-detail", "aria-label": "下载详情"},
+    el("div", {class: "detail-title"}, el("h2", {}, item.artifact?.fileName || item.suggestedName),
+      button("关闭详情", closeDownloadDetail, {symbol: "close", toolbar: true, className: "compact-action download-detail-close"})),
+    el("div", {class: "row"}, el("span", {class: "download-row-state", "data-state": item.state}, downloadStatus[item.state] || item.state)),
     downloadProgress(item),
     item.error && el("div", {class: "info-block warning"}, item.error),
     el("dl", {class: "info-block"}, rows.filter(([,value]) => value).map(([key, value]) =>
@@ -422,10 +487,10 @@ function composeDownload({urls = [], request} = {}) {
     ? "来源声明 " + request.sourceBundleID + "。来源标识用于关联，确认链接与保存位置后开始。"
     : "确认链接与保存位置后开始", [
     field("HTTP / HTTPS 文件链接 · 每行一条，最多 32 条", draft),
-    previews, privacyField, el("div", {class: "row nowrap"}, field("保存位置", locations), button("选择目录…", () =>
+    previews, privacyField, el("div", {class: "row nowrap download-location"}, field("保存位置", locations), button("选择目录…", () =>
       pickDirectory(async path => { const result = await mutateDownload("destination", {path}); updateLocations(result.destination.id); }))),
     el("small", {}, "同名文件自动使用新名称。先校验，再正式落盘。"),
-    el("small", {}, "暂停后会核验资源版本。本版下载 HTTP / HTTPS 文件直链。"), issue,
+    issue,
   ], close => [
     !request && button("粘贴链接", async () => { draft.value = await navigator.clipboard.readText(); await verify(); }),
     button("返回", close), button("确认并开始下载", async () => {
@@ -438,7 +503,7 @@ function composeDownload({urls = [], request} = {}) {
       });
       download.section = "all"; renderDownloadState(); close();
     }, {primary: true}),
-  ]);
+  ], "download-compose-dialog");
   verify();
 }
 
@@ -512,6 +577,7 @@ function showDownloadSettings() {
     appearance: select([["system","跟随系统"],["light","浅色"],["dark","深色"]], settings.appearance),
   };
   function choose(next) {
+    const keepTabFocus = tabbar.contains(document.activeElement);
     tab = next;
     tabbar.replaceChildren(...choices.map(([id, title]) => {
       const control = button(title, () => choose(id));
@@ -527,16 +593,17 @@ function showDownloadSettings() {
       button("在资源管理器中显示资料目录", () => api("reveal")), el("p", {}, "资料损坏或版本过新时停止写入。下载文件保留在你选择的位置。"));
     if (tab === "about") content.replaceChildren(el("h2", {}, "搞门户 · 内置下载"), el("p", {}, version),
       el("small", {}, "HTTP / HTTPS 直链 · SHA-256 · 原子落盘"));
+    if (keepTabFocus) tabbar.querySelector('[aria-pressed="true"]')?.focus();
   }
   choose(tab);
-  sheet("下载设置", null, [tabbar, content], close => [
+  sheet("下载设置", null, settingsLayout(tabbar, content), close => [
     button("关闭", close),
     button("保存设置", async () => {
       await mutateDownload("settings", {settings: Object.fromEntries(Object.entries(controls).map(([key, control]) =>
         [key, key === "appearance" ? control.value : Number(control.value)]))});
       close();
     }, {primary: true}),
-  ]);
+  ], "settings-dialog");
 }
 
 if (center === "downloads") startDownloads();

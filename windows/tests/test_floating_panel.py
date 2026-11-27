@@ -24,8 +24,8 @@ def test_edge_geometry_uses_physical_screen_for_selection_and_preserves_taskbar(
     initial_screen, anchor = restore_anchor([primary, secondary], None)
     assert initial_screen == primary
     assert panel_frame(primary, anchor, "right", False, 0) == Rect(2530, 144, 30, 156)
-    assert panel_frame(primary, anchor, "right", True, 11) == Rect(2014, 144, 546, 690)
-    assert panel_frame(primary, anchor, "left", True, 0) == Rect(0, 144, 546, 234)
+    assert panel_frame(primary, anchor, "right", True, 11) == Rect(2014, 144, 546, 678)
+    assert panel_frame(primary, anchor, "left", True, 0) == Rect(0, 144, 546, 270)
     assert panel_frame(primary, (1000, 1500), "none", True, 1).bottom == primary.work.bottom
 
     within = Rect(primary.bounds.right - 546 - 48, 144, 546, 234)

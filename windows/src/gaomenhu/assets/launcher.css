@@ -22,97 +22,10 @@ body.dark { color-scheme: dark; }
 #recoveryNotice { white-space: pre-line; }
 #recoveryNotice button { margin: 4px 0; }
 
-.launcher-settings {
-  width: 780px;
-  height: min(690px, 90vh);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.settings-window .app-shell { display: none; }
-.settings-window .dialog-overlay { background: transparent; backdrop-filter: none; padding: 0; }
-.settings-window .launcher-settings {
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  animation: none;
-  background: #f6f4ef;
-  padding: 20px;
-}
-.settings-window.dark .launcher-settings { background: #17171c; }
-.settings-window #toast { left: 50%; }
-
-.settings-tabs {
-  display: flex;
-  justify-content: center;
-  flex-shrink: 0;
-  margin: 0 auto 17px;
-  padding: 3px;
-  gap: 3px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--input);
-}
-.settings-tabs button {
-  min-width: 83px;
-  padding: 6px 11px;
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.settings-tabs button[aria-selected="true"] {
-  color: var(--ink);
-  font-weight: 600;
-  background: var(--panel);
-  box-shadow: 0 1px 3px rgba(0,0,0,.12);
-}
-.settings-pane {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
-  padding: 0 4px 20px;
-}
-.setting-group + .setting-group { margin-top: 18px; }
-.setting-group h3 { font-size: 13px; font-weight: 600; margin: 0 0 7px 12px; }
-.settings-pane[aria-labelledby="settings-tab-appearance"] .setting-group h3 { display: none; }
-.setting-group > div {
-  display: flow-root;
-  padding: 0 13px;
-  border: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
-  border-radius: 12px;
-  background: var(--panel);
-}
-.setting-group .setting-row { min-height: 40px; padding-block: 6px; }
-.setting-group .setting-row > strong { font-size: 13px; font-weight: 500; }
-.setting-group .compact-select { font-size: 13px; }
-.setting-group .setting-row:last-child { border-bottom: 0; }
-.setting-group .setting-row > span:not(.connection) { color: var(--muted); }
-.setting-group .settings-buttons { justify-content: flex-start; flex-wrap: wrap; }
-.setting-group .settings-note {
-  color: var(--muted);
-  line-height: 1.6;
-  padding: 11px 0;
-  margin: 0;
-}
-.settings-note + .setting-row { border-top: 1px solid var(--line); }
-.settings-browser-row .connection { margin-left: auto; text-align: right; }
-.settings-key { font-size: 11px; }
-.setting-row input[type="checkbox"] { accent-color: var(--accent); }
-
 @media (max-width: 820px) {
   .search-wrap input { padding-right: 8px; }
 }
 
 @media (max-width: 560px) {
-  .launcher-settings, .settings-window .launcher-settings { padding: 14px; }
-  .settings-browser-row { flex-wrap: wrap; }
-  .settings-browser-row .setting-actions { width: 100%; justify-content: flex-end; }
   .selection-bar { flex-wrap: wrap; justify-content: center; }
 }

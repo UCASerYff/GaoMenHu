@@ -22,6 +22,11 @@ def _portal_root():
     return Path(__file__).resolve().parents[3] / "Resources"
 
 
+def _workspace_document():
+    root = Path(sys._MEIPASS) / "gaomenhu_assets" if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / "assets"
+    return (root / "workspace.html").read_text(encoding="utf-8")
+
+
 def portal_document(token, settings=False):
     page = (_portal_root() / "index.html").read_text(encoding="utf-8")
     page = page.replace(
@@ -33,16 +38,26 @@ def portal_document(token, settings=False):
         "img-src 'self' data:", "img-src 'self' data: blob:"
     )
     page = page.replace('href="style.css">', 'href="/portal-assets/style.css">\n'
-                        '  <link rel="stylesheet" href="/assets/launcher.css">')
+                        '  <link rel="stylesheet" href="/assets/launcher.css">\n'
+                        '  <link rel="stylesheet" href="/assets/settings.css">')
     page = page.replace('src="Mark.png"', 'src="/portal-assets/Mark.png"')
     page = page.replace('src="app.js"></script>', 'src="/portal-assets/app.js"></script>\n'
-                        '  <script src="/assets/launcher.js"></script>')
+                        '  <script src="/assets/launcher.js"></script>\n'
+                        '  <script src="/assets/settings-dialogs.js"></script>')
     page = page.replace('src="features.js"', 'src="/portal-assets/features.js"')
     page = page.replace("⌘ ,", "Ctrl + ,").replace("⌘ F", "Ctrl + F")
     page = page.replace("⌘ Z", "Ctrl + Z").replace("⌃ ⌥ Space", "Ctrl + Alt + Space")
     if settings:
         page = page.replace("<title>搞门户</title>", "<title>搞门户设置</title>")
         page = page.replace("<body>", '<body class="settings-window">')
+    else:
+        start = page.index('  <div class="app-shell">')
+        end = page.index('  <div id="folderOverlay"', start)
+        page = page[:start] + _workspace_document() + page[end:]
+        page = page.replace("<body>", '<body class="workspace-window">')
+        page = page.replace("</head>", '  <link rel="stylesheet" href="/assets/workspace.css">\n</head>')
+        page = page.replace('  <script src="/portal-assets/features.js">',
+                            '  <script src="/assets/workspace.js"></script>\n  <script src="/portal-assets/features.js">')
     return page.encode("utf-8")
 
 

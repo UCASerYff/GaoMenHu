@@ -139,7 +139,7 @@ def mail_smoke(work_dir):
 
     visible = win.bind(win.user32, "IsWindowVisible", W.BOOL, W.HWND)
     get_layered = win.bind(win.user32, "GetLayeredWindowAttributes", W.BOOL, W.HWND,
-                           C.POINTER(W.DWORD), C.POINTER(W.BYTE), C.POINTER(W.DWORD))
+                           C.POINTER(W.DWORD), C.POINTER(C.c_ubyte), C.POINTER(W.DWORD))
     with tempfile.TemporaryDirectory(prefix="gaomenhu-mail-rail-", dir=work_dir) as temporary:
         service = PortalService(Path(temporary) / "MenDao", browser_probe=lambda: ["edge"])
         root = tk.Tk()
@@ -194,14 +194,24 @@ def mail_smoke(work_dir):
                                        "from": "Fixture", "subject": "测试验证码 123456", "date": 300 + index, "isRead": False})
             panel.set_expanded(True)
             root.update()
-            color, opacity, layers = W.DWORD(), W.BYTE(), W.DWORD()
+            color, opacity, layers = W.DWORD(), C.c_ubyte(), W.DWORD()
             assert get_layered(panel.native.window, C.byref(color), C.byref(opacity), C.byref(layers))
-            assert opacity.value == 204 and layers.value & 3 == 3
+            assert (opacity.value, layers.value & 3) == (204, 3), (panel.opacity, opacity.value, layers.value)
             assert panel.snapshot["unread"] == 4 and len(panel.snapshot["previews"]) == 3
             assert "code0" in panel.actions and not panel.actions.get("sync")
-            panel.actions["message0"]()
+            footer_y = panel.canvas.coords(panel.controls_item)[1]
+            panel.body.yview_scroll(1, "pages")
+            assert panel.canvas.coords(panel.controls_item)[1] == footer_y
+            assert footer_y + panel.controls.winfo_height() <= panel.frame.height
+            for action in ("inbox", "compose", "message0"):
+                panel.focus_action(1)
+                assert panel.focused_action == action
+                target = panel.body if action == "message0" else panel.controls
+                assert target.find_withtag("keyboard-focus")
+            panel.invoke_focused(None)
             assert not panel.expanded and opens == ["/mail#message=fixture3"]
-            assert not panel.body.find_all() and not any(message["isRead"] for message in store.messages)
+            assert not panel.body.find_all() and not panel.controls.find_all()
+            assert not any(message["isRead"] for message in store.messages)
             panel.command("hide")
             panel.refresh()
             root.update()
@@ -216,7 +226,8 @@ def mail_smoke(work_dir):
     return {"privateDesktop": True, "dpi": dpi,
             "rail": [rail.width, rail.height], "card": [card.width, card.height], "realHitTarget": True,
             "hoverExpanded": True, "leaveCollapsed": True, "leftDockPersisted": True, "tookForeground": False,
-            "transparentCorner": True, "opacity": 0.8, "previewOpenedWithoutMarkingRead": True}
+            "transparentCorner": True, "opacity": 0.8, "previewOpenedWithoutMarkingRead": True,
+            "fixedFooter": True, "keyboardActions": True}
 
 
 if __name__ == "__main__":

@@ -14,20 +14,13 @@ from .centers import _message_code, sync_mail_floating
 from .errors import AppError
 from .floating_geometry import PointerTiming, Rect, screen_at
 from .mail_floating_layout import (
-    CARD_RADIUS, HEADER, MailPlacement, carried_mail_frame, mail_frame, mail_opacity, mail_size,
+    CARD_RADIUS, FOOTER, HEADER, MailPlacement, carried_mail_frame, mail_frame, mail_opacity, mail_size,
     rounded_card_contains, separated_mail_position,
 )
+from .native_theme import PALETTE, font_family
 
 LOG = logging.getLogger(__name__)
 TRANSPARENT = "#00ff01"
-PALETTE = {
-    "light": {"bg": "#fbfaf8", "text": "#242327", "secondary": "#626168", "border": "#e0dce3",
-              "line": "#eeebee", "card": "#f3f1f4", "tint": "#efebfc", "accent": "#655cde",
-              "warning": "#9f4b16", "warning_bg": "#f9eee4", "rail": "#8c83e7", "primary_text": "#ffffff"},
-    "dark": {"bg": "#28282e", "text": "#f6f3f7", "secondary": "#b3b1bc", "border": "#494653",
-             "line": "#403d47", "card": "#33313b", "tint": "#3b3454", "accent": "#a49afa",
-             "warning": "#ffb878", "warning_bg": "#4b3932", "rail": "#8477cc", "primary_text": "#252132"},
-}
 
 
 def _timestamp(value):
@@ -92,6 +85,7 @@ class MailFloatingPanel:
         self.copied = None
         self.actions = {}
         self.bindings = {}
+        self.font_family = font_family(root)
         self.focused_action = None
         self.previous_foreground = None
         self.drag = None
@@ -111,6 +105,8 @@ class MailFloatingPanel:
         self.canvas.pack(fill="both", expand=True)
         self.body = tk.Canvas(self.canvas, borderwidth=0, highlightthickness=0)
         self.body_item = self.canvas.create_window(0, 0, anchor="nw", window=self.body, state="hidden")
+        self.controls = tk.Canvas(self.canvas, borderwidth=0, highlightthickness=0)
+        self.controls_item = self.canvas.create_window(0, 0, anchor="nw", window=self.controls, state="hidden")
         self.hit = tk.Toplevel(root)
         self.hit.withdraw()
         self.hit.title("展开搞门户邮件悬浮窗")
@@ -125,6 +121,7 @@ class MailFloatingPanel:
         self.window.bind("<Control-w>", lambda _: self.command("hide"))
         self.body.bind("<MouseWheel>", self.wheel)
         self.body.bind("<Button-1>", self.focus_body)
+        self.controls.bind("<Button-1>", self.focus_body)
         self.body.bind("<Tab>", lambda _: self.focus_action(1))
         self.body.bind("<Shift-Tab>", lambda _: self.focus_action(-1))
         self.body.bind("<Return>", self.invoke_focused)
@@ -443,19 +440,13 @@ class MailFloatingPanel:
 
     def ideal_height(self):
         snapshot = self.snapshot
-        if not snapshot or snapshot["problem"]:
-            content = 70
-        elif not snapshot["accounts"]:
-            content = 64
-        elif not self.preferences.get("showPreviews"):
-            content = 88
-        elif snapshot["previews"]:
-            content = sum(94 if preview["code"] else 69 for preview in snapshot["previews"])
+        if snapshot and snapshot["previews"]:
+            content = 8 + sum(83 if preview["code"] else 64 for preview in snapshot["previews"])
         else:
-            content = 32
+            content = 69
         if snapshot and (snapshot["errors"] or snapshot["problem"]):
             content += 25
-        return HEADER + content + 63
+        return HEADER + content + FOOTER
 
     def round_box(self, canvas, x, y, w, h, radius, fill, *, outline="", tags=""):
         r, b = x + w - 1, y + h - 1
@@ -467,7 +458,7 @@ class MailFloatingPanel:
     def text(self, canvas, x, y, value, size, color, width, *, bold=False, anchor="nw", tags=""):
         if width < 1:
             return
-        font = ("Segoe UI", -max(1, self.px(size)), "bold" if bold else "normal")
+        font = (self.font_family, -max(1, self.px(size)), "bold" if bold else "normal")
         value = " ".join(str(value).split())
         measure = self.root.tk.call
         if measure("font", "measure", font, value) > width:
@@ -481,12 +472,13 @@ class MailFloatingPanel:
             value = value[:lo] + "…"
         return canvas.create_text(x, y, text=value, fill=color, font=font, anchor=anchor, tags=("paint", tags))
 
-    def action(self, key, callback):
+    def action(self, key, callback, canvas=None):
         def invoke(_event):
             if self.expanded:
                 callback()
+        canvas = self.body if canvas is None else canvas
         self.actions[key] = callback
-        self.bindings[key] = self.body.tag_bind(key, "<ButtonRelease-1>", invoke)
+        self.bindings[key] = (canvas, canvas.tag_bind(key, "<ButtonRelease-1>", invoke))
 
     def focus_action(self, step):
         keys = list(self.actions)
@@ -494,12 +486,15 @@ class MailFloatingPanel:
             current = keys.index(self.focused_action) if self.focused_action in keys else (-1 if step > 0 else 0)
             self.focused_action = keys[(current + step) % len(keys)]
             self.draw_focus()
-            if bounds := self.body.bbox(self.focused_action):
+            canvas, _ = self.bindings[self.focused_action]
+            if canvas is self.body and (bounds := self.body.bbox(self.focused_action)):
                 _, y1, _, y2 = bounds
                 height = self.body.winfo_height()
                 top = self.body.canvasy(0)
                 maximum = max(1, int(self.body.cget("scrollregion").split()[-1]))
-                if y1 < top or y2 > top + height:
+                if y1 < top:
+                    self.body.yview_moveto(max(0, y1 - self.px(4)) / maximum)
+                elif y2 > top + height:
                     self.body.yview_moveto(max(0, y2 - height + self.px(4)) / maximum)
         return "break"
 
@@ -511,10 +506,15 @@ class MailFloatingPanel:
 
     def draw_focus(self):
         self.body.delete("keyboard-focus")
-        if self.focused_action in self.actions and (bounds := self.body.bbox(self.focused_action)):
+        self.controls.delete("keyboard-focus")
+        if self.focused_action not in self.bindings:
+            return
+        canvas, _ = self.bindings[self.focused_action]
+        if bounds := canvas.bbox(self.focused_action):
             x1, y1, x2, y2 = bounds
-            self.body.create_rectangle(max(0, x1), max(0, y1), x2 - 1, y2 - 1, outline=PALETTE[self.theme]["accent"],
-                                       dash=(2, 2), tags=("paint", "keyboard-focus"))
+            canvas.create_rectangle(max(0, x1), max(0, y1), x2 - 1, y2 - 1,
+                                    outline=PALETTE[self.theme]["accent"], width=max(1, self.px(2)),
+                                    tags=("paint", "keyboard-focus"))
 
     def wheel(self, event):
         self.body.yview_scroll((-1 if event.delta > 0 else 1) * max(1, abs(event.delta) // 120), "units")
@@ -526,91 +526,99 @@ class MailFloatingPanel:
         width, height = self.frame.width, self.frame.height
         snapshot = self.snapshot
         self.body.delete("paint")
-        for key, binding in self.bindings.items():
-            self.body.tag_unbind(key, "<ButtonRelease-1>", binding)
+        self.controls.delete("paint")
+        for key, (canvas, binding) in self.bindings.items():
+            canvas.tag_unbind(key, "<ButtonRelease-1>", binding)
         self.bindings.clear()
         self.actions.clear()
         if not self.expanded:
             self.canvas.itemconfigure(self.body_item, state="hidden")
-            x = 0 if self.position.side == "left" else max(0, width - px(6))
-            y = max(0, (height - px(88)) // 2)
-            self.round_box(self.canvas, x, y, px(6), px(88), px(4),
-                           colors["accent"] if snapshot and snapshot["unread"] else colors["rail"])
+            x = 0 if self.position.side == "left" else max(0, width - px(9))
+            y = max(0, (height - px(84)) // 2)
+            self.canvas.itemconfigure(self.controls_item, state="hidden")
+            active = snapshot and snapshot["unread"]
+            self.round_box(self.canvas, x, y, px(9), px(84), px(5),
+                           colors["accent"] if active else colors["card"], outline=colors["border"])
+            self.round_box(self.canvas, x + px(3), y + px(30), px(3), px(24), px(2),
+                           colors["primary_text"] if active else colors["rail"])
             if snapshot and (snapshot["errors"] or snapshot["problem"]):
-                self.canvas.create_oval(x + px(1.5), y + px(5), x + px(4.5), y + px(8),
-                                        fill="#f4a04d", outline="", tags="paint")
+                self.canvas.create_oval(x + px(2), y + px(8), x + px(7), y + px(13),
+                                        fill=colors["warning"], outline="", tags="paint")
             return
         if not snapshot:
             snapshot = {"accounts": 0, "unread": 0, "enabled": 0, "errors": 0, "previews": [], "problem": False,
                         "can_sync": False, "last_sync": "尚未同步"}
-        self.round_box(self.canvas, 0, 0, width, height, px(CARD_RADIUS), colors["bg"], outline=colors["border"])
-        self.text(self.canvas, px(14), px(5), snapshot["unread"], 40, colors["text"], width - px(154), bold=True)
-        self.text(self.canvas, px(14), px(54), "缓存未读 · 收件箱", 11, colors["secondary"], width - px(150))
+        self.round_box(self.canvas, 0, 0, width, height, px(CARD_RADIUS), colors["surface"], outline=colors["border"])
+        self.text(self.canvas, px(16), px(12), "未读邮件", 13, colors["secondary"], width - px(164), bold=True)
+        self.text(self.canvas, px(16), px(28), str(snapshot["unread"]), 32, colors["text"], width - px(164), bold=True)
         error = snapshot["errors"] or snapshot["problem"]
-        status = ("正在同步" if self.syncing else f"{snapshot['errors']} 个邮箱待检查" if snapshot["errors"]
-                  else "操作待处理" if snapshot["problem"] else "本机缓存")
-        self.round_box(self.canvas, width - px(125), px(20), px(111), px(23), px(12),
-                       colors["warning_bg" if error and not self.syncing else "tint"])
-        self.text(self.canvas, width - px(69), px(31), status, 10,
-                  colors["warning" if error and not self.syncing else "accent"], px(107), anchor="center")
-        counts = f"{snapshot['enabled']} 个启用 · {snapshot['accounts'] - snapshot['enabled']} 个仅登记"
-        self.text(self.canvas, width - px(14), px(50), counts, 10, colors["secondary"], px(132), anchor="ne")
+        status = ("正在同步…" if self.syncing else self.prefix or (
+            f"{snapshot['errors']} 个邮箱待检查" if snapshot["errors"] else "邮件资料待检查" if snapshot["problem"]
+            else snapshot["last_sync"]))
+        self.text(self.canvas, width - px(16), px(25), status, 12,
+                  colors["warning" if error and not self.syncing else "text"], px(173), anchor="ne")
+        counts = (f"{snapshot['enabled']} 个启用 / {snapshot['accounts']} 个邮箱" if snapshot["accounts"]
+                  else "未添加邮箱")
+        self.text(self.canvas, width - px(16), px(46), counts, 11, colors["secondary"], px(170), anchor="ne")
+        self.canvas.create_line(px(14), px(70), width - px(14), px(70), fill=colors["line"], tags="paint")
 
-        body_w = max(1, width - px(20))
-        self.body.configure(bg=colors["bg"], yscrollincrement=max(1, px(16)))
-        self.canvas.coords(self.body_item, px(10), px(HEADER))
-        self.canvas.itemconfigure(self.body_item, state="normal", width=body_w, height=max(1, height - px(HEADER + 10)))
-        self.body.create_line(0, 0, body_w, 0, fill=colors["line"], tags="paint")
-        y = self.draw_content(snapshot, colors, body_w)
-        self.body.create_line(0, y, body_w, y, fill=colors["line"], tags="paint")
-        y += px(8)
-        actions = (
-            ("inbox", "添加邮箱" if not snapshot["accounts"] else "收件箱", 99, True,
-             lambda: self.open_target("/mail#add-account" if not snapshot["accounts"] else "/mail#inbox")),
-            ("sync", "同步", 60, False, self.sync_mail if snapshot["can_sync"] and not self.syncing else None),
-            ("compose", "写信", 60, False, lambda: self.open_target("/mail#compose")),
-        )
-        x = 0
-        for key, label, size, primary, callback in actions:
-            button_width = px(size)
-            if key == "sync":
-                x = max(x, body_w - px(128))
-            self.round_box(self.body, x, y, button_width, px(25), px(6),
-                           colors["accent" if primary else "card"], tags=key)
-            self.text(self.body, x + button_width // 2, y + px(12), label, 11,
-                      colors["primary_text" if primary else "text" if callback else "secondary"], button_width,
-                      anchor="center", tags=key)
-            if callback:
-                self.action(key, callback)
-            x += button_width + px(8)
-        y += px(34)
-        self.text(self.body, 0, y, self.prefix or snapshot["last_sync"], 9, colors["secondary"], body_w - px(84))
-        self.text(self.body, body_w, y, "最近同步范围", 9, colors["secondary"], px(78), anchor="ne")
-        self.body.configure(scrollregion=(0, 0, body_w, y + px(14)))
+        inner_w = max(1, width - px(28))
+        footer_y = max(px(HEADER), height - px(FOOTER))
+        self.body.configure(bg=colors["surface"], yscrollincrement=max(1, px(16)))
+        self.canvas.coords(self.body_item, px(14), px(HEADER))
+        self.canvas.itemconfigure(self.body_item, state="normal", width=inner_w, height=max(1, footer_y - px(HEADER)))
+        self.controls.configure(bg=colors["surface"])
+        self.canvas.coords(self.controls_item, px(14), footer_y)
+        self.canvas.itemconfigure(self.controls_item, state="normal", width=inner_w, height=px(FOOTER - 5))
+        self.controls.create_line(0, 0, inner_w, 0, fill=colors["line"], tags="paint")
+        self.draw_controls(snapshot, colors, inner_w)
+        content_bottom = self.draw_content(snapshot, colors, inner_w)
+        self.body.configure(scrollregion=(0, 0, inner_w, content_bottom))
         self.draw_focus()
+
+    def draw_controls(self, snapshot, colors, width):
+        px = self.px
+        actions = (
+            ("inbox", "添加邮箱" if not snapshot["accounts"] else "收件箱", True,
+             lambda: self.open_target("/mail#add-account" if not snapshot["accounts"] else "/mail#inbox")),
+            ("sync", "同步", False, self.sync_mail if snapshot["can_sync"] and not self.syncing else None),
+            ("compose", "写信", False, lambda: self.open_target("/mail#compose")),
+        )
+        gap = px(8)
+        side = (width - 2 * gap) // 4
+        sizes = (width - 2 * (side + gap), side, side)
+        x = 0
+        for (key, label, primary, callback), button_width in zip(actions, sizes):
+            background = colors["accent" if primary else "field"]
+            color = colors["primary_text" if primary else "text" if callback else "disabled"]
+            self.round_box(self.controls, x, px(10), button_width, px(32), px(7),
+                           background, outline="" if primary else colors["border"], tags=key)
+            self.text(self.controls, x + button_width // 2, px(26), label, 12, color, button_width,
+                      bold=primary, anchor="center", tags=key)
+            if callback:
+                self.action(key, callback, self.controls)
+            x += button_width + gap
 
     def draw_content(self, snapshot, colors, width):
         p = self.px
-        y = p(6)
+        y = p(3)
         if snapshot["problem"] or not snapshot["accounts"] or not self.preferences.get("showPreviews"):
             if snapshot["problem"]:
-                lines = [("邮件资料待检查", 13), ("打开邮件设置查看本机资料。", 11)]
+                lines = [("需要检查邮件资料", 13), ("打开邮件设置查看本机资料。", 12)]
             elif not snapshot["accounts"]:
-                lines = [("把邮箱带到桌面", 13), ("添加邮箱后，在这里查看缓存未读数量和同步状态。", 11)]
+                lines = [("暂无邮箱", 13), ("添加邮箱后可查看未读邮件。", 12)]
             else:
-                unread = snapshot["unread"]
-                lines = [("邮件预览已隐藏", 11),
-                         (f"有 {unread} 封缓存未读邮件，打开收件箱查看。" if unread else "当前缓存中没有未读邮件。", 12),
-                         ("可在邮件设置的外观页显示最近三封未读邮件。", 10)]
-            height = p(20 + len(lines) * 18)
-            self.round_box(self.body, 0, y, width, height, p(11), colors["card"])
+                lines = [("邮件预览已隐藏", 13), ("在邮件设置的外观页开启预览。", 12)]
+            height = p(56)
+            self.round_box(self.body, 0, y, width, height, p(7), colors["field"], outline=colors["line"])
             for i, (line, size) in enumerate(lines):
-                self.text(self.body, p(10), y + p(8 + 18 * i), line, size,
+                self.text(self.body, p(12), y + p(8 + 21 * i), line, size,
                           colors["text" if i == 0 else "secondary"], width - p(20), bold=i == 0)
-            y += height + p(6)
+            y += height + p(7)
         elif not snapshot["previews"]:
-            self.text(self.body, p(5), y + p(4), "暂无缓存未读邮件", 12, colors["secondary"], width - p(10))
-            y += p(26)
+            self.round_box(self.body, 0, y, width, p(56), p(7), colors["field"], outline=colors["line"])
+            self.text(self.body, p(12), y + p(18), "暂无缓存未读邮件", 13, colors["secondary"], width - p(24))
+            y += p(63)
         else:
             for index, preview in enumerate(snapshot["previews"]):
                 y = self.preview(preview, colors, width, y, index)
@@ -626,21 +634,23 @@ class MailFloatingPanel:
         p = self.px
         target, clip = f"message{index}", f"code{index}"
         code = preview["code"]
-        height = p(88 if code else 63)
-        self.round_box(self.body, 0, y, width, height, p(9), colors["card"], tags=target)
+        height = p(77 if code else 58)
+        self.round_box(self.body, 0, y, width, height, p(7), colors["field"], outline=colors["line"], tags=target)
         self.body.create_oval(p(9), y + p(11), p(14), y + p(16), fill=colors["accent"], outline="", tags=("paint", target))
-        self.text(self.body, p(22), y + p(7), preview["sender"], 10, colors["text"], width - p(77), bold=True, tags=target)
-        self.text(self.body, width - p(9), y + p(7), preview["time"], 9, colors["secondary"], p(45), anchor="ne", tags=target)
-        self.text(self.body, p(22), y + p(25), preview["subject"], 12, colors["text"], width - p(31), tags=target)
+        self.text(self.body, p(22), y + p(5), preview["sender"], 12, colors["text"], width - p(77), bold=True, tags=target)
+        self.text(self.body, width - p(11), y + p(7), preview["time"], 11, colors["secondary"], p(49), anchor="ne", tags=target)
+        self.text(self.body, p(22), y + p(22), preview["subject"], 12, colors["text"], width - p(31), tags=target)
         if code:
-            self.round_box(self.body, p(22), y + p(44), width - p(31), p(22), p(6), colors["tint"], tags=clip)
-            self.text(self.body, p(28), y + p(48), code, 11, colors["accent"], width - p(94), bold=True, tags=clip)
-            self.text(self.body, width - p(16), y + p(48), "已复制" if code == self.copied else "复制",
-                      9, colors["accent"], p(46), anchor="ne", tags=clip)
-            self.action(clip, lambda: self.copy_code(code))
-        self.text(self.body, p(22), y + p(69 if code else 44), preview["account"], 9,
-                  colors["secondary"], width - p(31), tags=target)
+            label_w = p(107)
+            self.round_box(self.body, width - label_w - p(9), y + p(44), label_w, p(25), p(6), colors["tint"], tags=clip)
+            self.text(self.body, width - label_w - p(3), y + p(48), code, 11, colors["accent"], p(60), bold=True, tags=clip)
+            self.text(self.body, width - p(15), y + p(48), "已复制" if code == self.copied else "复制",
+                      10, colors["accent"], p(39), anchor="ne", tags=clip)
+        account_width = width - p(31) - (p(117) if code else 0)
+        self.text(self.body, p(22), y + p(39), preview["account"], 11, colors["secondary"], account_width, tags=target)
         self.action(target, lambda: self.open_target("/mail#message=" + quote(str(preview["id"]), safe="")))
+        if code:
+            self.action(clip, lambda: self.copy_code(code))
         return y + height + p(6)
 
 

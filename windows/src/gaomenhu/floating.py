@@ -12,18 +12,17 @@ from io import BytesIO
 from math import hypot
 
 from .errors import AppError
-from .floating_geometry import PointerTiming, Rect, panel_frame, panel_size, restore_anchor, save_anchor, screen_at, snap_frame, visible_rows
+from .floating_geometry import (LAUNCHER_EMPTY_HEIGHT, LAUNCHER_FOOTER, LAUNCHER_LIST_TOP, LAUNCHER_ROW_HEIGHT,
+                                LAUNCHER_ROW_STEP, PointerTiming, Rect, panel_frame, panel_size, restore_anchor,
+                                save_anchor, screen_at, snap_frame, visible_rows)
 from .models import BROWSERS, visible_site_ids
+from .native_theme import PALETTE, font_family
 
-HINT = "点击网站打开，右键选择浏览器"
+HINT = "↑ ↓ 选择 · Enter 打开 · 右键选浏览器"
 PLACEHOLDER = "搜索网站、拼音或网址"
 TRANSPARENT = "#00ff01"
 NAMES = {browser["id"]: browser["name"] for browser in BROWSERS}
 LAUNCH_FIELDS = ("name", "url", "allowedBrowsers", "defaultBrowser", "profiles", "accounts", "defaultAccount")
-PALETTES = {
-    "light": ("#fbfaf8", "#242327", "#626168", "#e8e6e3", "#f0efed", "#ede9fa", "#655cde"),
-    "dark": ("#28282e", "#f6f3f7", "#b3b1bc", "#424149", "#35353d", "#3d3757", "#a49afa"),
-}
 LOG = logging.getLogger(__name__)
 
 
@@ -119,6 +118,7 @@ class FloatingPanel:
         self.last_settings = None
         self.sources = None
         self.theme = "light"
+        self.font_family = font_family(root)
         self.sync_time = 0
         self.search_hit = self.clear_hit = self.scroll_hit = Rect(0, 0, 0, 0)
         self.last_layout = None
@@ -138,8 +138,8 @@ class FloatingPanel:
         self.hit.configure(bg="#333333")
         self.query = tk.StringVar(root, value=PLACEHOLDER)
         self.entry = tk.Entry(self.canvas, textvariable=self.query, borderwidth=0, highlightthickness=0)
-        self.open_button = tk.Button(self.canvas, text="▦  全部网站", relief="flat", borderwidth=0,
-                                     command=self.show_main, padx=0, pady=0)
+        self.open_button = tk.Button(self.canvas, text="打开启动台", relief="flat", borderwidth=0,
+                                     command=self.show_main, takefocus=True, padx=0, pady=0)
         self.entry_item = self.canvas.create_window(0, 0, anchor="w", window=self.entry, state="hidden")
         self.button_item = self.canvas.create_window(0, 0, window=self.open_button, state="hidden")
         self.query.trace_add("write", self.query_changed)
@@ -147,6 +147,8 @@ class FloatingPanel:
         self.entry.bind("<FocusOut>", self.search_blurred)
         self.entry.bind("<Button-1>", self.focus_search, add=True)
         self.open_button.bind("<Return>", lambda event: self.show_main())
+        self.open_button.bind("<FocusIn>", self.redraw)
+        self.open_button.bind("<FocusOut>", self.redraw)
         self.root.bind("<Escape>", lambda event: self.set_expanded(False))
         self.root.bind("<Control-Alt-KeyPress-p>", lambda event: self.dispatch("toggle"))
         self.entry.bind("<Return>", self.open_selected)
@@ -302,9 +304,9 @@ class FloatingPanel:
                 self.hit.withdraw()
         library = self.service.store.library
         theme = (library or {}).get("appearance", "system")
-        if self.expanded and theme not in PALETTES:
+        if theme not in PALETTE:
             theme = system_appearance()
-        if theme in PALETTES and theme != self.theme:
+        if theme != self.theme:
             self.theme = theme
             self.redraw()
         if self.expanded and not self.drag:
@@ -338,6 +340,7 @@ class FloatingPanel:
             self.canvas.focus_set()
             self.placeholder = True
             self.query.set(PLACEHOLDER)
+            self.status = HINT
         self.update_frame()
 
     def update_frame(self):
@@ -445,12 +448,12 @@ class FloatingPanel:
     def row_at(self, x, y):
         if not self.expanded or self.launching or not self.rows or self.scroll_hit.contains((x, y)):
             return None
-        left = self.screen.px(14)
-        if not left <= x < self.frame.width - left or y < self.screen.px(52):
+        left = self.screen.px(12)
+        if not left <= x < self.frame.width - left or y < self.screen.px(LAUNCHER_LIST_TOP):
             return None
         for row in range(min(self.visible_rows(), len(self.rows) - self.scroll)):
-            start = self.screen.px(52 + row * 46)
-            if start <= y < start + self.screen.px(42):
+            start = self.screen.px(LAUNCHER_LIST_TOP + row * LAUNCHER_ROW_STEP)
+            if start <= y < start + self.screen.px(LAUNCHER_ROW_HEIGHT):
                 return self.scroll + row
         return None
 
@@ -548,15 +551,15 @@ class FloatingPanel:
             self.redraw()
 
     def font(self, size, weight="normal"):
-        return "Segoe UI", -max(1, self.screen.px(size + 1)), weight
+        return self.font_family, -max(1, self.screen.px(size)), weight
 
-    def round_box(self, rect, radius, color, *, flush_left=False, flush_right=False):
+    def round_box(self, rect, radius, color, *, outline="", flush_left=False, flush_right=False):
         x, y, r, b = rect.x, rect.y, rect.right, rect.bottom
         radius = max(0, min(radius, rect.width // 2, rect.height // 2))
         left, right = (0 if flush_left else radius), (0 if flush_right else radius)
         self.canvas.create_polygon(x, y + left, x, y, x + left, y, r - right, y, r, y, r, y + right,
                                    r, b - right, r, b, r - right, b, x + left, b, x, b, x, b - left,
-                                   smooth=True, fill=color, tags="paint")
+                                   smooth=True, fill=color, outline=outline, tags="paint")
 
     def text(self, x, y, value, size, color, width, *, center=False, bold=False):
         if width <= 0:
@@ -578,30 +581,41 @@ class FloatingPanel:
     def redraw(self, event=None):
         px = self.screen.px
         w, h = self.frame.width, self.frame.height
+        colors = PALETTE[self.theme]
         self.canvas.delete("paint")
         self.search_hit = self.clear_hit = self.scroll_hit = Rect(0, 0, 0, 0)
         if not self.expanded:
             self.canvas.itemconfigure(self.entry_item, state="hidden")
             self.canvas.itemconfigure(self.button_item, state="hidden")
-            # The alpha-composited accent on the macOS handle is approximated by a
-            # solid tint on the transparent Win32 target.
-            strip = min(w, px(6))
+            strip = min(w, px(7))
             x = 0 if self.dock == "left" else w - strip if self.dock == "right" else (w - strip) // 2
-            self.round_box(Rect(x, max(0, (h - px(88)) // 2), strip, min(h, px(88))), px(3), "#7770e1",
+            self.round_box(Rect(x, max(0, (h - px(72)) // 2), strip, min(h, px(72))), px(3), colors["rail"],
                            flush_left=self.dock == "left", flush_right=self.dock == "right")
+            for mark in (-3, 0, 3):
+                y = h // 2 + px(mark)
+                self.canvas.create_line(x + px(2), y, x + strip - px(2), y, fill=colors["primary_text"], tags="paint")
             return
-        panel, ink, muted, border, field, selected, accent = PALETTES[self.theme]
-        self.round_box(Rect(0, 0, w, h), px(18), panel, flush_left=self.dock == "left", flush_right=self.dock == "right")
-        self.search_hit = Rect(px(16), px(12), max(0, w - px(32)), px(30))
-        self.round_box(self.search_hit, px(8), accent if self.root.focus_get() is self.entry else border)
-        self.round_box(Rect(px(17), px(13), max(0, w - px(34)), px(28)), px(7), field)
-        self.canvas.create_oval(px(25), px(21), px(33), px(29), outline=muted, width=max(1, px(1)), tags="paint")
-        self.canvas.create_line(px(32), px(28), px(36), px(32), fill=muted, width=max(1, px(1)), tags="paint")
+        panel, ink, muted, border, field, accent = (colors[key] for key in ("surface", "text", "secondary", "border", "field", "accent"))
+        self.round_box(Rect(0, 0, w - 1, h - 1), px(10), panel, outline=border,
+                       flush_left=self.dock == "left", flush_right=self.dock == "right")
+        self.text(px(14), px(23), "快速启动", 15, ink, w - px(132), bold=True)
+        button_focused = self.root.focus_get() is self.open_button
+        button_frame = Rect(w - px(108), px(11), px(94), px(25))
+        self.round_box(button_frame, px(6), colors["tint"], outline=accent if button_focused else border)
+        self.open_button.configure(font=self.font(11), bg=colors["tint"], fg=accent,
+                                   activebackground=colors["card"], activeforeground=ink)
+        self.canvas.coords(self.button_item, button_frame.x + button_frame.width // 2, px(23))
+        self.canvas.itemconfigure(self.button_item, width=px(87), height=px(20), state="normal")
+
+        self.search_hit = Rect(px(14), px(42), max(0, w - px(28)), px(29))
+        self.round_box(self.search_hit, px(6), field, outline=accent if self.root.focus_get() is self.entry else border)
+        self.canvas.create_oval(px(23), px(50), px(31), px(58), outline=muted, width=max(1, px(1)), tags="paint")
+        self.canvas.create_line(px(30), px(57), px(34), px(61), fill=muted, width=max(1, px(1)), tags="paint")
         self.entry.configure(font=self.font(13), bg=field, fg=muted if self.placeholder else ink, insertbackground=ink)
-        self.canvas.coords(self.entry_item, px(41), px(27))
-        self.canvas.itemconfigure(self.entry_item, width=max(1, w - px(79)), height=px(24), state="normal")
+        self.canvas.coords(self.entry_item, px(39), px(56.5))
+        self.canvas.itemconfigure(self.entry_item, width=max(1, w - px(73)), height=px(22), state="normal")
         if not self.placeholder and self.query.get():
-            x, y, r = w - px(28), px(27), px(5)
+            x, y, r = w - px(25), px(56), px(5)
             self.clear_hit = Rect(x - px(8), y - px(8), px(16), px(16))
             self.canvas.create_oval(x - r, y - r, x + r, y + r, fill=muted, outline="", tags="paint")
             offset = px(2)
@@ -610,47 +624,52 @@ class FloatingPanel:
 
         if not self.rows:
             library = self.service.store.library or {}
-            empty = ("没有匹配的网站\n试试名称、网址或拼音首字母。" if library.get("sites")
-                     else "还没有网站\n打开主窗口，添加网站或导入收藏。")
-            self.text(w // 2, (h + px(12)) // 2, empty, 12, muted, w - px(24), center=True)
+            empty = ("没有匹配的网站\n试试其他关键词。" if library.get("sites")
+                     else "还没有网站\n打开启动台添加网站。")
+            self.text(w // 2, px(LAUNCHER_LIST_TOP + LAUNCHER_EMPTY_HEIGHT / 2), empty, 12, muted, w - px(28), center=True)
         for index in range(self.scroll, min(len(self.rows), self.scroll + self.visible_rows())):
             site = self.rows[index]
-            y = px(52 + 46 * (index - self.scroll))
+            y = px(LAUNCHER_LIST_TOP + LAUNCHER_ROW_STEP * (index - self.scroll))
             if index in (self.hover_row, self.active_row):
-                self.round_box(Rect(px(14), y, max(0, w - px(28)), px(42)), px(9), selected)
-            self.site_icon(site, px(23), y + px(5))
-            self.text(px(66), y + px(14), site["name"], 12, ink, w - px(100), bold=True)
+                self.round_box(Rect(px(12), y, max(0, w - px(24)), px(LAUNCHER_ROW_HEIGHT)), px(6),
+                               colors["tint"], outline=accent if index == self.active_row else "")
+            self.site_icon(site, px(20), y + px(5))
+            self.text(px(57), y + px(19), site["name"], 13, ink, w - px(169), bold=True)
             browser = site["defaultBrowser"]
-            self.text(px(66), y + px(30), NAMES.get(browser, browser), 10, muted, w - px(100))
+            self.text(w - px(102), y + px(19), NAMES.get(browser, browser), 11, muted, px(73))
+            arrow = w - px(24)
+            self.canvas.create_line(arrow - px(7), y + px(23), arrow, y + px(16), arrow - px(5), y + px(16),
+                                    fill=accent if index == self.active_row else muted, tags="paint")
+            self.canvas.create_line(arrow, y + px(16), arrow, y + px(21), fill=accent if index == self.active_row else muted, tags="paint")
 
         if len(self.rows) > self.visible_rows():
-            self.scroll_hit = Rect(w - px(17), px(52), px(14), max(0, h - px(92)))
+            self.scroll_hit = Rect(w - px(12), px(LAUNCHER_LIST_TOP), px(11), max(0, h - px(LAUNCHER_LIST_TOP + LAUNCHER_FOOTER)))
             track = self.scroll_hit
             span = max(px(18), round(track.height * self.visible_rows() / len(self.rows)))
             start = round(max(0, track.height - span) * self.scroll / (len(self.rows) - self.visible_rows()))
             self.round_box(Rect(track.x + px(4), track.y + start, px(5), span), px(2), muted)
 
-        self.text(px(18), h - px(20), self.status, 10, muted, w - px(134))
-        self.open_button.configure(font=self.font(11), bg=panel, fg=ink, activebackground=selected, activeforeground=accent)
-        self.canvas.coords(self.button_item, w - px(58), h - px(20))
-        self.canvas.itemconfigure(self.button_item, width=px(84), height=px(24), state="normal")
+        self.canvas.create_line(px(14), h - px(30), w - px(14), h - px(30), fill=colors["line"], tags="paint")
+        status = "正在打开网站…" if self.launching else self.status
+        status_color = accent if self.launching else muted if status == HINT else colors["warning"]
+        self.text(px(14), h - px(16), status, 10, status_color, w - px(28))
 
     def site_icon(self, site, x, y):
         px = self.screen.px
         key = site["id"]
         if key not in self.image_cache:
-            self.image_cache[key] = self.decode_icon(site.get("icon"), px(32))
+            self.image_cache[key] = self.decode_icon(site.get("icon"), px(28))
         icon = self.image_cache[key]
         if icon is not None:
-            self.canvas.create_image(x + px(16), y + px(16), image=icon, tags="paint")
+            self.canvas.create_image(x + px(14), y + px(14), image=icon, tags="paint")
         else:
             color = site.get("color") or "#635ce0"
             try:
                 self.root.winfo_rgb(color)
             except self.tk.TclError:
                 color = "#635ce0"
-            self.round_box(Rect(x, y, px(32), px(32)), px(7), color)
-            self.text(x + px(16), y + px(16), site["name"][:1], 16, "#ffffff", px(32), center=True)
+            self.round_box(Rect(x, y, px(28), px(28)), px(6), color)
+            self.text(x + px(14), y + px(14), site["name"][:1], 15, "#ffffff", px(28), center=True, bold=True)
 
     def decode_icon(self, source, size):
         if not isinstance(source, str) or not source.startswith("data:image/") or len(source) > 4_000_100:

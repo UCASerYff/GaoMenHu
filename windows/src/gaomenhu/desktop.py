@@ -17,8 +17,8 @@ from .server import asset_root
 WINDOWS = {
     "/": (f"搞门户 V{MARKETING_VERSION}", 1380, 860, (720, 520)),
     "/settings": ("搞门户设置", 820, 740, (620, 500)),
-    "/downloads": ("搞门户 · 下载中心", 1180, 760, (760, 500)),
-    "/mail": ("搞门户 · 邮件", 1360, 860, (790, 520)),
+    "/downloads": ("搞门户 · 下载中心", 1180, 760, (560, 460)),
+    "/mail": ("搞门户 · 邮件中心", 1360, 860, (560, 480)),
     "/mail#settings": ("邮件设置", 820, 740, (620, 500)),
     "/mail#floating": ("搞门户 · 邮件 · 悬浮窗", 450, 530, (350, 350)),
 }
@@ -122,7 +122,7 @@ class Desktop:
             return True
 
         window.expose(open_window, toggle_fullscreen, close_window, choose_folder, save_file)
-        window.events.loaded += lambda: self._set_title_bar(window)
+        window.events.loaded += lambda: self._set_title_bar(key, window)
         if key != "/":
             window.events.closed += lambda: self.windows.pop(key, None)
         return window
@@ -151,10 +151,11 @@ class Desktop:
         try:
             if not window.events.loaded.wait(30):
                 raise RuntimeError("WebView2 did not load the local portal")
-            result = window.evaluate_js("""({title:document.title, launcher:!!document.querySelector('#launcherButton'),
+            result = window.evaluate_js("""({title:document.title, launcher:!!document.querySelector('.workspace-shell #launcherButton'),
                 bridge:!!window.pywebview?.api, token:!!document.querySelector('meta[name=gao-token]')})""")
-            routes = ("/settings", "/downloads", "/mail", "/mail#floating")
-            for path in routes:
+            routes = {"/settings": "body.settings-window #launcherSettingsTabs", "/downloads": ".download-window .download-tabs",
+                      "/mail": ".mail-window .mail-nav", "/mail#floating": ".floating"}
+            for path, selector in routes.items():
                 window.evaluate_js(f"""void window.pywebview.api.open_window({json.dumps(path)}).then(value =>
                     window.gaoSmokeWindow = {{path:{json.dumps(path)}, ok:value}})""")
                 deadline = time.monotonic() + 12
@@ -165,8 +166,15 @@ class Desktop:
                 else:
                     raise RuntimeError(f"The WebView2 bridge did not open {path}")
                 child = self.windows[path]
-                if not child.events.loaded.wait(12) or not child.evaluate_js("!!document.querySelector('meta[name=gao-token]')"):
+                if not child.events.loaded.wait(12):
                     raise RuntimeError(f"WebView2 did not load {path}")
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    if child.evaluate_js(f"!!document.querySelector({json.dumps(selector)})"):
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError(f"WebView2 did not render the interface for {path}")
             result["windows"] = list(routes)
             from .mail_floating import smoke_mail_floating
             result["mailFloating"] = smoke_mail_floating(self.service)
@@ -179,12 +187,14 @@ class Desktop:
     def show_main(self):
         return self.open_window("/")
 
-    def appearance_changed(self):
-        for window in tuple(self.windows.values()):
-            self._set_title_bar(window)
+    def appearance_changed(self, route="/"):
+        for key, window in tuple(self.windows.items()):
+            if key == route or key.startswith(route + "#") or (route == "/" and key == "/settings"):
+                self._set_title_bar(key, window)
 
     def mail_panel_changed(self):
         self.mail_panel_commands.put("refresh")
+        self.appearance_changed("/mail")
         panel = self.windows.get("/mail#floating")
         if panel:
             panel.on_top = self._mail_keep_on_top()
@@ -195,22 +205,27 @@ class Desktop:
         except (AppError, OSError):
             return True
 
-    def _set_title_bar(self, window):
+    def _set_title_bar(self, key, window):
         from .floating import system_appearance
 
         if window.native is None:
             return
-        library = self.service.store.library or {}
-        appearance = library.get("appearance", "system")
-        if appearance == "system":
-            appearance = system_appearance()
         try:
+            if key == "/downloads":
+                preferences = self.service.download_manager().database["settings"]
+            elif key.split("#", 1)[0] == "/mail":
+                preferences = self.service.mail_store().library["preferences"]
+            else:
+                preferences = self.service.store.library or {}
+            appearance = preferences.get("appearance", "system")
+            if appearance == "system":
+                appearance = system_appearance()
             handle = ctypes.c_void_p(int(window.native.Handle.ToInt64()))
             dark = ctypes.c_int(appearance == "dark")
             setter = ctypes.windll.dwmapi.DwmSetWindowAttribute
             if setter(handle, 20, ctypes.byref(dark), ctypes.sizeof(dark)) != 0:
                 setter(handle, 19, ctypes.byref(dark), ctypes.sizeof(dark))
-        except (AttributeError, OSError, TypeError):
+        except (AppError, AttributeError, OSError, TypeError):
             logging.debug("Cannot set native title bar appearance", exc_info=True)
 
     def open_window(self, path):

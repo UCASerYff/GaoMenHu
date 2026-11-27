@@ -21,7 +21,7 @@ $chromeKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge
 $edgeKey = 'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge'
 $providerKey = 'HKCU:\Software\GaoSeries\GaoAction\cn.mendao.launcher'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{4E316375-9453-4D02-999A-567E10C5AC3D}_is1'
-$registeredInstallAttempt = $false
+$installAttempt = $false
 
 function Wait-Portal($Process, $Root) {
     $deadline = (Get-Date).AddSeconds(60)
@@ -66,12 +66,13 @@ function Start-Portal($Path, $Root) {
     }
 }
 
-function Start-Install($File, $LogFile, [switch] $Portable) {
+function Start-Install($File, $LogFile, [switch] $Portable, [switch] $IsolatedUninstaller) {
     $expectedHash = ((Get-Content -LiteralPath "$($File.FullName).sha256" -Raw).Trim() -split '\s+')[0]
     if ((Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash -ne $expectedHash) { throw "Installer hash differs" }
     $setupArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS',
         (('/DIR="{0}"') -f $installDir), (('/LOG="{0}"') -f $LogFile), '/MERGETASKS="!startmenu"')
     if ($Portable) { $setupArguments += '/PORTABLE=1' }
+    if ($IsolatedUninstaller) { $setupArguments += '/ISOLATEDSMOKE=1' }
     $proc = Start-Process -FilePath $File.FullName -ArgumentList $setupArguments -Wait -PassThru -WindowStyle Hidden
     if ($proc.ExitCode -ne 0) {
         if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 12 | Write-Output }
@@ -112,9 +113,35 @@ function Test-InstalledAction {
     Write-Output 'Installed GaoAction discovery, child-process delivery, receiver review and final result correlation passed.'
 }
 
+function Test-InstalledBrowser($HostInfo) {
+    $arguments = @((Join-Path $PSScriptRoot 'browser-native.cjs'), (Resolve-Path -LiteralPath $PlaywrightPackage).Path,
+                   $installDir, $dataDir, $smokeRoot, $origin)
+    $registeredAliases = [System.Collections.Generic.List[string]]::new()
+    try {
+        if (-not $Register) {
+            $alias = 'cn.mendao.bridge.smoke_' + [guid]::NewGuid().ToString('N')
+            $aliasManifest = Join-Path $installDir "$alias.json"
+            $HostInfo.name = $alias
+            [IO.File]::WriteAllText($aliasManifest, ($HostInfo | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+            foreach ($normalKey in @($chromeKey, $edgeKey)) {
+                $key = Join-Path (Split-Path $normalKey -Parent) $alias
+                if (Test-Path -LiteralPath $key) { throw "Fixture Native Messaging alias already exists: $key" }
+                New-Item -Path $key -Force | Out-Null
+                $registeredAliases.Add($key)
+                Set-Item -LiteralPath $key -Value $aliasManifest
+            }
+            $arguments += $alias
+        }
+        & node @arguments
+        if ($LASTEXITCODE) { throw 'Browser Native Messaging smoke failed' }
+    } finally {
+        foreach ($key in $registeredAliases) { Remove-Item -LiteralPath $key -Force }
+    }
+}
+
 try {
     if ($PreviousSetup -and $LegacyExe) { throw "Choose either -PreviousSetup or -LegacyExe" }
-    if (($PlaywrightPackage -or $PeerPython) -and -not $Register) { throw "Browser and peer smoke require a registered installation" }
+    if ($PeerPython -and -not $Register) { throw 'Peer smoke requires a registered installation' }
     if ($Register) {
         foreach ($key in @($chromeKey, $edgeKey, $providerKey, $uninstallKey)) {
             if (Test-Path -LiteralPath $key) { throw "Run -Register only when the GaoMenHu registration is unused: $key" }
@@ -140,19 +167,35 @@ try {
         $launcher = Start-Portal ((Get-Item -LiteralPath $LegacyExe).FullName) $dataDir
         Wait-Portal $launcher $dataDir
         Call-Portal '/api/sites/save' @{ site = $bookmarkedSite; passwords = @(@{ id = 'sandbox-account'; password = 'isolated-test-secret' }) } | Out-Null
+        if ($PreviousSetup) {
+            $target = (New-Item -Path (Join-Path $smokeRoot 'fixture-downloads') -ItemType Directory).FullName
+            $destination = (Call-Portal '/api/downloads/destination' @{ path = $target }).destination
+            $queued = (Call-Portal '/api/downloads/create' @{
+                urls = @('https://downloads.example.test/fixture.pdf'); destinationID = $destination.id; run = $false
+            }).items | Where-Object destinationID -eq $destination.id
+            if (-not $queued.id) { throw 'Could not seed an isolated download on the previous package' }
+            Call-Portal '/api/mail/account' @{ account = @{ id = 'upgrade-mail'; email = 'fixture@example.test' } } | Out-Null
+            Call-Portal '/api/mail/settings' @{ preferences = @{ appearance = 'dark'; showPreviews = $true } } | Out-Null
+            $oldDraft = (Call-Portal '/api/mail/draft' @{ draft = @{
+                accountID = 'upgrade-mail'; to = 'recipient@example.test'; subject = '升级验证草稿'; body = '仅使用合成资料'
+            } }).draft
+        }
         Stop-Portal $launcher
         $launcher = $null
         $libraryPath = Join-Path $dataDir 'library.json'
         $legacyHash = (Get-FileHash -LiteralPath $libraryPath).Hash
         Remove-Item -LiteralPath "$dataDir.native.json" -ErrorAction SilentlyContinue
     }
-    $registeredInstallAttempt = [bool]$Register
-    Start-Install $setupFile (Join-Path $smokeRoot 'setup.log') -Portable:(-not $Register)
+    $installAttempt = $true
+    Start-Install $setupFile (Join-Path $smokeRoot 'setup.log') -Portable:(-not $Register) -IsolatedUninstaller:(-not $Register)
     foreach ($file in @($app, $native, $console)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing executable $file" }
         $bytes = [IO.File]::ReadAllBytes($file)
         if ([BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 60) + 4) -ne 0x8664) { throw "Expected AMD64 PE: $file" }
-        if ((Get-Item -LiteralPath $file).VersionInfo.ProductVersion -ne '1.19') { throw "Unexpected product version: $file" }
+        $fileVersion = (Get-Item -LiteralPath $file).VersionInfo
+        if ($fileVersion.ProductVersion.Trim() -ne '1.19' -or $fileVersion.FileVersion.Trim() -ne $setupFile.VersionInfo.FileVersion.Trim()) {
+            throw "Unexpected release or build version: $file"
+        }
     }
     $hostInfo = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
     $extension = Get-Content -LiteralPath (Join-Path $installDir 'BrowserExtension\manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -178,12 +221,18 @@ try {
         throw "Existing library changed on initial startup"
     }
     if (-not ((Call-Portal '/api/state').library.sites | Where-Object id -eq 'sandbox-site')) { throw "Site did not persist" }
-    if ($Register) { Test-InstalledAction }
-    if ($PlaywrightPackage) {
-        $playwright = (Resolve-Path -LiteralPath $PlaywrightPackage).Path
-        & node (Join-Path $PSScriptRoot 'browser-native.cjs') $playwright $installDir $dataDir $smokeRoot $origin
-        if ($LASTEXITCODE) { throw "Browser Native Messaging smoke failed" }
+    if ($PreviousSetup) {
+        $downloads = Call-Portal '/api/downloads/state'
+        $mail = Call-Portal '/api/mail/state'
+        $keptDownload = $downloads.items | Where-Object id -eq $queued.id
+        $keptDestination = $downloads.destinations | Where-Object id -eq $destination.id
+        $keptDraft = (Call-Portal '/api/mail/draft-read' @{ id = $oldDraft.id }).draft
+        if (-not $keptDownload -or -not $keptDestination -or $keptDownload.state -notin @('queued', 'paused')) { throw 'The upgraded queue lost its saved job or destination' }
+        if (-not ($mail.accounts | Where-Object id -eq 'upgrade-mail') -or $mail.preferences.appearance -ne 'dark' -or -not $mail.preferences.showPreviews -or $keptDraft.body -ne $oldDraft.body) { throw 'The upgraded mail library lost its account, preferences or draft' }
+        Write-Output 'Upgrade preserved the previous download job and destination, mail account, theme, preview setting and draft.'
     }
+    if ($Register) { Test-InstalledAction }
+    if ($PlaywrightPackage) { Test-InstalledBrowser $hostInfo }
     $info = Get-Content -LiteralPath "$dataDir.native.json" -Raw | ConvertFrom-Json
     function Call-Helper($Message, $Browser = 'chrome') {
         $Message.profileId = $profileID
@@ -219,13 +268,16 @@ try {
     Write-Output "Installer, x64 PE, loopback routes, DPAPI, browser identity and hidden WebView2 passed; legacy upgrade=$([bool]$LegacyExe); registry=$([bool]$Register)"
 } finally {
     Stop-Portal $launcher
-    if ($registeredInstallAttempt -and (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe'))) {
+    if ($installAttempt -and (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe'))) {
         $keptLibrary = Join-Path $dataDir 'library.json'
         $beforeUninstall = if (Test-Path -LiteralPath $keptLibrary) { (Get-FileHash -LiteralPath $keptLibrary).Hash }
-        $uninstall = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait -WindowStyle Hidden
-        if ($uninstall.ExitCode -ne 0 -or (Test-Path $chromeKey) -or (Test-Path $edgeKey) -or (Test-Path $providerKey) -or (Test-Path $uninstallKey) -or (Test-Path $app)) { throw 'The test uninstall failed to remove its own application or registration' }
+        $uninstallArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+        if (-not $Register) { $uninstallArgs += '/PORTABLE=1', '/ISOLATEDSMOKE=1' }
+        $uninstall = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList $uninstallArgs -PassThru -Wait -WindowStyle Hidden
+        if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath $app)) { throw 'The test uninstall failed to remove its own application' }
+        if ($Register -and ((Test-Path $chromeKey) -or (Test-Path $edgeKey) -or (Test-Path $providerKey) -or (Test-Path $uninstallKey))) { throw 'The test uninstall failed to remove its own registration' }
         if ($beforeUninstall -and (Get-FileHash -LiteralPath $keptLibrary).Hash -ne $beforeUninstall) { throw 'The test uninstall changed isolated user data' }
-        Write-Output 'Uninstall removed installed files and registrations, and preserved isolated user data.'
+        Write-Output "Uninstall removed installed files and preserved isolated user data; registry=$([bool]$Register)"
     }
     $buildRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build')).Path.TrimEnd('\') + '\'
     $resolvedRoot = (Resolve-Path -LiteralPath $smokeRoot).Path

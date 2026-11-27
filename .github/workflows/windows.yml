@@ -36,7 +36,8 @@ jobs:
       - name: Smoke-test installation, registry, WebView2, and uninstall
         run: |
           $version = (Get-Content -Raw -LiteralPath '..\VERSION').Trim()
-          .\tests\install-smoke.ps1 -Setup ".\dist\GaoMenHu-Windows-$version-x64-Setup.exe" -Register
+          $build = (Get-Content -Raw .\build\release-assets\version.txt).Trim().Split('.')[-1]
+          .\tests\install-smoke.ps1 -Setup ".\dist\GaoMenHu-Windows-$version-build$build-x64-Setup.exe" -Register
       - uses: actions/upload-artifact@v4
         with:
           name: GaoMenHu-Windows-x64

@@ -1,12 +1,15 @@
 #ifndef ProductVersion
   #error ProductVersion is required
 #endif
+#ifndef WindowsBuild
+  #error WindowsBuild is required
+#endif
 #ifndef FileVersion
   #error FileVersion is required
 #endif
 
 [Setup]
-AppId={{4E316375-9453-4D02-999A-567E10C5AC3D}
+AppId={code:AppIdentity}
 AppName=搞门户
 AppVersion={#ProductVersion}
 AppVerName=搞门户 {#ProductVersion}
@@ -16,15 +19,16 @@ AppSupportURL=https://github.com/UCASerYff/GaoMenHu/issues
 DefaultDirName={localappdata}\Programs\GaoMenHu
 DefaultGroupName=搞门户
 DisableProgramGroupPage=yes
+UsePreviousLanguage=no
 PrivilegesRequired=lowest
 MinVersion=10.0.14393
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 UninstallDisplayIcon={app}\GaoMenHu.exe
-Uninstallable=not IsPortable
+Uninstallable=not IsPortable or IsolatedSmoke
 CreateUninstallRegKey=not IsPortable
 OutputDir=dist
-OutputBaseFilename=GaoMenHu-Windows-{#ProductVersion}-x64-Setup
+OutputBaseFilename=GaoMenHu-Windows-{#ProductVersion}-build{#WindowsBuild}-x64-Setup
 SetupIconFile=build\release-assets\GaoMenHu.ico
 VersionInfoVersion={#FileVersion}
 VersionInfoProductName=搞门户
@@ -73,6 +77,17 @@ begin
   Result := ExpandConstant('{param:PORTABLE|0}') = '1';
 end;
 
+function IsolatedSmoke: Boolean;
+begin
+  Result := IsPortable and (ExpandConstant('{param:ISOLATEDSMOKE|0}') = '1');
+end;
+
+function AppIdentity(Param: String): String;
+begin
+  if IsolatedSmoke then Result := 'GaoMenHu-LocalInstallSmoke'
+  else Result := '{4E316375-9453-4D02-999A-567E10C5AC3D}';
+end;
+
 function RuntimeAt(Root: Integer): Boolean;
 var
   Version: String;
@@ -108,7 +123,7 @@ end;
 
 procedure CurUninstallStepChanged(Step: TUninstallStep);
 begin
-  if Step = usUninstall then begin
+  if (Step = usUninstall) and not IsolatedSmoke then begin
     RemoveOwnedValue(ChromeHostKey, '', 'cn.mendao.bridge.json');
     RemoveOwnedValue(EdgeHostKey, '', 'cn.mendao.bridge.json');
     RemoveOwnedValue(GaoActionKey, 'Executable', 'GaoMenHu.exe');
