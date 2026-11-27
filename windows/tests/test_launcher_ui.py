@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -23,6 +24,28 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("GAOMENHU_UI_TEST") != "1",
     reason="Set GAOMENHU_UI_TEST=1 to run the isolated Chromium UI regression.",
 )
+
+DEVTOOLS_PORT_RECORD = re.compile(
+    r"([0-9]{1,5})\n/devtools/browser/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\n?"
+)
+
+
+def wait_for_devtools_port(process, debug_port, output):
+    deadline = time.monotonic() + 12
+    # Edge may hand off startup to another process and exit successfully first.
+    while process.poll() in (None, 0) and time.monotonic() < deadline:
+        try:
+            record = debug_port.read_text(encoding="ascii")
+        except (FileNotFoundError, PermissionError, UnicodeDecodeError):
+            # Chromium can hold the file open exclusively during startup on Windows.
+            record = ""
+        if match := DEVTOOLS_PORT_RECORD.fullmatch(record):
+            port = int(match[1])
+            if 0 < port <= 65535:
+                return port
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+    log = output.read_text(encoding="utf-8", errors="replace")
+    raise AssertionError(f"Chromium did not publish a complete DevToolsActivePort record.\n{log}")
 
 
 class ChromePage:
@@ -152,12 +175,7 @@ def launcher_page(tmp_path, monkeypatch):
             f"http://127.0.0.1:{server.port}/?offline",
         ], stdout=stream, stderr=stream)
         try:
-            debug_port = store / "DevToolsActivePort"
-            deadline = time.monotonic() + 12
-            while not debug_port.is_file() and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(.1)
-            assert debug_port.exists(), output.read_text(encoding="utf-8", errors="replace")
-            port = int(debug_port.read_text().splitlines()[0])
+            port = wait_for_devtools_port(process, store / "DevToolsActivePort", output)
             for _ in range(80):
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=3) as response:
                     targets = json.load(response)
