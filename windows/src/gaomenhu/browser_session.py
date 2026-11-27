@@ -42,7 +42,7 @@ class BrowserSession:
             if not self.service.vault.is_unlocked(self.service.clock()):
                 raise AppError("请先解锁账号库，再填入所选账号。", "vault_locked")
 
-    def launch(self, site, plan, record=True):
+    def launch(self, site, plan, record=True, opened=None):
         self.require_consent(plan)
         browser, profile = plan["browserID"], plan["profileID"]
         grant = {
@@ -50,7 +50,7 @@ class BrowserSession:
             "profileID": profile, "claimed": None, "tabID": None, "accountID": plan.get("accountID"),
             "filled": False, "opened": False, "record": record,
             "expires": self.service.clock() + GRANT_SECONDS,
-            "site": copy.deepcopy(site),
+            "site": copy.deepcopy(site), "openedCallback": opened,
         }
         if browser in BROWSER_HELPERS and (profile or plan["requiresAuthentication"]):
             with self.lock:
@@ -92,14 +92,17 @@ class BrowserSession:
             explicit = grant["site"]["profiles"].get(grant["browserID"])
             if explicit:
                 self._report(request_id, "指定的浏览器资料未响应，请重新连接该资料的搞门户助手。")
+                self._complete_grant(grant, "profile_unavailable")
                 return
             try:
                 self._process(grant["browserID"], grant["url"])
                 if grant["record"]:
                     self.service._record_success(grant["siteID"])
                 self._report(request_id, "网页已打开。请重新连接浏览器助手后重试自动填充。")
+                self._complete_grant(grant)
             except AppError as exc:
                 self._report(request_id, str(exc))
+                self._complete_grant(grant, "browser_launch_failed")
 
     def _confirm_open(self, request_id):
         with self.lock:
@@ -107,6 +110,7 @@ class BrowserSession:
             if grant and not grant["opened"]:
                 del self.launches[request_id]
                 self._report(request_id, "浏览器助手未确认网页已打开，请检查标签页和助手连接后重试。")
+                self._complete_grant(grant, "browser_open_unconfirmed")
 
     def request(self, message, browser):
         if not isinstance(browser, str) or browser not in BROWSER_HELPERS or not isinstance(message, dict):
@@ -150,10 +154,12 @@ class BrowserSession:
                 return {"ok": True}
             if kind == "close":
                 del self.launches[request_id]
+                self._complete_grant(grant, "browser_open_unconfirmed")
                 return {"ok": True}
             if kind == "launchStatus" and message.get("status") == "failed" and (grant["tabID"] is None or (valid_tab and grant["tabID"] == tab_id)):
                 del self.launches[request_id]
                 self._report(request_id, "浏览器未能完成打开，请从搞门户重试。")
+                self._complete_grant(grant, "browser_launch_failed")
                 return {"ok": True}
             if not valid_tab or grant["tabID"] != tab_id:
                 return {"ok": False}
@@ -190,6 +196,7 @@ class BrowserSession:
             if grant["profileID"] is None and len(self.connected()[browser]) > 1:
                 del self.launches[request_id]
                 self._report(request_id, "多个浏览器资料已连接，请为网站指定资料。")
+                self._complete_grant(grant, "profile_ambiguous")
                 continue
             grant["claimed"] = profile
             return {"ok": True, "version": VERSION_LABEL, "launch": {"id": request_id, "url": grant["url"]}}
@@ -200,6 +207,7 @@ class BrowserSession:
         if not grant["opened"] and grant["record"]:
             self.service._record_success(grant["siteID"])
         grant["opened"] = True
+        self._complete_grant(grant)
         if grant["filled"] or not grant["accountID"] or not self._account(grant):
             del self.launches[request_id]
             if not grant["filled"]:
@@ -250,6 +258,12 @@ class BrowserSession:
         while len(self.feedback) > 32:
             del self.feedback[next(iter(self.feedback))]
 
+    @staticmethod
+    def _complete_grant(grant, error=None):
+        callback = grant.pop("openedCallback", None)
+        if callback:
+            threading.Thread(target=callback, args=(error,), daemon=True).start()
+
     def _prune(self):
         now = self.service.clock()
         for key, profile in tuple(self.profiles.items()):
@@ -258,3 +272,4 @@ class BrowserSession:
         for key, grant in tuple(self.launches.items()):
             if now >= grant["expires"]:
                 del self.launches[key]
+                self._complete_grant(grant, "browser_open_unconfirmed")

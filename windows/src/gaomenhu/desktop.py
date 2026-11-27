@@ -4,6 +4,7 @@ import base64
 import ctypes
 import json
 import logging
+import queue
 import threading
 import time
 from pathlib import Path
@@ -31,6 +32,8 @@ def local_window_key(path):
     if url.scheme or url.netloc or url.path not in WINDOWS:
         return None
     anchor = f"{url.path}#{url.fragment}"
+    if anchor == "/mail#floating-settings":
+        return "/mail#settings"
     return anchor if anchor in WINDOWS else url.path
 
 
@@ -42,6 +45,7 @@ class Desktop:
         self.smoke_file = smoke_file
         self.ready = threading.Event()
         self.stop = threading.Event()
+        self.mail_panel_commands = queue.SimpleQueue()
         self.windows = {}
         self.create_lock = threading.RLock()
         self.dock_thread = None
@@ -137,6 +141,8 @@ class Desktop:
             "icon_path": asset_root() / "GaoMenHu.ico",
             "on_tray_state": self._tray_status,
             "on_session_lock": self.service.vault.lock,
+            "mail_commands": self.mail_panel_commands,
+            "open_center": self.open_window,
         }, daemon=True, name="Portal tray and floating launcher")
         self.dock_thread.start()
 
@@ -162,6 +168,8 @@ class Desktop:
                 if not child.events.loaded.wait(12) or not child.evaluate_js("!!document.querySelector('meta[name=gao-token]')"):
                     raise RuntimeError(f"WebView2 did not load {path}")
             result["windows"] = list(routes)
+            from .mail_floating import smoke_mail_floating
+            result["mailFloating"] = smoke_mail_floating(self.service)
             Path(self.smoke_file).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             Path(self.smoke_file).write_text(str(exc), encoding="utf-8")
@@ -176,6 +184,7 @@ class Desktop:
             self._set_title_bar(window)
 
     def mail_panel_changed(self):
+        self.mail_panel_commands.put("refresh")
         panel = self.windows.get("/mail#floating")
         if panel:
             panel.on_top = self._mail_keep_on_top()
@@ -208,6 +217,9 @@ class Desktop:
         key = local_window_key(path)
         if not key or self.stop.is_set() or not self.ready.wait(5):
             return False
+        if key == "/mail#floating" and not self.smoke_file:
+            self.mail_panel_commands.put("show")
+            return True
         with self.create_lock:
             window = self.windows.get(key)
             if window is None:

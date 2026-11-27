@@ -118,7 +118,10 @@ def snap_frame(screen, wanted):
 class PointerTiming:
     """The collapse cooldown requires a fresh entry into the handle."""
 
-    def __init__(self):
+    def __init__(self, reveal_delay=0.45, leave_delay=0.15, cooldown=0.2):
+        self.reveal_delay = reveal_delay
+        self.leave_delay = leave_delay
+        self.cooldown = cooldown
         self.armed = True
         self.hold_until = 0.0
         self.entered = None
@@ -128,7 +131,7 @@ class PointerTiming:
         self.entered = self.left = None
         if not expanded:
             self.armed = False
-            self.hold_until = now + 0.2
+            self.hold_until = now + self.cooldown
 
     def tick(self, now, *, expanded, inside, buttons, outside_press, protected):
         if not expanded:
@@ -139,7 +142,7 @@ class PointerTiming:
             else:
                 if self.entered is None:
                     self.entered = now
-                if now - self.entered >= 0.45:
+                if now - self.entered >= self.reveal_delay:
                     return True
         elif inside or protected:
             self.left = None
@@ -148,6 +151,6 @@ class PointerTiming:
         else:
             if self.left is None:
                 self.left = now
-            if now - self.left >= 0.15:
+            if now - self.left >= self.leave_delay:
                 return False
         return None

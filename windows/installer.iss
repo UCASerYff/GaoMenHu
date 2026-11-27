@@ -37,18 +37,26 @@ RestartApplications=no
 [Files]
 Source: "build\release-bin\GaoMenHu\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "build\release-bin\GaoMenHu-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\release-bin\GaoMenHu-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\release-assets\cn.mendao.bridge.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "GaoCapabilities.Windows.json"; DestDir: "{app}"; DestName: "GaoCapabilities.json"; Flags: ignoreversion
 Source: "..\BrowserExtension\*"; DestDir: "{app}\BrowserExtension"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; DestName: "使用说明.md"; Flags: ignoreversion
 Source: "..\Docs\Mail\OAuthSetup.txt"; DestDir: "{app}"; DestName: "邮件授权配置.txt"; Flags: ignoreversion
 Source: "build\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy noencryption
 
+[Tasks]
+Name: "startmenu"; Description: "在开始菜单创建搞门户快捷方式"
+Name: "browserhost"; Description: "注册 Chrome 和 Edge 的搞门户助手"
+
 [Icons]
-Name: "{autoprograms}\搞门户"; Filename: "{app}\GaoMenHu.exe"; Check: not IsPortable
+Name: "{autoprograms}\搞门户"; Filename: "{app}\GaoMenHu.exe"; Tasks: startmenu; Check: not IsPortable
 
 [Registry]
-Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge"; ValueType: string; ValueData: "{app}\cn.mendao.bridge.json"; Check: not IsPortable
-Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge"; ValueType: string; ValueData: "{app}\cn.mendao.bridge.json"; Check: not IsPortable
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge"; ValueType: string; ValueData: "{app}\cn.mendao.bridge.json"; Tasks: browserhost; Check: not IsPortable
+Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge"; ValueType: string; ValueData: "{app}\cn.mendao.bridge.json"; Tasks: browserhost; Check: not IsPortable
+Root: HKCU; Subkey: "Software\GaoSeries\GaoAction\cn.mendao.launcher"; ValueType: string; ValueName: "Executable"; ValueData: "{app}\GaoMenHu.exe"; Check: not IsPortable
+Root: HKCU; Subkey: "Software\GaoSeries\GaoAction\cn.mendao.launcher"; ValueType: string; ValueName: "Capabilities"; ValueData: "{app}\GaoCapabilities.json"; Check: not IsPortable
 
 [Run]
 Filename: "{app}\GaoMenHu.exe"; Description: "打开搞门户"; Flags: nowait postinstall skipifsilent; Check: not IsPortable
@@ -58,6 +66,7 @@ const
   WebViewRuntimeKey = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   ChromeHostKey = 'Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge';
   EdgeHostKey = 'Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge';
+  GaoActionKey = 'Software\GaoSeries\GaoAction\cn.mendao.launcher';
 
 function IsPortable: Boolean;
 begin
@@ -86,13 +95,13 @@ begin
     Result := 'Microsoft Edge WebView2 Runtime 未安装。请联网安装 Microsoft Edge WebView2 Runtime 后重试。';
 end;
 
-procedure RemoveOurHost(const Key: String);
+procedure RemoveOwnedValue(const Key, ValueName, RelativePath: String);
 var
   Current, Expected: String;
 begin
-  Expected := ExpandConstant('{app}\cn.mendao.bridge.json');
-  if RegQueryStringValue(HKCU, Key, '', Current) and (CompareText(Current, Expected) = 0) then begin
-    RegDeleteValue(HKCU, Key, '');
+  Expected := ExpandConstant('{app}\') + RelativePath;
+  if RegQueryStringValue(HKCU, Key, ValueName, Current) and (CompareText(Current, Expected) = 0) then begin
+    RegDeleteValue(HKCU, Key, ValueName);
     RegDeleteKeyIfEmpty(HKCU, Key);
   end;
 end;
@@ -100,7 +109,9 @@ end;
 procedure CurUninstallStepChanged(Step: TUninstallStep);
 begin
   if Step = usUninstall then begin
-    RemoveOurHost(ChromeHostKey);
-    RemoveOurHost(EdgeHostKey);
+    RemoveOwnedValue(ChromeHostKey, '', 'cn.mendao.bridge.json');
+    RemoveOwnedValue(EdgeHostKey, '', 'cn.mendao.bridge.json');
+    RemoveOwnedValue(GaoActionKey, 'Executable', 'GaoMenHu.exe');
+    RemoveOwnedValue(GaoActionKey, 'Capabilities', 'GaoCapabilities.json');
   end;
 end;

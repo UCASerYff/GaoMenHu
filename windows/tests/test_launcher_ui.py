@@ -319,3 +319,72 @@ def test_launcher_normal_entry_workflows(launcher_page, tmp_path):
     page.capture(tmp_path / "launcher-dark-narrow-hidpi.png")
     assert Image.open(tmp_path / "launcher-dark-narrow-hidpi.png").size == (1080, 870)
     assert not page.errors
+
+
+def test_mail_and_download_centers_at_desktop_and_high_dpi(launcher_page, tmp_path):
+    page, service, _, url = launcher_page
+    page.call("Emulation.setDeviceMetricsOverride", width=1250, height=780, deviceScaleFactor=1, mobile=False)
+    page.call("Emulation.setEmulatedMedia", features=[dict(name="prefers-color-scheme", value="light")])
+    page.call("Page.navigate", url=url + "/mail")
+    page.until("Boolean(document.querySelector('.mail-overview-welcome'))")
+    assert page.js("Array.from(document.querySelectorAll('.mail-overview-metrics .muted'), e => e.textContent)") == [
+        "我的邮箱", "关联平台", "未读邮件",
+    ]
+    assert page.js("document.querySelector('.mail-window aside').getBoundingClientRect().width") == 216
+    assert page.js("getComputedStyle(document.querySelector('.mail-window .tool-label')).display") == "none"
+    page.capture(tmp_path / "mail-empty-light.png")
+
+    mail = service.mail_store()
+    identity = mail.save_record("identities", {"name": "工作"})
+    account = mail.save_account({"email": "member@example.invalid", "identityID": identity["id"], "enabled": False})
+    mail.save_account({"email": "other@example.invalid", "enabled": False})
+    mail.save_record("platforms", {"name": "示例平台", "accountID": account["id"]})
+    page.call("Page.navigate", url=url + "/mail?registered")
+    page.until("document.querySelectorAll('.mail-overview .mail-account-card').length === 2")
+    assert page.js("document.querySelector('.mail-overview-welcome') === null")
+    page.capture(tmp_path / "mail-populated-light.png")
+    page.click(".mail-identity-card")
+    page.until("document.querySelectorAll('.mail-account-card').length === 1")
+    assert "member@example.invalid" in page.js("document.querySelector('.mail-account-card').textContent")
+
+    folder = tmp_path / "download-output"
+    folder.mkdir()
+    manager = service.download_manager()
+    grant = manager.add_destination(folder)
+    manager.create_jobs(["https://example.invalid/file.pdf"], grant["id"])
+    page.call("Page.navigate", url=url + "/downloads")
+    page.until("Boolean(document.querySelector('[data-download-id]'))")
+    assert page.js("document.querySelector('.download-window > .toolbar').getBoundingClientRect().width") == 1250
+    page.click("[data-download-id]")
+    page.until("Boolean(document.querySelector('.download-window .detail'))")
+    page.capture(tmp_path / "downloads-selected-light.png")
+    page.click(".download-window button[title='新建下载']")
+    page.until("Boolean(document.querySelector('dialog[open] .download-links'))")
+    assert page.js("document.querySelector('dialog[open]').getBoundingClientRect().width") == 670
+    assert page.js("document.querySelector('.download-links').getBoundingClientRect().height") >= 135
+    page.capture(tmp_path / "download-composer-light.png")
+
+    page.call("Emulation.setDeviceMetricsOverride", width=720, height=580, deviceScaleFactor=1.5, mobile=False)
+    page.call("Emulation.setEmulatedMedia", features=[dict(name="prefers-color-scheme", value="dark")])
+    for name, route, selector in [
+        ("downloads", "/downloads", "[data-download-id]"),
+        ("mail", "/mail", ".mail-overview-metrics"),
+        ("settings", "/settings", ".settings-pane"),
+    ]:
+        page.call("Page.navigate", url=url + route)
+        page.until(f"Boolean(document.querySelector({json.dumps(selector)}))")
+        assert page.js("document.documentElement.scrollWidth") == 720
+        assert page.js("document.documentElement.scrollHeight") == 580
+        capture = tmp_path / f"{name}-dark-hidpi.png"
+        page.capture(capture)
+        with Image.open(capture) as picture:
+            assert picture.size == (1080, 870)
+    page.call("Page.navigate", url=url + "/mail#settings")
+    page.until("Boolean(document.querySelector('body[data-mail-settings] dialog[open] .mail-settings-content'))")
+    assert page.js("document.title") == "邮件设置"
+    assert page.js("document.querySelector('dialog[open]').getBoundingClientRect().width") == 720
+    assert page.js("document.querySelector('dialog[open] footer').getBoundingClientRect().bottom <= innerHeight")
+    page.capture(tmp_path / "mail-settings-dark-hidpi.png")
+    page.click("dialog[open] button[title='关闭']")
+    page.until("location.hash === '' && !document.body.hasAttribute('data-mail-settings')")
+    assert not page.errors

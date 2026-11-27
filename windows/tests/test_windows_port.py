@@ -230,13 +230,17 @@ def test_action_package_rules(tmp_path):
     (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     app = service(tmp_path)
     opened = app.open_action(package, now=now + timedelta(seconds=5))
-    assert opened["plan"]["type"] == "openSite"
+    assert opened["review"]["action"] == "portal.openSite"
+    assert not app.launch_log
+    assert app.action_exchange.decide(opened["review"]["id"], True, now + timedelta(seconds=5))["plan"]["type"] == "openSite"
     proposal = make_request("portal.proposeSite", {"url": "https://example.com/new", "title": "新站"}, now=now)
     folder = tmp_path / "propose.gaoaction"
     folder.mkdir()
     (folder / "manifest.json").write_text(json.dumps(proposal), encoding="utf-8")
     result = app.open_action(folder, now=now + timedelta(seconds=5))
-    assert result["plan"]["type"] == "proposeSite"
+    assert result["review"]["action"] == "portal.proposeSite"
+    assert app.proposal is None
+    assert app.action_exchange.decide(result["review"]["id"], True, now + timedelta(seconds=5))["plan"]["type"] == "proposeSite"
     assert app.proposal["url"] == "https://example.com/new"
     assert app.store.library["sites"][0]["name"] == "Claude"
 

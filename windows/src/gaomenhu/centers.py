@@ -3,6 +3,7 @@
 import base64
 import copy
 import csv
+import hashlib
 import io
 import json
 import os
@@ -16,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import APP_ID
-from .actions import MAX_MANIFEST_BYTES, read_package, validate_manifest
+from .actions import MAX_MANIFEST_BYTES, MAX_PAYLOAD_BYTES, filesystem_entry, package_manifest, read_package, validate_manifest, verify_payload
 from .downloads import TERMINAL, file_digest, safe_download_name
 from .errors import AppError
 from .mail import extract_codes, generate_aliases, make_service_alias, primary_code, sanitize_mail_html
@@ -46,7 +47,7 @@ def download_state(manager):
             "destinations": copy.deepcopy(database["destinations"]),
             "settings": database["settings"].copy(),
             "requests": [
-                {key: copy.deepcopy(record[key]) for key in ("id", "sourceBundleID", "stage", "itemIDs", "deliveries")}
+                {key: copy.deepcopy(record[key]) for key in ("id", "sourceBundleID", "stage", "itemIDs", "deliveries", "parentActionID") if key in record}
                 for record in database.get("requests", [])
             ],
         }
@@ -59,16 +60,20 @@ def _request(manager, request_id):
     return record
 
 
-def import_request(manager, manifest):
-    manifest = validate_manifest(manifest)
-    if manifest["kind"] != "request" or manifest["action"] != "downloads.prepare":
+def import_request(manager, manifest, *, fingerprint=None, now=None, parent_action=None):
+    manifest = validate_manifest(manifest, now=now)
+    action = "portal.prepareDownload" if parent_action else "downloads.prepare"
+    if manifest["kind"] != "request" or manifest["action"] != action:
         raise AppError("请选择下载请求包。")
-    if any(urlsplit(url).fragment for url in manifest["parameters"]["urls"]):
+    if not parent_action and any(urlsplit(url).fragment for url in manifest["parameters"]["urls"]):
         raise AppError("跨应用下载请求中的文件链接不能包含片段。")
     requests = manager.database.setdefault("requests", [])
     request_id = str(uuid.UUID(manifest["requestID"]))
-    if any(record["id"] == request_id or record["nonce"] == manifest["nonce"] for record in requests):
-        raise AppError("该下载请求已经接收。")
+    for record in requests:
+        if record["id"] == request_id or record["nonce"] == manifest["nonce"]:
+            if fingerprint and record["id"] == request_id and record.get("fingerprint") == fingerprint:
+                return request_id, True
+            raise AppError("该下载请求已经接收。", "duplicate_id")
     if len(requests) >= 5000:
         raise AppError("交接记录已满。")
     record = {
@@ -76,12 +81,24 @@ def import_request(manager, manifest):
         "stage": "awaitingReview", "urls": manifest["parameters"]["urls"], "itemIDs": [], "deliveries": [],
         "expiresAt": manifest["expiresAt"],
     }
+    if fingerprint:
+        record["fingerprint"] = fingerprint
+    if parent_action:
+        record["parentActionID"] = parent_action
     requests.append(record)
-    manager.store.save()
-    return request_id
+    try:
+        manager.store.save()
+    except Exception:
+        requests.remove(record)
+        raise
+    return (request_id, False) if fingerprint or parent_action else request_id
 
 
-def _result(manager, record, phase, folder):
+def _result(manager, record, phase, folder, *, automatic=False):
+    if phase not in ("pending", "final"):
+        raise AppError("请选择回执或最终结果。", "invalid_result")
+    if record.get("parentActionID"):
+        raise AppError("请从主窗口的交接结果回送网站动作回执。")
     if record["stage"] == "awaitingReview":
         raise AppError("请先复核请求。")
     items = [manager._item(item_id) for item_id in record["itemIDs"]]
@@ -93,7 +110,8 @@ def _result(manager, record, phase, folder):
         if record["stage"] == "rejected":
             status, artifacts = "cancelled", []
         else:
-            if not any(delivery["status"] == "pending" for delivery in record["deliveries"]):
+            if not any(delivery["status"] == "pending" and delivery.get("sendState") not in ("prepared", "failed")
+                       for delivery in record["deliveries"]):
                 raise AppError("请先保存并交付接收回执，再回送最终结果。")
             if not items or any(item["state"] not in TERMINAL for item in items):
                 raise AppError("等待下载任务结束后再回送结果。")
@@ -106,8 +124,12 @@ def _result(manager, record, phase, folder):
                 status = "cancelled"
             else:
                 status = "failed"
+    if sum(artifact["byteCount"] for artifact in artifacts) > MAX_PAYLOAD_BYTES:
+        raise AppError("结果附件超过 2 GiB，已停止复制。", "payloadTooLarge")
     if not folder.is_absolute() or not folder.is_dir():
         raise AppError("请选择结果包保存目录。")
+    for component in (*reversed(folder.parents), folder):
+        filesystem_entry(component, directory=True)
     now = datetime.now(timezone.utc)
     request_id = str(uuid.uuid4())
     temporary = folder / ("." + request_id + ".tmp")
@@ -118,7 +140,7 @@ def _result(manager, record, phase, folder):
     try:
         for index, artifact in enumerate(artifacts):
             source = Path(artifact["path"])
-            if not source.is_file() or source.is_symlink() or source.stat().st_size != artifact["byteCount"]:
+            if filesystem_entry(source).st_size != artifact["byteCount"]:
                 raise AppError("下载文件已变化，停止回送。")
             name = f"{index + 1:02d}-{safe_download_name(artifact['fileName'])}"
             target = payload / name
@@ -141,6 +163,7 @@ def _result(manager, record, phase, folder):
             "errorCode": "download_failed" if status == "failed" else None,
             "provenance": {"workflowState": "accepted" if status == "pending" else status, "taskIDs": record["taskIDs"] if "taskIDs" in record else []},
         }
+        validate_manifest(manifest, record["sourceBundleID"], now)
         with (temporary / "manifest.json").open("x", encoding="utf-8") as handle:
             json.dump(manifest, handle, ensure_ascii=False)
             handle.flush()
@@ -149,7 +172,8 @@ def _result(manager, record, phase, folder):
     finally:
         if temporary.is_dir():
             shutil.rmtree(temporary)
-    record["deliveries"].append({"status": status, "path": str(published)})
+    record["deliveries"].append({"status": status, "path": str(published), "sendState": "prepared" if automatic else "saved",
+                                 "fingerprint": file_digest(published / "manifest.json")})
     manager.store.save()
     return str(published)
 
@@ -172,6 +196,15 @@ def download_route(service, action, body):
     result = {}
     with manager.lock:
         if action == "state":
+            expired = [record for record in manager.database.get("requests", []) if record["stage"] == "awaitingReview"
+                       and datetime.now(timezone.utc) >= datetime.fromisoformat(record["expiresAt"].replace("Z", "+00:00"))]
+            if expired:
+                for record in expired:
+                    record["stage"] = "expired"
+                manager.store.save()
+                for record in expired:
+                    if record.get("parentActionID"):
+                        service.action_exchange.finish(record["parentActionID"], "failed", "failed", "expired")
             return {"ok": True, **download_state(manager)}
         if action == "prepare":
             if body.get("review"):
@@ -204,11 +237,36 @@ def download_route(service, action, body):
             privacy = body.get("privacy")
             if any(entry["requiresPrivacyReview"] for entry in prepared) and privacy not in ("keep", "strip"):
                 raise AppError("请确认保留还是移除查询参数及片段。")
-            result["jobs"] = manager.create_jobs(urls, body.get("destinationID"), request_id, use_stripped=privacy == "strip")
+            destination = body.get("destinationID")
+            if request_id:
+                previous = [job for job in manager.database["jobs"] if job.get("requestID") == request_id]
+                expected = [row["displayURL"] if privacy == "strip" else row["url"] for row in prepared]
+                if previous:
+                    observed = []
+                    for job in previous:
+                        if len(job["itemIDs"]) != 1:
+                            raise AppError("上次交接的任务映射不完整，请保留已有资料。")
+                        item = manager._item(job["itemIDs"][0])
+                        if item["requestID"] != request_id or item["destinationID"] != destination:
+                            raise AppError("上次交接已审批其他目录，请核对现有下载任务。")
+                        observed.append(item["sourceURL"])
+                    if observed != expected:
+                        raise AppError("上次交接已审批另一组链接，请核对现有下载任务。")
+            result["jobs"] = manager.create_jobs(urls, destination, request_id, use_stripped=privacy == "strip")
             if request_id:
                 request.update(stage="accepted", taskIDs=[job["id"] for job in result["jobs"]],
                                itemIDs=[item_id for job in result["jobs"] for item_id in job["itemIDs"]])
-                manager.store.save()
+                try:
+                    manager.store.save()
+                    if request.get("parentActionID"):
+                        service.action_exchange.finish(request["parentActionID"], "pending", "accepted")
+                    else:
+                        folder = service.action_exchange._exchange_directory("Outgoing")
+                        _result(manager, request, "pending", folder, automatic=True)
+                except (AppError, OSError):
+                    for item_id in request["itemIDs"]:
+                        manager.pause(item_id)
+                    raise
             if body.get("run", True):
                 manager.start()
         elif action in ("pause", "resume", "cancel", "retry", "delete"):
@@ -254,9 +312,15 @@ def download_route(service, action, body):
             manifest = directory / "manifest.json"
             if not directory.is_absolute() or not manifest.is_file() or manifest.stat().st_size > MAX_MANIFEST_BYTES:
                 raise AppError("请选择有效的 .gaoaction 下载请求目录。")
-            result["requestID"] = import_request(manager, read_package(directory))
+            manifest, raw = package_manifest(directory)
+            if manifest["kind"] != "request" or manifest["action"] != "downloads.prepare":
+                raise AppError("请选择下载请求包。")
+            verify_payload(directory, manifest)
+            result["requestID"], _ = import_request(manager, manifest, fingerprint=hashlib.sha256(raw).hexdigest())
         elif action == "request-preview":
             record = _request(manager, body.get("id"))
+            if record["stage"] != "awaitingReview" or datetime.now(timezone.utc) >= datetime.fromisoformat(record["expiresAt"].replace("Z", "+00:00")):
+                raise AppError("该下载请求已结束或已过期。", "expired")
             return {"ok": True, "prepared": manager.prepare(record["urls"])}
         elif action == "request-reject":
             record = _request(manager, body.get("id"))
@@ -264,8 +328,41 @@ def download_route(service, action, body):
                 raise AppError("此请求已经复核。")
             record["stage"] = "rejected"
             manager.store.save()
+            if record.get("parentActionID"):
+                service.action_exchange.finish(record["parentActionID"], "cancelled", "cancelled")
         elif action == "request-result":
-            result["package"] = _result(manager, _request(manager, body.get("id")), body.get("phase"), Path(body.get("path") or ""))
+            record = _request(manager, body.get("id"))
+            send = body.get("send") is True
+            folder = service.action_exchange._exchange_directory("Outgoing") if send else Path(body.get("path") or "")
+            previous = next((entry for entry in reversed(record["deliveries"])
+                             if entry["status"] == "pending" and body.get("phase") == "pending"
+                             or entry["status"] != "pending" and body.get("phase") != "pending"), None)
+            published = None
+            if send and previous:
+                try:
+                    old = Path(previous["path"])
+                    if old.parent == folder:
+                        manifest, raw = package_manifest(old, target_bundle_id=record["sourceBundleID"])
+                        verify_payload(old, manifest)
+                        if (manifest["inReplyTo"] == record["id"] and manifest["status"] == previous["status"]
+                                and previous.get("fingerprint") == hashlib.sha256(raw).hexdigest()):
+                            published = str(old)
+                except AppError:
+                    pass
+            result["package"] = published or _result(manager, record, body.get("phase"), folder)
+            if send:
+                delivery = previous if published else record["deliveries"][-1]
+                package = Path(result["package"])
+                manifest = read_package(package, target_bundle_id=record["sourceBundleID"])
+                try:
+                    service.action_exchange.transport.send(package, manifest)
+                except AppError as exc:
+                    delivery["sendState"] = "failed"
+                    result["deliveryError"] = str(exc)
+                else:
+                    delivery["sendState"] = "launched"
+                    result["delivered"] = True
+                manager.store.save()
         else:
             raise AppError("下载操作不存在。")
     return {"ok": True, **result, **download_state(manager)}
@@ -341,6 +438,24 @@ def _autosync(service):
                         service.mail_last_attempt[account["id"]] = service.clock()
         finally:
             service.mail_lock.release()
+
+
+def sync_mail_floating(service):
+    with service.mail_lock:
+        store = service.mail_store()
+        accounts = [account for account in store.library["accounts"]
+                    if account["id"] in store.authorized and account["enabled"]]
+        if not accounts:
+            raise AppError("请先在邮箱管理连接邮箱。")
+        completed = 0
+        for account in accounts:
+            try:
+                _sync(service, store, account["id"])
+                completed += 1
+            except AppError:
+                continue
+        if completed != len(accounts):
+            raise AppError("部分邮箱同步失败，请查看邮箱状态。" if completed else "同步失败，请查看邮箱状态。")
 
 
 def _start_autosync(service):

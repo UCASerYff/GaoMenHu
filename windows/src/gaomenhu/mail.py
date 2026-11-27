@@ -493,6 +493,8 @@ class MailStore:
         self._write_library()
 
     def save_preferences(self, updates):
+        from .mail_floating_layout import MailPlacement, mail_opacity
+
         choices = {"appearance": ("system", "light", "dark"), "syncMinutes": (0, 1, 3, 5, 10, 15, 30, 60),
                    "fetchLimit": (25, 30, 50, 80, 100, 150, 200, 300), "showPreviews": (True, False),
                    "floatingVisible": (True, False), "keepOnTop": (True, False)}
@@ -501,10 +503,21 @@ class MailStore:
             if key in oauth:
                 if not isinstance(value, str) or len(value) > 256 or (value and not re.fullmatch(r"[a-zA-Z0-9._-]+", value)):
                     raise AppError("网页登录客户端标识无效。")
-            elif key not in choices or value not in choices[key]:
+            elif key == "floatingPlacement":
+                if value is not None and not MailPlacement.valid(value):
+                    raise AppError("邮件悬浮窗位置无效。")
+            elif key == "floatingOpacity":
+                if type(value) not in (int, float) or mail_opacity(value) != value:
+                    raise AppError("邮件悬浮窗透明度无效。")
+            elif key not in choices or value not in choices[key] or (type(choices[key][0]) is bool and type(value) is not bool):
                 raise AppError("邮件设置无效。")
-        self.library["preferences"].update(updates)
-        self._write_library()
+        previous = self.library["preferences"]
+        self.library["preferences"] = previous | updates
+        try:
+            self._write_library()
+        except OSError:
+            self.library["preferences"] = previous
+            raise
 
     def _ensure(self):
         if self.library is None:

@@ -6,14 +6,14 @@ import secrets
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 from . import VERSION_LABEL
+from .action_exchange import ActionExchange, clean_error
 from .actions import (
     export_site_catalog,
     export_workspace_catalog,
-    plan,
-    read_package,
     site_launch,
     validate_manifest,
 )
@@ -70,6 +70,12 @@ class PortalService:
         self._floating_session = {}
         self.browser_session = BrowserSession(self)
         self.focus_query = ""
+        self.focus_request_id = None
+        self.action_exchange = ActionExchange(self)
+        self.action_notices = []
+        self._action_inbound = deque()
+        self._action_inbound_lock = threading.Lock()
+        self._action_worker_active = False
         self.proposal = None
         self.launch_log = []
         self.page_token = secrets.token_urlsafe(24)
@@ -102,6 +108,7 @@ class PortalService:
             "launchFeedback": self.browser_session.messages(),
             "proposal": self.proposal,
             "focusQuery": self.focus_query,
+            "focusRequestID": self.focus_request_id,
             "vaultUnlocked": self.vault.is_unlocked(self.clock()),
         }
 
@@ -209,8 +216,10 @@ class PortalService:
                         except (AppError, OSError):
                             cleanup_failed = True
             self.history.entries.clear()
-            if payload.get("portalRequestID") and self.proposal and self.proposal.get("requestID") == payload["portalRequestID"]:
+            proposal_id = payload.get("portalRequestID")
+            if proposal_id and self.proposal and self.proposal.get("requestID") == proposal_id:
                 self.proposal = None
+                self.action_exchange.finish(proposal_id, "completed", "opened")
         state = self.state()
         if cleanup_failed:
             state["siteWarning"] = "网站已保存，但旧账号的密码清理失败。"
@@ -447,47 +456,128 @@ class PortalService:
         return self.state()
 
     def open_action(self, directory, now=None):
-        manifest = read_package(Path(directory), now=now)
-        if manifest["kind"] != "request":
-            raise AppError("请打开动作请求包。")
-        if manifest["action"] == "downloads.prepare":
+        return self.action_exchange.open(directory, now)
+
+    def activate_action(self, directory):
+        try:
+            result = self.open_action(directory)
+            notice = {key: result[key] for key in ("path", "record") if key in result}
+        except (OSError, AppError, ValueError, TypeError) as exception:
+            notice = {"error": str(exception) if isinstance(exception, AppError) else "无法读取跨 App 交接包。"}
+        if notice:
+            with self.action_exchange.lock:
+                notice["noticeID"] = str(uuid.uuid4())
+                self.action_notices.append(notice)
+                self.action_notices[:] = self.action_notices[-8:]
+
+    def enqueue_action(self, directory):
+        if not isinstance(directory, str) or not directory or len(directory) > 32767:
+            return False
+        with self._action_inbound_lock:
+            if directory in self._action_inbound:
+                return True
+            if len(self._action_inbound) >= 8:
+                return False
+            self._action_inbound.append(directory)
+            if not self._action_worker_active:
+                self._action_worker_active = True
+                threading.Thread(target=self._drain_action_requests, daemon=True).start()
+            return True
+
+    def _drain_action_requests(self):
+        while True:
+            with self._action_inbound_lock:
+                if not self._action_inbound:
+                    self._action_worker_active = False
+                    return
+                directory = self._action_inbound[0]
+            try:
+                self.activate_action(directory)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("交接队列处理失败")
+            finally:
+                with self._action_inbound_lock:
+                    self._action_inbound.popleft()
+
+    def receive_action_download(self, manifest, digest, now):
+        manager = self._download_manager()
+        with manager.lock:
+            request_id, repeated = import_request(manager, manifest, fingerprint=digest, now=now)
+        return {"ok": True, "plan": {"type": "downloadRequest", "requestID": request_id},
+                "path": f"/downloads#request={request_id}", "repeated": repeated}
+
+    def execute_action_plan(self, identifier, manifest, planned, now, inputs):
+        response = {"ok": True, "plan": planned}
+        kind = planned["type"]
+        if kind == "focusSearch":
+            if self.focus_request_id:
+                raise AppError("请先完成已有的搜索交接。", "editor_busy")
+            self.focus_request_id = identifier
+            self.focus_query = planned["query"]
+        elif kind == "proposeSite":
+            if self.proposal:
+                raise AppError("请先完成已有的网站建议。", "editor_busy")
+            self.proposal = {"url": planned["url"], "title": planned.get("title") or "", "requestID": identifier}
+            self.action_exchange.finish(identifier, "pending", "awaitingEditor")
+        elif kind == "prepareDownload":
             manager = self._download_manager()
             with manager.lock:
-                request_id = import_request(manager, manifest)
-            return {"ok": True, "plan": {"type": "downloadRequest", "requestID": request_id}, "path": f"/downloads#request={request_id}"}
-        self._writable()
-        planned = plan(
-            manifest["action"],
-            manifest["parameters"],
-            self.store.library,
-            self._installed(),
-            self._connected_map(),
-            len(manifest.get("items") or []),
-            len(manifest.get("references") or []),
-        )
-        if planned["type"] == "focusSearch":
-            self.focus_query = planned["query"]
-        elif planned["type"] == "proposeSite":
-            self.proposal = {
-                "url": planned["url"], "title": planned.get("title") or "",
-                "requestID": manifest["requestID"],
-            }
-        elif planned["type"] == "prepareDownload":
-            prepared = self._download_manager().prepare([item["url"] for item in planned["urls"]])
-            ticket = secrets.token_urlsafe(18)
-            with self.center_init_lock:
-                self.download_composers = {k: value for k, value in getattr(self, "download_composers", {}).items() if value[0] > self.clock()}
-                self.download_composers[ticket] = (self.clock() + 300, prepared)
-            return {"ok": True, "plan": planned, "prepared": prepared, "path": f"/downloads?review={ticket}"}
-        elif planned["type"] == "openSite":
-            site = self._site(planned["launch"]["siteID"])
-            self._open_launch(site, planned["launch"])
-        elif planned["type"] == "openWorkspace":
-            for launch in planned["sites"]:
-                self.browser_session.require_consent(launch)
-            for launch in planned["sites"]:
-                self._open_launch(self._site(launch["siteID"]), launch)
-        return {"ok": True, "plan": planned, "state": self.state()}
+                request_id, _ = import_request(manager, manifest, now=now, parent_action=identifier)
+            self.action_exchange.finish(identifier, "pending", "awaitingDownload")
+            response["path"] = f"/downloads#request={request_id}"
+        elif kind in ("openSite", "openWorkspace"):
+            targets = [planned["launch"]] if kind == "openSite" else planned["sites"]
+            self._open_action_sites(identifier, targets, inputs, as_workspace=kind == "openWorkspace")
+        return response
+
+    def _open_action_sites(self, identifier, targets, inputs, *, as_workspace):
+        outcomes = []
+
+        def advance(index):
+            if index >= len(targets):
+                successes = sum(item["workflowState"] == "opened" for item in outcomes)
+                status = "completed" if successes == len(targets) else ("partial" if successes else "failed")
+                error = None if successes else ("workspace_failed" if as_workspace else outcomes[0]["errorCode"])
+                self.action_exchange.finish(identifier, status, "opened" if successes else "failed", error,
+                                            outcomes if as_workspace else None)
+                return
+            target = targets[index]
+
+            def completed(error=None):
+                outcomes.append({"siteID": target["siteID"], "workflowState": "failed" if error else "opened", "errorCode": error})
+                if index + 1 < len(targets):
+                    timer = threading.Timer(0.3, advance, args=(index + 1,))
+                    timer.daemon = True
+                    timer.start()
+                else:
+                    advance(index + 1)
+
+            try:
+                site = self._site(target["siteID"])
+                if any(site.get(key) != value for key, value in inputs[index].items()):
+                    raise AppError("打开前网站设置已变化。", "input_changed")
+                self.action_exchange.requests.read()
+                response = self._open_launch(site, target, opened=completed)
+            except (AppError, OSError) as exc:
+                completed(clean_error(getattr(exc, "code", None), "browser_launch_failed"))
+            else:
+                if not response.get("requestID"):
+                    completed()
+
+        advance(0)
+
+    def acknowledge_action(self, identifier):
+        if not isinstance(identifier, str):
+            raise AppError("交接标识无效。", "invalid_identity")
+        if self.focus_request_id == identifier:
+            self.focus_request_id = None
+            self.focus_query = ""
+            self.action_exchange.finish(identifier, "completed", "opened")
+        elif self.proposal and self.proposal.get("requestID") == identifier:
+            self.proposal = None
+            self.action_exchange.finish(identifier, "cancelled", "cancelled")
+        return {"ok": True}
 
     def validate_action(self, manifest, now=None):
         return validate_manifest(manifest, now=now)
@@ -539,8 +629,8 @@ class PortalService:
     def native_message(self, message, browser):
         return self.browser_session.request(message, browser)
 
-    def _open_launch(self, site, launch, record=True):
-        return self.browser_session.launch(site, launch, record)
+    def _open_launch(self, site, launch, record=True, opened=None):
+        return self.browser_session.launch(site, launch, record, opened=opened)
 
     def _record_success(self, site_id):
         self.usage = record_launch(self.usage, site_id, self.clock())

@@ -21,6 +21,8 @@ const icons = {
   search: "M15.5 9a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0zM14 14l7 7",
   info: "M12 11v6m0-10v.1m9 4.9a9 9 0 1 1-18 0 9 9 0 0 1 18 0z",
   mail: "M3 6h18v13H3zM3 7l9 7 9-7",
+  "mail-open": "M3 10l9-7 9 7v11H3zM3 10l9 7 9-7",
+  "up-right": "M6 18L18 6M7 6h11v11",
   person: "M15 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM4 20c0-7 16-7 16 0",
   link: "M10 7l2-2a4 4 0 0 1 6 6l-3 3m-1 3-2 2a4 4 0 0 1-6-6l3-3m0 5 6-6",
   edit: "M5 16l-1 4 4-1L20 7l-3-3-12 12zm10-10 3 3",
@@ -127,7 +129,7 @@ function titleHeading(title, detail, action) {
 }
 
 function sheet(title, description, body, actions) {
-  const dialog = el("dialog");
+  const dialog = el("dialog", {"aria-label": title});
   const close = () => dialog.close();
   dialog.append(el("section", {class: "sheet"}, el("header", {}, el("h2", {}, title),
     description && el("p", {class: "muted"}, description)), body, el("div", {class: "sheet-error warning", role: "status"}),
@@ -230,19 +232,19 @@ async function mutateDownload(action, body) {
 }
 
 function startDownloads() {
-  document.title = "搞门户 · 下载";
+  document.title = "搞门户 · 下载中心";
   downloadSidebar = el("aside", {"aria-label": "下载分类"});
   downloadBody = el("div", {class: "body"});
   downloadStatusbar = el("footer", {class: "statusbar"});
   const search = el("input", {type: "search", placeholder: "搜索文件名或来源", "aria-label": "搜索文件名或来源"});
   search.addEventListener("input", () => { download.query = search.value; renderDownloadState(); });
-  const toolbar = el("div", {class: "toolbar"}, el("strong", {class: "window-title"}, document.title),
+  const toolbar = el("header", {class: "toolbar"}, el("span", {class: "space"}),
     search, button("新建下载", () => composeDownload(), {symbol: "plus", toolbar: true}),
     button("暂停全部", () => mutateDownload("pause-all"), {symbol: "pause", toolbar: true}),
     button("恢复全部", () => mutateDownload("resume-all"), {symbol: "play", toolbar: true}),
     button("下载设置", showDownloadSettings, {symbol: "gear", toolbar: true}));
-  root.replaceChildren(el("div", {class: "shell"}, downloadSidebar,
-    el("main", {}, toolbar, downloadBody, downloadStatusbar)));
+  root.replaceChildren(el("div", {class: "download-window"}, toolbar,
+    el("div", {class: "shell"}, downloadSidebar, el("main", {}, downloadBody, downloadStatusbar))));
   async function openDownloadLink() {
     const params = new URLSearchParams(location.search);
     if (params.has("site") || params.has("review")) {
@@ -316,10 +318,10 @@ function renderDownloadState() {
     const row = el("button", {class: "tile", type: "button", "aria-pressed": item.id === current?.id,
       "data-download-id": item.id, onclick: () => { download.selected = item.id; renderDownloadState(); }},
       el("div", {class: "row nowrap"},
-        el("span", {class: "mark"}, icon("file")),
+        el("span", {class: "download-glyph", "data-state": item.state}, icon("file")),
         el("div", {class: "stack space"}, el("strong", {class: "truncate"}, item.artifact?.fileName || item.suggestedName),
           el("small", {class: "truncate"}, item.displayURL)),
-        el("span", {class: "badge " + (item.state === "completed" ? "good" : item.error ? "warning" : "")}, downloadStatus[item.state] || item.state)),
+        el("span", {class: "download-row-state", "data-state": item.state}, downloadStatus[item.state] || item.state)),
       downloadProgress(item), el("small", {}, downloadCounts(item)));
     list.append(row);
   }
@@ -379,7 +381,7 @@ async function reviewRequest(record) {
 }
 
 function composeDownload({urls = [], request} = {}) {
-  const draft = el("textarea", {placeholder: "https://example.com/file.pdf", rows: 5, readonly: request ? "" : undefined});
+  const draft = el("textarea", {class: "download-links", placeholder: "https://example.com/file.pdf", rows: 5, readonly: request ? "" : undefined});
   draft.value = urls.join("\n");
   const locations = select([], "");
   const previews = el("div", {class: "stack"});
@@ -468,13 +470,18 @@ function renderExchange(records) {
   }
   const content = el("div", {class: "content"});
   for (const record of records.slice().reverse()) {
-    const status = ({awaitingReview:"等待复核",accepted:"已接受",rejected:"已拒绝"})[record.stage] || record.stage;
-    const ready = record.stage === "rejected" || (record.deliveries.some(delivery=>delivery.status==="pending") && record.itemIDs.length > 0 && record.itemIDs.every(id =>
+    const status = ({awaitingReview:"等待复核",accepted:"已接受",rejected:"已拒绝",expired:"已过期"})[record.stage] || record.stage;
+    const ready = record.stage === "rejected" || (record.deliveries.some(delivery=>delivery.status==="pending" && !["prepared", "failed"].includes(delivery.sendState)) && record.itemIDs.length > 0 && record.itemIDs.every(id =>
       ["completed", "partial", "failed", "cancelled"].includes(download.state.items.find(item => item.id === id)?.state)));
     const deliver = phase => pickDirectory(async path => {
       const response = await mutateDownload("request-result", {id: record.id, phase, path});
       flash("结果包已保存到 " + response.package);
     }, "选择结果包保存目录");
+    const send = phase => confirmSheet("发回交接结果？", "接收方 " + record.sourceBundleID + "。文件只作为独立副本交接。",
+      "发送结果", async () => {
+        const response = await mutateDownload("request-result", {id: record.id, phase, send: true});
+        flash(response.deliveryError ? response.deliveryError + " 结果包已保存。" : "已交给接收方复核。", Boolean(response.deliveryError));
+      });
     content.append(el("article", {class: "card"},
       el("div", {class: "row between"}, el("strong", {}, record.sourceBundleID), el("span", {class: "badge"}, status)),
       el("small", {class: "mono"}, record.id),
@@ -483,8 +490,10 @@ function renderExchange(records) {
         record.stage === "awaitingReview" && button("复核…", () => reviewRequest(record), {primary: true}),
         record.stage === "awaitingReview" && button("拒绝…", () => confirmSheet("拒绝这个请求？", "拒绝后可保存取消回执。", "拒绝请求",
           () => mutateDownload("request-reject", {id: record.id}), true), {danger: true}),
-        record.stage === "accepted" && button("保存接收回执…", () => deliver("pending")),
-        ready && button("保存最终结果包…", () => deliver("final"), {primary: true}))));
+        !record.parentActionID && record.stage === "accepted" && button("保存接收回执…", () => deliver("pending")),
+        !record.parentActionID && record.stage === "accepted" && button("发送接收回执…", () => send("pending")),
+        !record.parentActionID && ready && button("保存最终结果包…", () => deliver("final")),
+        !record.parentActionID && ready && button("发送最终结果…", () => send("final"), {primary: true}))));
   }
   downloadBody.append(content);
 }

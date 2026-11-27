@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory)] [string] $Setup,
     [string] $LegacyExe,
+    [string] $PreviousSetup,
+    [string] $PlaywrightPackage,
+    [string] $PeerPython,
     [switch] $Register
 )
 
@@ -16,8 +19,11 @@ $origin = $null
 $headers = $null
 $chromeKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge'
 $edgeKey = 'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\cn.mendao.bridge'
+$providerKey = 'HKCU:\Software\GaoSeries\GaoAction\cn.mendao.launcher'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{4E316375-9453-4D02-999A-567E10C5AC3D}_is1'
+$registeredInstallAttempt = $false
 
-function Wait-Portal($Process, $Root, [switch] $Legacy) {
+function Wait-Portal($Process, $Root) {
     $deadline = (Get-Date).AddSeconds(60)
     do {
         if ($Process.HasExited) { throw "Portal exited before startup: $($Process.ExitCode)" }
@@ -51,35 +57,77 @@ function Stop-Portal($Process) {
 }
 
 function Start-Portal($Path, $Root) {
-    Start-Process -FilePath $Path -ArgumentList @('--data-dir', ('"' + $Root + '"'), '--serve', '--no-browser', '--port', '0') -PassThru -WindowStyle Hidden
+    $previousOverride = $env:GAOMENHU_DATA_DIR
+    $env:GAOMENHU_DATA_DIR = $Root
+    try {
+        Start-Process -FilePath $Path -ArgumentList @('--data-dir', ('"' + $Root + '"'), '--serve', '--no-browser', '--port', '0') -PassThru -WindowStyle Hidden
+    } finally {
+        $env:GAOMENHU_DATA_DIR = $previousOverride
+    }
+}
+
+function Start-Install($File, $LogFile, [switch] $Portable) {
+    $expectedHash = ((Get-Content -LiteralPath "$($File.FullName).sha256" -Raw).Trim() -split '\s+')[0]
+    if ((Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash -ne $expectedHash) { throw "Installer hash differs" }
+    $setupArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS',
+        (('/DIR="{0}"') -f $installDir), (('/LOG="{0}"') -f $LogFile), '/MERGETASKS="!startmenu"')
+    if ($Portable) { $setupArguments += '/PORTABLE=1' }
+    $proc = Start-Process -FilePath $File.FullName -ArgumentList $setupArguments -Wait -PassThru -WindowStyle Hidden
+    if ($proc.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 12 | Write-Output }
+        throw "Installer exited with $($proc.ExitCode)"
+    }
+}
+
+function Wait-IsolatedEvent([scriptblock] $Probe, [string] $Description) {
+    $deadline = (Get-Date).AddSeconds(18)
+    do {
+        $match = & $Probe
+        if ($match) { return $match }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    throw "Timed out waiting for $Description"
+}
+
+function Test-InstalledAction {
+    $provider = (Call-Portal '/api/actions/providers').providers | Where-Object bundleID -eq 'cn.mendao.launcher'
+    if (-not $provider) { throw 'The live portal did not discover its installed capability descriptor' }
+    $outbound = Call-Portal '/api/actions/send' @{ target = 'cn.mendao.launcher'; urls = @('https://fixture.example.test/example.pdf'); privacy = 'strip' }
+    $requestID = $outbound.record.id
+    if ($outbound.deliveryError -or -not $requestID) { throw "Installed GaoAction could not dispatch: $($outbound.deliveryError)" }
+    $request = Wait-IsolatedEvent { (Call-Portal '/api/downloads/state').requests | Where-Object id -eq $requestID } 'registered process to receive the request'
+    if ($request.stage -ne 'awaitingReview') { throw 'The installed receiver skipped the download review' }
+    Call-Portal '/api/downloads/request-reject' @{ id = $requestID } | Out-Null
+    $reply = Call-Portal '/api/downloads/request-result' @{ id = $requestID; phase = 'final'; send = $true }
+    if (-not $reply.delivered -or $reply.deliveryError) { throw "The installed receiver did not dispatch its result: $($reply.deliveryError)" }
+    $review = Wait-IsolatedEvent {
+        $current = (Call-Portal '/api/actions/queue').review
+        if ($current.kind -eq 'result' -and $current.inReplyTo -eq $requestID) { $current }
+    } 'automatically delivered result review'
+    Call-Portal '/api/actions/decide' @{ id = $review.id; approve = $true } | Out-Null
+    $replay = Call-Portal '/api/actions/open' @{ path = $reply.package }
+    if (-not $replay.repeated) { throw 'The same installed result could be offered more than once' }
+    $result = (Call-Portal '/api/actions/history').records | Where-Object id -eq $requestID
+    if ($result.status -ne 'cancelled' -or $result.deliveries.Count -ne 1) { throw 'GaoAction history did not correlate the final cancellation' }
+    Write-Output 'Installed GaoAction discovery, child-process delivery, receiver review and final result correlation passed.'
 }
 
 try {
-    if ($Register -and ((Test-Path $chromeKey) -or (Test-Path $edgeKey))) {
-        throw "Run -Register only on a test account without existing GaoMenHu browser registrations"
+    if ($PreviousSetup -and $LegacyExe) { throw "Choose either -PreviousSetup or -LegacyExe" }
+    if (($PlaywrightPackage -or $PeerPython) -and -not $Register) { throw "Browser and peer smoke require a registered installation" }
+    if ($Register) {
+        foreach ($key in @($chromeKey, $edgeKey, $providerKey, $uninstallKey)) {
+            if (Test-Path -LiteralPath $key) { throw "Run -Register only when the GaoMenHu registration is unused: $key" }
+        }
     }
-    $expectedHash = ((Get-Content -LiteralPath "$($setupFile.FullName).sha256" -Raw).Trim() -split '\s+')[0]
-    if ((Get-FileHash -LiteralPath $setupFile.FullName -Algorithm SHA256).Hash -ne $expectedHash) { throw "Installer hash differs" }
-    $argsForSetup = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', (('/DIR="{0}"') -f $installDir), (('/LOG="{0}\setup.log"') -f $smokeRoot))
-    if (-not $Register) { $argsForSetup += '/PORTABLE=1' }
-    $installer = Start-Process -FilePath $setupFile.FullName -ArgumentList $argsForSetup -Wait -PassThru -WindowStyle Hidden
-    if ($installer.ExitCode -ne 0) { throw "Installer exited with $($installer.ExitCode), see $smokeRoot\setup.log" }
     $app = Join-Path $installDir 'GaoMenHu.exe'
     $native = Join-Path $installDir 'GaoMenHu-bridge.exe'
+    $console = Join-Path $installDir 'GaoMenHu-cli.exe'
     $manifest = Join-Path $installDir 'cn.mendao.bridge.json'
-    foreach ($file in @($app, $native)) {
-        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing executable $file" }
-        $bytes = [IO.File]::ReadAllBytes($file)
-        if ([BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 60) + 4) -ne 0x8664) { throw "Expected AMD64 PE: $file" }
-        if ((Get-Item -LiteralPath $file).VersionInfo.ProductVersion -ne '1.19') { throw "Unexpected product version: $file" }
-    }
-    $hostInfo = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
-    $extension = Get-Content -LiteralPath (Join-Path $installDir 'BrowserExtension\manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($hostInfo.name -ne 'cn.mendao.bridge' -or $hostInfo.path -ne 'GaoMenHu-bridge.exe' -or $extension.version -ne '1.19.0') { throw "Unexpected helper bundle" }
-    if ($Register) {
-        foreach ($key in @($chromeKey, $edgeKey)) {
-            if ((Get-Item -LiteralPath $key).GetValue('') -ne $manifest) { throw "Host was not registered at $key" }
-        }
+    $descriptor = Join-Path $installDir 'GaoCapabilities.json'
+    if ($PreviousSetup) {
+        Start-Install (Get-Item -LiteralPath $PreviousSetup) (Join-Path $smokeRoot 'previous.log') -Portable
+        $LegacyExe = $app
     }
     $profileID = '92ecd782-3c6e-4a48-9b8a-94de1c905252'
     $bookmarkedSite = @{
@@ -98,6 +146,26 @@ try {
         $legacyHash = (Get-FileHash -LiteralPath $libraryPath).Hash
         Remove-Item -LiteralPath "$dataDir.native.json" -ErrorAction SilentlyContinue
     }
+    $registeredInstallAttempt = [bool]$Register
+    Start-Install $setupFile (Join-Path $smokeRoot 'setup.log') -Portable:(-not $Register)
+    foreach ($file in @($app, $native, $console)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing executable $file" }
+        $bytes = [IO.File]::ReadAllBytes($file)
+        if ([BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 60) + 4) -ne 0x8664) { throw "Expected AMD64 PE: $file" }
+        if ((Get-Item -LiteralPath $file).VersionInfo.ProductVersion -ne '1.19') { throw "Unexpected product version: $file" }
+    }
+    $hostInfo = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    $extension = Get-Content -LiteralPath (Join-Path $installDir 'BrowserExtension\manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($hostInfo.name -ne 'cn.mendao.bridge' -or $hostInfo.path -ne 'GaoMenHu-bridge.exe' -or $extension.version -ne '1.19.0') { throw "Unexpected helper bundle" }
+    $capabilities = (& $console --capabilities | Out-String | ConvertFrom-Json)
+    if ($LASTEXITCODE -or $capabilities.bundleID -ne 'cn.mendao.launcher' -or $capabilities.appVersion -ne '1.19' -or -not $capabilities.actions) { throw "Installed CLI did not describe the portal capabilities" }
+    if ($Register) {
+        foreach ($key in @($chromeKey, $edgeKey)) {
+            if ((Get-Item -LiteralPath $key).GetValue('') -ne $manifest) { throw "Host was not registered at $key" }
+        }
+        $provider = Get-Item -LiteralPath $providerKey
+        if (($provider.GetValue('Executable') -ne $app) -or ($provider.GetValue('Capabilities') -ne $descriptor)) { throw "GaoAction provider was not registered" }
+    }
     $launcher = Start-Portal $app $dataDir
     Wait-Portal $launcher $dataDir
     foreach ($route in @('/settings', '/downloads', '/mail', '/portal-assets/style.css')) {
@@ -110,6 +178,12 @@ try {
         throw "Existing library changed on initial startup"
     }
     if (-not ((Call-Portal '/api/state').library.sites | Where-Object id -eq 'sandbox-site')) { throw "Site did not persist" }
+    if ($Register) { Test-InstalledAction }
+    if ($PlaywrightPackage) {
+        $playwright = (Resolve-Path -LiteralPath $PlaywrightPackage).Path
+        & node (Join-Path $PSScriptRoot 'browser-native.cjs') $playwright $installDir $dataDir $smokeRoot $origin
+        if ($LASTEXITCODE) { throw "Browser Native Messaging smoke failed" }
+    }
     $info = Get-Content -LiteralPath "$dataDir.native.json" -Raw | ConvertFrom-Json
     function Call-Helper($Message, $Browser = 'chrome') {
         $Message.profileId = $profileID
@@ -134,13 +208,24 @@ try {
     if (-not (Test-Path -LiteralPath $report)) { throw "WebView2 smoke exited before recording results: $($starter.ExitCode)" }
     $nativeText = Get-Content -LiteralPath $report -Raw -Encoding UTF8
     try { $nativeResult = $nativeText | ConvertFrom-Json } catch { throw "WebView2 reported: $nativeText" }
-    if ($starter.ExitCode -ne 0 -or -not ($nativeResult.launcher -and $nativeResult.bridge -and $nativeResult.token) -or $nativeResult.windows.Count -ne 4) { throw "WebView2 smoke failed: $nativeText" }
+    if ($starter.ExitCode -ne 0 -or -not ($nativeResult.launcher -and $nativeResult.bridge -and $nativeResult.token) -or $nativeResult.windows.Count -ne 4) { throw "WebView2 smoke exited with $($starter.ExitCode): $nativeText" }
+    if ($nativeResult.mailFloating.rail.Count -ne 2 -or $nativeResult.mailFloating.card.Count -ne 2 -or $nativeResult.mailFloating.card[0] -le $nativeResult.mailFloating.rail[0]) { throw "Native mail floating smoke failed: $nativeText" }
+    Write-Output ("Native mail rail and card at {0} DPI: {1} → {2}" -f $nativeResult.mailFloating.dpi, ($nativeResult.mailFloating.rail -join 'x'), ($nativeResult.mailFloating.card -join 'x'))
+    if ($PeerPython) {
+        $fixtureInterpreter = (Resolve-Path -LiteralPath $PeerPython).Path
+        & $fixtureInterpreter (Join-Path $PSScriptRoot 'gaoaction-installed-peer.py') --portal $app
+        if ($LASTEXITCODE) { throw "Independent installed GaoAction peer smoke failed" }
+    }
     Write-Output "Installer, x64 PE, loopback routes, DPAPI, browser identity and hidden WebView2 passed; legacy upgrade=$([bool]$LegacyExe); registry=$([bool]$Register)"
 } finally {
     Stop-Portal $launcher
-    if ($Register -and (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe'))) {
+    if ($registeredInstallAttempt -and (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe'))) {
+        $keptLibrary = Join-Path $dataDir 'library.json'
+        $beforeUninstall = if (Test-Path -LiteralPath $keptLibrary) { (Get-FileHash -LiteralPath $keptLibrary).Hash }
         $uninstall = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait -WindowStyle Hidden
-        if ($uninstall.ExitCode -ne 0 -or (Test-Path $chromeKey) -or (Test-Path $edgeKey)) { throw 'The test uninstall failed to remove its own registration' }
+        if ($uninstall.ExitCode -ne 0 -or (Test-Path $chromeKey) -or (Test-Path $edgeKey) -or (Test-Path $providerKey) -or (Test-Path $uninstallKey) -or (Test-Path $app)) { throw 'The test uninstall failed to remove its own application or registration' }
+        if ($beforeUninstall -and (Get-FileHash -LiteralPath $keptLibrary).Hash -ne $beforeUninstall) { throw 'The test uninstall changed isolated user data' }
+        Write-Output 'Uninstall removed installed files and registrations, and preserved isolated user data.'
     }
     $buildRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build')).Path.TrimEnd('\') + '\'
     $resolvedRoot = (Resolve-Path -LiteralPath $smokeRoot).Path

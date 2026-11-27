@@ -1,8 +1,14 @@
 html,
 body,
 kbd {
-  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
 }
+
+body { color-scheme: light; }
+body.dark { color-scheme: dark; }
+.page-heading h1 { font-family: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+.dialog :is(input, textarea, select), .folder-panel input { caret-color: var(--ink); }
+.nav-count, .version { font-variant-numeric: tabular-nums; }
 
 .search-wrap input { padding-right: 65px; }
 .browser-choice input[type="checkbox"] {
@@ -34,9 +40,11 @@ kbd {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  background: var(--canvas);
+  animation: none;
+  background: #f6f4ef;
   padding: 20px;
 }
+.settings-window.dark .launcher-settings { background: #17171c; }
 .settings-window #toast { left: 50%; }
 
 .settings-tabs {
@@ -55,6 +63,7 @@ kbd {
   padding: 6px 11px;
   border-radius: 6px;
   color: var(--muted);
+  font-size: 13px;
 }
 .settings-tabs button[aria-selected="true"] {
   color: var(--ink);
@@ -67,17 +76,22 @@ kbd {
   flex: 1;
   overflow: auto;
   scrollbar-width: thin;
-  padding: 0 3px 16px;
+  scrollbar-color: var(--line) transparent;
+  padding: 0 4px 20px;
 }
 .setting-group + .setting-group { margin-top: 18px; }
-.setting-group h3 { font-size: 13px; font-weight: 600; margin: 0 0 7px 11px; }
+.setting-group h3 { font-size: 13px; font-weight: 600; margin: 0 0 7px 12px; }
+.settings-pane[aria-labelledby="settings-tab-appearance"] .setting-group h3 { display: none; }
 .setting-group > div {
   display: flow-root;
   padding: 0 13px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  border-radius: 12px;
   background: var(--panel);
 }
+.setting-group .setting-row { min-height: 40px; padding-block: 6px; }
+.setting-group .setting-row > strong { font-size: 13px; font-weight: 500; }
+.setting-group .compact-select { font-size: 13px; }
 .setting-group .setting-row:last-child { border-bottom: 0; }
 .setting-group .setting-row > span:not(.connection) { color: var(--muted); }
 .setting-group .settings-buttons { justify-content: flex-start; flex-wrap: wrap; }

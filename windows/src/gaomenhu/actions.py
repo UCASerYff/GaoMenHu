@@ -1,9 +1,11 @@
 """GaoAction V1 与搞门户动作规划。portal.* 不接受附件，参数里不能带密码。"""
 
 import base64
+import hashlib
 import json
 import os
 import re
+import stat
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +16,11 @@ from .models import BROWSER_IDS, checked_url, normalized_host, origin_of, strip_
 
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_TTL_SECONDS = 120
+MAX_PAYLOAD_BYTES = 2 * 1024 ** 3
+ERROR_RE = re.compile(r"[a-z0-9_]{1,80}")
+HASH_RE = re.compile(r"[a-fA-F0-9]{64}")
+UUID_RE = re.compile(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")
+DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"{group}{number}" for group in ("COM", "LPT") for number in "123456789¹²³"}
 ACTION_RE = re.compile(r"^[a-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)+$")
 BUNDLE_RE = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$")
@@ -37,6 +44,7 @@ def _parse_date(value):
         return None
     try:
         if "." in value:
+            value = re.sub(r"(\.\d{6})\d+Z$", r"\1Z", value)
             return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -44,7 +52,26 @@ def _parse_date(value):
 
 
 def _valid_bundle(value):
-    return isinstance(value, str) and len(value.encode()) <= 255 and BUNDLE_RE.match(value) is not None
+    return isinstance(value, str) and len(value) <= 255 and BUNDLE_RE.fullmatch(value) is not None
+
+
+def manifest_uuid(value):
+    if not isinstance(value, str) or not UUID_RE.fullmatch(value):
+        raise AppError("交接标识无效。", "invalidIdentity")
+    return value.lower()
+
+
+def strict_json(data):
+    def object_pairs(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate member")
+        return result
+
+    def reject_constant(_):
+        raise ValueError("non-JSON number")
+
+    return json.loads(data, object_pairs_hook=object_pairs, parse_constant=reject_constant)
 
 
 def payload_components(path):
@@ -58,7 +85,8 @@ def payload_components(path):
     for part in parts:
         if not part or part in (".", "..") or len(part.encode()) > 255:
             raise AppError("附件相对路径越界", "invalidPath")
-        if any(ord(char) < 32 or ord(char) == 127 for char in part):
+        if (part.endswith((" ", ".")) or part.split(".", 1)[0].upper() in DEVICE_NAMES
+                or any(ord(char) < 32 or ord(char) == 127 or char in '<>:"|?*' for char in part)):
             raise AppError("附件相对路径越界", "invalidPath")
     return parts
 
@@ -137,8 +165,8 @@ def validate_manifest(data, target_bundle_id=APP_ID, now=None):
         if not data or len(data) > MAX_MANIFEST_BYTES:
             raise AppError("交接清单超出 1 MiB 限制", "manifestTooLarge")
         try:
-            manifest = json.loads(data.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
+            manifest = strict_json(data.decode("utf-8"))
+        except (UnicodeError, ValueError, RecursionError) as exc:
             raise AppError("交接清单不是有效 JSON", "invalidJSON") from exc
     else:
         manifest = data
@@ -152,11 +180,8 @@ def validate_manifest(data, target_bundle_id=APP_ID, now=None):
         raise AppError("交接清单含缺失或不支持的字段", "unknownField")
     if manifest.get("schemaVersion") != 1 or isinstance(manifest.get("schemaVersion"), bool):
         raise AppError("不支持的 GaoAction 版本", "unsupportedSchema")
-    try:
-        uuid.UUID(str(manifest.get("requestID")))
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise AppError("请求或目标应用标识无效", "invalidIdentity") from exc
-    if not _valid_bundle(manifest.get("sourceBundleID")) or manifest.get("targetBundleID") != target_bundle_id:
+    manifest_uuid(manifest.get("requestID"))
+    if not _valid_bundle(manifest.get("sourceBundleID")) or not _valid_bundle(manifest.get("targetBundleID")) or manifest.get("targetBundleID") != target_bundle_id:
         raise AppError("请求或目标应用标识无效", "invalidIdentity")
     action = manifest.get("action")
     if not isinstance(action, str) or len(action.encode()) > 128 or not ACTION_RE.match(action):
@@ -183,17 +208,37 @@ def validate_manifest(data, target_bundle_id=APP_ID, now=None):
         raise AppError("交接项目或参数格式无效", "invalidManifest")
     if len(items) + len(references) > 256:
         raise AppError("交接项目超过 256 项，请分批选择", "tooManyItems")
+    if kind == "result":
+        manifest_uuid(manifest.get("inReplyTo"))
+        if manifest["status"] not in ("pending", "completed", "partial", "failed", "cancelled", "unsupported"):
+            raise AppError("交接结果状态无效。", "invalidResult")
+        error = manifest["errorCode"]
+        if error is not None and (not isinstance(error, str) or not ERROR_RE.fullmatch(error)):
+            raise AppError("交接结果错误编号无效。", "invalidResult")
+        if not isinstance(manifest["provenance"], dict):
+            raise AppError("交接结果来源字段无效。", "invalidResult")
     paths = set()
+    item_ids = set()
+    total = 0
     for item in items:
         if not isinstance(item, dict) or set(item) != {"id", "relativePath", "uti", "byteCount", "sha256"}:
             raise AppError("文件项目字段无效", "unknownItemField")
-        normalized = "/".join(payload_components(item["relativePath"]))
-        if normalized in paths:
-            raise AppError("交接文件路径重复", "duplicatePath")
+        item_id = item["id"]
+        if (not isinstance(item_id, str) or not 1 <= len(item_id) <= 256 or not isinstance(item["uti"], str)
+                or not 1 <= len(item["uti"]) <= 256 or type(item["byteCount"]) is not int or item["byteCount"] < 0
+                or not isinstance(item["sha256"], str) or not HASH_RE.fullmatch(item["sha256"])):
+            raise AppError("交接文件项目无效。", "invalidItem")
+        normalized = "/".join(payload_components(item["relativePath"])).casefold()
+        if normalized in paths or item_id.casefold() in item_ids:
+            raise AppError("附件相对路径重复", "duplicatePath")
         paths.add(normalized)
-    if action.startswith("portal.") and (items or references):
+        item_ids.add(item_id.casefold())
+        total += item["byteCount"]
+    if total > MAX_PAYLOAD_BYTES:
+        raise AppError("交接文件超过 2 GiB，请分批选择。", "payloadTooLarge")
+    if action.startswith("portal.") and (items or references or (kind == "result" and parameters)):
         raise AppError("网站动作不接受文件或原件引用", "unexpectedPayload")
-    if action.startswith("portal.") or action == "downloads.prepare":
+    if kind == "request" and (action.startswith("portal.") or action == "downloads.prepare"):
         validate_parameters(action, parameters, len(items), len(references))
     return manifest
 
@@ -312,25 +357,107 @@ def make_request(action, parameters, source=APP_ID, target=APP_ID, now=None):
     return manifest
 
 
-def read_package(directory: Path, now=None):
-    directory = Path(directory)
-    if directory.suffix.lower() != ".gaoaction" or not directory.is_dir():
-        raise AppError("请选择 .gaoaction 交接包", "invalidPackage")
-    manifest_path = directory / "manifest.json"
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise AppError("无法安全读取交接文件", "unreadable")
-    data = manifest_path.read_bytes()
-    manifest = validate_manifest(data, now=now)
+def filesystem_entry(path, *, directory=False):
+    info = path.lstat()
+    mode = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not mode(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            or (not directory and info.st_nlink != 1)):
+        raise AppError("交接包包含链接或无效文件。", "unsafeDirectory")
+    return info
+
+
+def package_manifest(directory, now=None, target_bundle_id=APP_ID):
+    if not isinstance(directory, (str, os.PathLike)):
+        raise AppError("请选择 .gaoaction 交接包。", "invalidPackage")
+    directory = Path(directory).absolute()
+    if directory.suffix.lower() != ".gaoaction" or ".." in directory.parts or (os.name == "nt" and not re.fullmatch(r"[A-Za-z]:", directory.drive)):
+        raise AppError("请选择 .gaoaction 交接包。", "invalidPackage")
+    try:
+        for parent in (*reversed(directory.parents), directory):
+            filesystem_entry(parent, directory=True)
+        path = directory / "manifest.json"
+        before = filesystem_entry(path)
+        if not 0 < before.st_size <= MAX_MANIFEST_BYTES:
+            raise AppError("交接清单超出 1 MiB 限制。", "manifestTooLarge")
+        with path.open("rb") as source:
+            opened = os.fstat(source.fileno())
+            data = source.read(MAX_MANIFEST_BYTES + 1)
+            after = os.fstat(source.fileno())
+        if _file_identity(before) != _file_identity(opened) or _file_identity(opened) != _file_identity(after):
+            raise AppError("交接清单已变化。", "package_changed")
+        return validate_manifest(data, target_bundle_id, now), data
+    except OSError as exc:
+        raise AppError("无法安全读取交接包。", "unreadable") from exc
+
+
+def verify_payload(directory, manifest, copy_to=None):
+    directory = Path(directory).absolute()
     payload = directory / "payload"
-    if manifest.get("items"):
-        if not payload.is_dir():
-            raise AppError("交接目录不可读或包含链接", "unsafeDirectory")
-        for item in manifest["items"]:
-            relative = Path(*payload_components(item["relativePath"]))
-            target = payload / relative
-            if not target.is_file() or target.is_symlink():
-                raise AppError("无法安全读取交接文件", "unreadable")
-            resolved = target.resolve()
-            if payload.resolve() not in resolved.parents:
-                raise AppError("附件相对路径越界", "invalidPath")
+    declared = {tuple(payload_components(item["relativePath"])): item for item in manifest["items"]}
+    required_directories = {relative[:i] for relative in declared for i in range(1, len(relative))}
+    try:
+        expected_entries = {"manifest.json", "payload"}
+        entries = {entry.name for entry in directory.iterdir()}
+        if entries != expected_entries and (entries != {"manifest.json"} or declared):
+            raise AppError("交接包包含未声明的目录项目。", "unexpectedFile")
+        if "payload" not in entries:
+            return
+        for parent in (*reversed(payload.parents), payload):
+            filesystem_entry(parent, directory=True)
+        remaining = set(declared)
+        stack = [(payload, ())]
+        while stack:
+            folder, current = stack.pop()
+            for entry in folder.iterdir():
+                relative = current + (entry.name,)
+                if relative in required_directories:
+                    filesystem_entry(entry, directory=True)
+                    stack.append((entry, relative))
+                elif relative in remaining:
+                    target = copy_to.joinpath("payload", *relative) if copy_to else None
+                    if target:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                    _verify_file(entry, declared[relative], target)
+                    remaining.remove(relative)
+                else:
+                    raise AppError("交接包包含未声明的附件。", "unexpectedFile")
+        if remaining:
+            raise AppError("交接包缺少附件。", "unreadable")
+    except OSError as exc:
+        raise AppError("无法安全读取交接附件。", "unreadable") from exc
+
+
+def _file_identity(info):
+    return info.st_dev, info.st_ino, info.st_nlink, info.st_size, info.st_mtime_ns
+
+
+def _verify_file(path, item, copy_to):
+    before = filesystem_entry(path)
+    if before.st_size != item["byteCount"]:
+        raise AppError("交接附件长度与清单不符。", "sizeMismatch")
+    digest = hashlib.sha256()
+    count = 0
+    from contextlib import nullcontext
+    with path.open("rb") as source, (copy_to.open("xb") if copy_to else nullcontext()) as target:
+        opened = os.fstat(source.fileno())
+        if _file_identity(before) != _file_identity(opened):
+            raise AppError("交接附件已变化。", "package_changed")
+        while chunk := source.read(1024 * 1024):
+            count += len(chunk)
+            if count > item["byteCount"]:
+                raise AppError("交接附件长度与清单不符。", "sizeMismatch")
+            digest.update(chunk)
+            if target:
+                target.write(chunk)
+        if target:
+            target.flush()
+            os.fsync(target.fileno())
+        after = os.fstat(source.fileno())
+        if _file_identity(before) != _file_identity(after) or count != item["byteCount"] or digest.hexdigest() != item["sha256"].lower():
+            raise AppError("交接附件摘要与清单不符。", "hashMismatch")
+
+
+def read_package(directory: Path, now=None, target_bundle_id=APP_ID):
+    manifest, _ = package_manifest(directory, now, target_bundle_id)
+    verify_payload(directory, manifest)
     return manifest

@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import EXTENSION_ID, VERSION_LABEL
+from .action_exchange import action_route
 from .backup import export_zip, read_zip
 from .browsers import open_extension_setup
 from .centers import download_route, mail_route
@@ -123,12 +124,18 @@ class PortalServer:
             return
         if not isinstance(payload, dict):
             payload = {}
-        if path in ("/api/native", "/api/desktop/activate"):
+        if path in ("/api/native", "/api/desktop/activate", "/api/actions/activate"):
             if handler.headers.get("X-Gao-Host") != self.service.host_token:
                 self._json(handler, 403, {"ok": False, "error": "助手令牌无效。"})
                 return
             if path == "/api/desktop/activate":
                 self._json(handler, 200, {"ok": bool(self.activate_desktop and self.activate_desktop())})
+                return
+            if path == "/api/actions/activate":
+                accepted = self.service.enqueue_action(payload.get("path"))
+                self._json(handler, 200, {"ok": accepted})
+                if accepted and self.activate_desktop:
+                    self.activate_desktop()
                 return
             if payload.get("extension") != EXTENSION_ID:
                 self._json(handler, 403, {"ok": False, "error": "连接身份无效。"})
@@ -175,9 +182,7 @@ class PortalServer:
         if path == "/api/browser/extensions":
             return open_extension_setup(payload.get("browserID"))
         if path == "/api/launcher/acknowledge":
-            if payload.get("requestID") and service.proposal and service.proposal.get("requestID") == payload["requestID"]:
-                service.proposal = None
-            return {"ok": True}
+            return service.acknowledge_action(payload.get("requestID"))
         if path == "/api/library/create":
             return service.create_library()
         if path == "/api/sites/save":
@@ -262,10 +267,10 @@ class PortalServer:
             return {"ok": True, "sources": service.bookmark_sources(payload.get("home") or str(Path.home()))}
         if path == "/api/bookmarks/preview":
             return service.preview_bookmarks(payload.get("home") or str(Path.home()), payload.get("sourceID"))
-        if path == "/api/actions/open":
-            return service.open_action(payload.get("path"))
         if path == "/api/actions/catalog":
             return {"ok": True, "catalog": service.export_catalog(payload.get("kind") or "sites", payload.get("ids") or [])}
+        if path.startswith("/api/actions/"):
+            return action_route(service, path.removeprefix("/api/actions/"), payload)
         if path == "/api/floating":
             query = payload.get("query")
             settings = service.set_floating(payload)

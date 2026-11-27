@@ -24,6 +24,12 @@ PENDING_PREFIXES = (
 
 
 def default_data_dir():
+    data_override = os.environ.get("GAOMENHU_DATA_DIR")
+    if data_override:
+        path = Path(data_override)
+        if not path.is_absolute():
+            raise ValueError("GAOMENHU_DATA_DIR must be an absolute path")
+        return path
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     else:

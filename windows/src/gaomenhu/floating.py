@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import gc
 import logging
 import os
 import queue
@@ -33,24 +34,43 @@ def enable_per_monitor_dpi():
 
 
 def run_floating(service, open_main, stop_event, open_downloads=None, open_mail=None, *,
-                 quit_app=None, icon_path=None, on_tray_state=None, on_session_lock=None):
+                 quit_app=None, icon_path=None, on_tray_state=None, on_session_lock=None,
+                 mail_commands=None, open_center=None):
     if os.name != "nt":
         return
     import tkinter as tk
 
     from . import floating_win32 as desktop
+    from .mail_floating import MailFloatingPanel
 
     desktop.enable_thread_dpi()
     root = tk.Tk(className="GaoMenHuFloating")
+    panel = mail_panel = None
     try:
         panel = FloatingPanel(tk, root, desktop, service, stop_event, open_main, open_downloads, open_mail, quit_app,
                               icon_path, on_tray_state, on_session_lock)
         try:
+            if mail_commands is not None and open_center is not None:
+                def neighboring_rail():
+                    return panel_frame(panel.screen, panel.anchor, panel.dock, False, 0) if panel.enabled else None
+
+                try:
+                    mail_panel = MailFloatingPanel(tk, root, desktop, service, mail_commands, open_center,
+                                                   neighboring_rail, system_appearance)
+                except (OSError, tk.TclError):
+                    LOG.exception("Could not initialize the mail floating panel")
+                else:
+                    panel.mail_panel = mail_panel
             root.mainloop()
         finally:
+            if mail_panel is not None:
+                mail_panel.close()
             panel.native.close()
     finally:
         root.destroy()
+        # Release Tk callback cycles on this thread before WinForms or process teardown.
+        panel = mail_panel = root = None
+        gc.collect()
 
 
 def system_appearance():
@@ -83,6 +103,7 @@ class FloatingPanel:
         self.tk, self.root, self.desktop, self.service = tk, root, desktop, service
         self.stop, self.open_main, self.quit_app = stop, open_main, quit_app
         self.open_downloads, self.open_mail = open_downloads, open_mail
+        self.mail_panel = None
         self.on_tray_state = on_tray_state
         self.on_session_lock = on_session_lock
         self.enabled = self.expanded = self.launching = self.menu_open = False
@@ -106,8 +127,6 @@ class FloatingPanel:
         root.withdraw()
         root.title("搞门户 · 悬浮窗")
         root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        root.attributes("-transparentcolor", TRANSPARENT)
         self.canvas = tk.Canvas(root, bg=TRANSPARENT, borderwidth=0, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         # The colored strip has a separate, nearly invisible hit target. A Win32
@@ -116,8 +135,6 @@ class FloatingPanel:
         self.hit.withdraw()
         self.hit.title("展开搞门户悬浮窗")
         self.hit.overrideredirect(True)
-        self.hit.attributes("-topmost", True)
-        self.hit.attributes("-alpha", 0.012)
         self.hit.configure(bg="#333333")
         self.query = tk.StringVar(root, value=PLACEHOLDER)
         self.entry = tk.Entry(self.canvas, textvariable=self.query, borderwidth=0, highlightthickness=0)
@@ -142,9 +159,12 @@ class FloatingPanel:
             target.bind("<B1-Motion>", self.motion)
         self.canvas.bind("<ButtonRelease-3>", self.context_menu)
 
-        root.update_idletasks()
+        with desktop.without_activation():
+            root.update_idletasks()
         self.native = desktop.DesktopWindow(root, self.dispatch, self.allows_activation, icon_path)
         self.hit_window = desktop.prepare_window(self.hit)
+        desktop.configure_transparency(self.native.window, color_key=TRANSPARENT)
+        desktop.configure_transparency(self.hit_window, opacity=0.012)
         self.screens = desktop.monitors()
         self.screen, self.anchor = restore_anchor(self.screens, None)
         self.frame = panel_frame(self.screen, self.anchor, "right", False, 0)
@@ -176,10 +196,14 @@ class FloatingPanel:
                 ("打开搞门户", self.show_main, False),
                 ("下载中心…", self.open_downloads, False),
                 ("邮件中心…", self.open_mail, False),
+            ]
+            if self.mail_panel is not None:
+                items.append(("显示或隐藏邮件悬浮窗", lambda: self.mail_panel.command("toggle"), self.mail_panel.enabled))
+            items.extend([
                 (None, None, False),
                 ("显示或隐藏悬浮窗", lambda: self.dispatch("toggle"), self.enabled),
                 ("重置悬浮窗位置", self.reset, False),
-            ]
+            ])
             if self.quit_app:
                 items.extend([(None, None, False), ("退出搞门户", self.quit_app, False)])
             self.show_menu(items, self.desktop.pointer())
@@ -334,14 +358,14 @@ class FloatingPanel:
             if not self.expanded:
                 self.desktop.place_window(self.hit_window, frame)
                 if self.hit.state() == "withdrawn":
-                    self.hit.deiconify()
+                    self.desktop.show_nonactivating(self.hit)
                     self.desktop.place_window(self.hit_window, frame)
             elif self.hit.state() != "withdrawn":
                 self.hit.withdraw()
             # Establish its real position before mapping to avoid flashing in the corner.
             self.native.place(frame)
             if self.root.state() == "withdrawn":
-                self.root.deiconify()
+                self.desktop.show_nonactivating(self.root)
             self.native.place(frame)
 
     def query_changed(self, *args):

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import VERSION_LABEL
+from .action_transport import descriptor_path
 from .native import (
     EXTENSION_ORIGIN, browser_from_ancestors, exchange, native_manifest, publish_host, rendezvous_path,
     read_message as _read_message, run_native_host, write_message as _write_message,
@@ -56,10 +57,16 @@ def main(argv=None):
     parser.add_argument("--browser", choices=("chrome", "edge"))
     parser.add_argument("--window-smoke", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--gaoaction", type=Path, metavar="PATH")
+    parser.add_argument("--capabilities", action="store_true")
     args = parser.parse_args(argv)
     if args.version:
         if sys.stdout is not None:
             print(VERSION_LABEL)
+        return 0
+    if args.capabilities:
+        if sys.stdout is not None:
+            sys.stdout.buffer.write(descriptor_path().read_bytes())
         return 0
     data_dir = (Path(args.data_dir) if args.data_dir else default_data_dir()).resolve()
     if args.native_host:
@@ -72,16 +79,18 @@ def main(argv=None):
     desktop = os.name == "nt" and not (args.serve or args.no_browser)
     port = args.port if args.port is not None else (0 if desktop else 18765)
     if os.name != "nt":
-        return _serve(data_dir, port, False, open_browser=not (args.serve or args.no_browser))
+        return _serve(data_dir, port, False, open_browser=not (args.serve or args.no_browser), incoming=args.gaoaction)
     with instance_lock(data_dir) as owner:
         if owner:
-            return _serve(data_dir, port, desktop, smoke_file=args.window_smoke)
-        if not desktop:
+            return _serve(data_dir, port, desktop, smoke_file=args.window_smoke, incoming=args.gaoaction)
+        if not desktop and not args.gaoaction:
             _error("该资料目录的搞门户已经在运行。")
             return 1
         for _ in range(20):
             try:
-                if exchange(data_dir, "/api/desktop/activate", {}).get("ok"):
+                endpoint = "/api/actions/activate" if args.gaoaction else "/api/desktop/activate"
+                payload = {"path": str(args.gaoaction.absolute())} if args.gaoaction else {}
+                if exchange(data_dir, endpoint, payload).get("ok"):
                     return 0
             except (OSError, ValueError, KeyError):
                 pass
@@ -98,9 +107,11 @@ def _error(message):
         ctypes.windll.user32.MessageBoxW(None, message, "搞门户", 0x10)
 
 
-def _serve(data_dir, port, desktop, open_browser=False, smoke_file=None):
+def _serve(data_dir, port, desktop, open_browser=False, smoke_file=None, incoming=None):
     try:
         service = PortalService(data_dir)
+        if incoming:
+            service.enqueue_action(str(incoming.absolute()))
         server = PortalServer(service, port=port)
         publish_host(data_dir, server.port, service.host_token)
     except (OSError, ValueError) as exc:

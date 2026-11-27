@@ -10,6 +10,7 @@ const browserCatalog = [
 ];
 let currentAccess, libraryRevision, settingsTab = 'modules';
 let lastProposal, lastAppliedQuery, previousFeedback;
+let activeActionReview, checkingActions = false;
 
 function profileOptions(profiles) {
   return profiles.flatMap(profile => (profile.browsers || [profile.browser])
@@ -300,7 +301,8 @@ function settingsContent(tab) {
       note('导出当前网站资料，可合并导入或预览恢复。'),
       buttonRow(settingButton('exportJson', '导出 JSON…'), settingButton('mergeJson', '导入 JSON…'), settingButton('restoreJson', '恢复 JSON…'))
     ]) + settingGroup('跨 App 交接', [
-      buttonRow(settingButton('openActionPackage', '打开交接包…'), settingButton('exportSitesCatalog', '导出授权网站目录…'), settingButton('exportWorkspacesCatalog', '导出授权场景目录…'))
+      buttonRow(settingButton('openActionPackage', '打开交接包…'), settingButton('actionHistory', '查看交接结果…'), settingButton('sendDownloadAction', '交接下载网址…')),
+      buttonRow(settingButton('exportSitesCatalog', '导出授权网站目录…'), settingButton('exportWorkspacesCatalog', '导出授权场景目录…'))
     ]) + settingGroup('数据目录', [buttonRow(settingButton('revealData', '打开数据目录'))]);
   }
   return settingGroup('启动台', [
@@ -434,6 +436,8 @@ function renderWindowsSettings(tab = settingsTab) {
     bind('mergeJson', () => startBackupPreview('merge'));
     bind('restoreJson', () => restoreJsonBackup());
     bind('openActionPackage', chooseActionPackage);
+    bind('actionHistory', showActionHistory);
+    bind('sendDownloadAction', showSendDownloadAction);
     bind('exportSitesCatalog', () => chooseCatalog('sites'));
     bind('exportWorkspacesCatalog', () => chooseCatalog('workspaces'));
     bind('revealData', () => portalAPI('/api/launcher/data-directory'));
@@ -463,17 +467,153 @@ async function chooseActionPackage() {
     const path = $('actionPath').value.trim();
     if (!path) throw new Error('请填写交接包路径。');
     await openActionPackage(path);
-    closeDialog();
   });
 }
 
 async function openActionPackage(path) {
-  const result = await launchWithVault('/api/actions/open', {path});
+  const result = await portalAPI('/api/actions/open', {path});
   if (result.path) return openPortalWindow(result.path);
-  if (result.plan.type === 'focusSearch' || result.plan.type === 'proposeSite') {
-    if (settingsWindow) await openPortalWindow('/');
-    toast(result.plan.type === 'proposeSite' ? '已准备建议网址，请在启动台确认。' : '已在启动台打开搜索。');
-  } else toast('已处理交接包。');
+  if (result.review) return showActionReview(result.review);
+  if (result.record) return showActionHistory(result.record.id);
+}
+
+const actionNames = {
+  'portal.openSite': '打开网站', 'portal.openWorkspace': '打开工作场景', 'portal.focusSearch': '打开搜索',
+  'portal.proposeSite': '建议添加网站', 'portal.prepareDownload': '复核下载链接', 'downloads.prepare': '文件下载'
+};
+const actionStates = {
+  awaitingUser:'等待复核', executing:'正在执行', awaitingEditor:'等待保存网站', awaitingDownload:'等待复核下载',
+  accepted:'已接收任务', handedOff:'等待接收回执', opened:'已打开', completed:'已完成', partial:'部分完成',
+  failed:'失败', cancelled:'已取消', unsupported:'接收方不支持', expired:'投递期限已过'
+};
+
+function actionState(record) {
+  if (record.sendState === 'expired') return actionStates.expired;
+  if (record.status === 'partial') return actionStates.partial;
+  return actionStates[record.workflowState] || record.status;
+}
+
+function showActionReview(review) {
+  if (activeActionReview === review.id) return;
+  activeActionReview = review.id;
+  const isResult = review.kind === 'result';
+  const detail = isResult
+    ? '<p>关联请求 ' + esc(review.inReplyTo) + '</p><p>状态 ' + esc(actionStates[review.status] || review.status)
+      + ' · 已核验 ' + review.fileCount + ' 个文件。确认后记录私有副本。</p>'
+    : '<ul>' + review.summary.filter(Boolean).map(line => '<li>' + esc(line) + '</li>').join('') + '</ul>';
+  openDialog(head('', isResult ? '复核下载回送' : '复核跨 App 请求',
+    '来源声明 ' + review.source + '。来源标识用于关联。')
+    + '<p>' + esc(actionNames[review.action] || review.action) + '</p>' + detail
+    + '<p id="actionReviewIssue" role="status"></p>'
+    + '<div class="dialog-actions"><button id="cancelActionReview" class="soft-button">取消</button>'
+    + '<button id="approveActionReview" class="primary-button">' + (isResult ? '接纳并记录结果' : '确认执行') + '</button></div>', true);
+  async function decide(approve) {
+    const ok = $('approveActionReview');
+    const cancel = $('cancelActionReview');
+    ok.disabled = cancel.disabled = true;
+    try {
+      const response = await launchWithVault('/api/actions/decide', {id: review.id, approve});
+      activeActionReview = null;
+      closeDialog();
+      if (response.path) await openPortalWindow(response.path);
+      else if (approve && !isResult && settingsWindow) await openPortalWindow('/');
+      toast(approve ? (isResult ? '已记录下载回执或结果。' : '已确认交接。可在数据设置查看处理状态。') : '已取消交接。');
+    } catch (error) {
+      if (['expired', 'review_unavailable', 'input_changed'].includes(error.code)) {
+        activeActionReview = null;
+        closeDialog();
+        toast(error.message);
+      } else {
+        $('actionReviewIssue').textContent = error.message;
+        ok.disabled = cancel.disabled = false;
+      }
+    }
+  }
+  $('approveActionReview').onclick = () => decide(true);
+  $('cancelActionReview').onclick = () => decide(false);
+}
+
+async function showActionHistory(selected) {
+  const history = await portalAPI('/api/actions/history', {}, false);
+  const rows = history.records.slice(0, 200);
+  const warnings = history.unavailable.map(category => category === 'portal' ? '网站动作历史暂不可读。' : '下载交接历史暂不可读。');
+  openDialog(head('', '交接结果', '请求交付、任务接收和完成文件分别记录。')
+    + (warnings.length ? '<p role="alert">' + warnings.join(' ') + '</p>' : '')
+    + (rows.length ? '<label class="field"><span class="field-label">最近交接</span><select id="actionHistoryChoice">'
+      + rows.map(row => '<option value="' + esc(row.id) + '">' + esc((actionNames[row.action] || row.action)
+        + ' · ' + actionState(row) + ' · ' + row.id.slice(0, 8)) + '</option>').join('') + '</select></label>'
+      + '<div id="actionHistoryDetail"></div>' : '<p>暂无交接结果。</p>')
+    + '<div class="dialog-actions"><button class="soft-button" data-close>关闭</button></div>', true);
+  if (!rows.length) return;
+  const choice = $('actionHistoryChoice');
+  if (rows.some(row => row.id === selected)) choice.value = selected;
+  function detail() {
+    const record = rows.find(row => row.id === choice.value);
+    if (!record) return;
+    const deliverable = record.direction === 'request' && (record.status !== 'pending' || record.workflowState === 'accepted');
+    const retry = record.direction === 'outgoing' && record.status === 'pending' && record.sendState !== 'expired' && !record.deliveries?.length;
+    const sites = (record.sites || []).map(item => '<li>' + esc((siteById(item.siteID)?.name || item.siteID) + ' · ' +
+      (actionStates[item.workflowState] || item.workflowState) + (item.errorCode ? ' · ' + item.errorCode : '')) + '</li>').join('');
+    $('actionHistoryDetail').innerHTML = '<p>' + esc(actionState(record)) + '</p><p>'
+      + esc(record.sourceBundleID + ' → ' + record.targetBundleID) + '</p>'
+      + (record.errorCode ? '<p>错误编号 ' + esc(record.errorCode) + '</p>' : '')
+      + (sites ? '<ul>' + sites + '</ul>' : '')
+      + (record.taskIDs?.length ? '<p>' + record.taskIDs.length + ' 项任务 · ' + (record.fileCount || 0) + ' 个已核验文件副本</p>' : '')
+      + (record.deliveries?.length ? '<p>' + esc(record.deliveries.map(delivery => actionStates[delivery.status] || delivery.status).join(' → ')) + '</p>' : '')
+      + '<div class="dialog-actions">' + (deliverable ? settingButton('saveActionResult', '保存结果包…')
+          + settingButton('sendActionResult', '发送结果…') : '')
+      + (record.fileCount ? settingButton('revealActionResult', '显示已核验副本') : '')
+      + (retry ? settingButton('retryActionRequest', '重新投递') : '') + '</div>';
+    if ($('saveActionResult')) $('saveActionResult').onclick = event => applyButton(event.currentTarget, async () => {
+      const path = window.pywebview?.api?.choose_folder ? await window.pywebview.api.choose_folder() : window.prompt('保存 .gaoaction 文件夹的目录');
+      if (path) await portalAPI('/api/actions/publish', {id: record.id, path}, false);
+    });
+    if ($('sendActionResult')) $('sendActionResult').onclick = event => applyButton(event.currentTarget, async () => {
+      if (!window.confirm('将结果发回 ' + record.sourceBundleID + '？结果不含密码或浏览器资料。')) return;
+      const result = await portalAPI('/api/actions/publish', {id: record.id, send: true}, false);
+      return {message: result.deliveryError ? result.deliveryError + ' 结果包已保存。' : '结果已交给接收方。'};
+    });
+    if ($('revealActionResult')) $('revealActionResult').onclick = event => applyButton(event.currentTarget,
+      () => portalAPI('/api/actions/reveal', {id: record.id}, false));
+    if ($('retryActionRequest')) $('retryActionRequest').onclick = event => applyButton(event.currentTarget,
+      () => portalAPI('/api/actions/resend', {id: record.id}, false));
+  }
+  choice.onchange = detail;
+  detail();
+}
+
+async function showSendDownloadAction() {
+  const {providers} = await portalAPI('/api/actions/providers', {}, false);
+  openDialog(head('', '交接下载网址', '接收方须已安装并声明文件下载能力。发送后仍须在接收方复核。')
+    + (!providers.length ? '<p>尚未找到兼容的接收方，可从下载中心选择本地下载。</p>' :
+      '<label class="field"><span class="field-label">接收方</span><select id="actionDownloadTarget">'
+      + providers.map(provider => '<option value="' + esc(provider.bundleID) + '">' + esc(provider.bundleID + ' V' + provider.version) + '</option>').join('')
+      + '</select></label><label class="field"><span class="field-label">每行一个 HTTP 或 HTTPS 链接</span><textarea rows="5" id="actionDownloadURLs"></textarea></label>'
+      + '<label class="field"><span class="field-label">链接隐私</span><select id="actionDownloadPrivacy"><option value="strip">去除查询参数和片段</option>'
+      + '<option value="keep">保留查询参数</option></select></label>')
+    + '<div class="dialog-actions"><button class="soft-button" data-close>取消</button>'
+    + (providers.length ? '<button id="actionDownloadSend" class="primary-button">确认交接</button>' : '') + '</div>', true);
+  if ($('actionDownloadSend')) $('actionDownloadSend').onclick = event => applyButton(event.currentTarget, async () => {
+    const result = await portalAPI('/api/actions/send', {target: $('actionDownloadTarget').value,
+      urls: $('actionDownloadURLs').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean), privacy: $('actionDownloadPrivacy').value}, false);
+    closeDialog();
+    return result;
+  });
+}
+
+async function pollActionQueue() {
+  if (settingsWindow || checkingActions || !S || document.hidden || !$('dialogOverlay').hidden) return;
+  checkingActions = true;
+  try {
+    const result = await portalAPI('/api/actions/queue', {}, false);
+    if (!$('dialogOverlay').hidden) return;
+    if (result.notice) {
+      if (result.notice.error) toast(result.notice.error);
+      else if (result.notice.path) await openPortalWindow(result.notice.path);
+      else if (result.notice.record) await showActionHistory(result.notice.record.id);
+      await portalAPI('/api/actions/ack-notice', {id: result.notice.noticeID}, false);
+    } else if (result.review) showActionReview(result.review);
+  } finally { checkingActions = false; }
 }
 
 function chooseCatalog(kind) {
@@ -503,6 +643,11 @@ function chooseCatalog(kind) {
 const closeMacDialog = closeDialog;
 closeDialog = function closeWindowsDialog() {
   const leavingSettings = Boolean($('launcherSettingsTabs'));
+  if (activeActionReview) {
+    const id = activeActionReview;
+    activeActionReview = null;
+    portalAPI('/api/actions/decide', {id, approve:false}, false).catch(logBackgroundIssue);
+  }
   closeMacDialog();
   if (!settingsWindow) return;
   if (leavingSettings) {
@@ -514,8 +659,9 @@ closeDialog = function closeWindowsDialog() {
 
 function handlePortalEvents(state) {
   if (settingsWindow) return;
-  if (state.focusQuery && state.focusQuery !== lastAppliedQuery && window.portalApplySearch(state.focusQuery)) {
-    lastAppliedQuery = state.focusQuery;
+  if (state.focusRequestID && state.focusRequestID !== lastAppliedQuery && window.portalApplySearch(state.focusQuery || '')) {
+    lastAppliedQuery = state.focusRequestID;
+    portalAPI('/api/launcher/acknowledge', {requestID: state.focusRequestID}, false).catch(logBackgroundIssue);
   }
   const proposed = state.proposal;
   if (proposed?.requestID && proposed.requestID !== lastProposal &&
@@ -603,4 +749,5 @@ document.addEventListener('DOMContentLoaded', () => {
     portalAPI('/api/sites/icon-warmup', {}, false).catch(logBackgroundIssue);
   }
   setInterval(() => pollLauncherRuntime().catch(logBackgroundIssue), 2300);
+  if (!settingsWindow) setInterval(() => pollActionQueue().catch(logBackgroundIssue), 1200);
 });
