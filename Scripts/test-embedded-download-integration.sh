@@ -23,6 +23,7 @@ xcrun swiftc "${FLAGS[@]}" "${CORE[@]}" "${EXCHANGE[@]}" "${MIGRATION[@]}" "$PRO
 fi
 if [[ "$RESUME_STAGE" == all || "$RESUME_STAGE" == migration || "$RESUME_STAGE" == review ]]; then
 xcrun swiftc "${FLAGS[@]}" "${PORTAL[@]}" "${CORE[@]}" "${EXCHANGE[@]}" "${MIGRATION[@]}" \
+ "$PROJECT_DIR/Sources/PortalTheme.swift" \
  "$PROJECT_DIR/Sources/Downloads/DownloadMountEpoch.swift" "$PROJECT_DIR/Sources/Downloads/DownloadManager.swift" "$PROJECT_DIR/Sources/Downloads/DownloadCoordinator.swift" \
  "$PROJECT_DIR/Sources/Downloads/DownloadViews.swift" "$PROJECT_DIR/Sources/Downloads/DownloadComposerViews.swift" \
  "$PROJECT_DIR/Sources/Downloads/DownloadSettingsView.swift" "$PROJECT_DIR/Tests/EmbeddedDownloadReviewTests.swift" \
