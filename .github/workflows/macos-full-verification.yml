@@ -1,0 +1,82 @@
+name: macOS 1.20 build 121 full verification
+
+on:
+  push:
+    branches: ['verify/macos-full-1.20-121']
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+jobs:
+  verify:
+    name: macOS arm64 / ${{ matrix.suite }}
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [compile-and-core, downloads, mail-core, mail-migration]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check toolchain and candidate
+        run: |
+          test "$(uname -m)" = arm64
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          test "$(cat VERSION)" = 1.20
+          test "$(cat BUILD)" = 121
+          git log -2 --format='%h %s'
+      - name: Run isolated native checks
+        env:
+          VERIFY_SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          failed=0
+          run_check() {
+            printf '::group::%s\n' "$*"
+            result=passed
+            if "$@"; then
+              :
+            else
+              result=failed
+              failed=1
+            fi
+            printf '::endgroup::\n'
+            printf '\n- `%s` %s\n' "$*" "$result" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$result" == failed ]]; then
+              printf '::error::%s failed\n' "$*"
+            fi
+          }
+          case "$VERIFY_SUITE" in
+            compile-and-core)
+              run_check ./Scripts/build.sh --verify-compile
+              run_check ./Scripts/test.sh
+              ;;
+            downloads)
+              run_check bash Scripts/test-embedded-download-core.sh
+              run_check bash Scripts/test-download-mount-epoch.sh
+              run_check bash Scripts/test-download-history-isolation.sh
+              run_check bash Scripts/test-embedded-download-integration.sh
+              ;;
+            mail-core)
+              run_check bash Scripts/test-embedded-mail-core.sh
+              ;;
+            mail-migration)
+              run_check bash Scripts/test-portal-mail-preferences.sh
+              run_check ./Scripts/test-embedded-mail-migration.sh
+              run_check bash Scripts/test-mail-ui-bootstrap.sh
+              ;;
+            *)
+              exit 2
+              ;;
+          esac
+          exit "$failed"
