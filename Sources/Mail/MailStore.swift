@@ -24,6 +24,7 @@ import UniformTypeIdentifiers
     @Published var mailboxFilter: UUID?
     @Published var folder = "INBOX"
     @Published var search = ""
+    @Published var inboxFilter: MailInboxFilter = .all
     @Published var selectedMessageID: String?
     let storage: MailStorage
     let oauth: OAuthManager
@@ -109,10 +110,11 @@ import UniformTypeIdentifiers
     func prepareForApplicationExit() { stopAutomaticSynchronization() }
     deinit { timer?.invalidate() }
     var filteredAccounts: [MailAccount] { library.accounts.filter { identityFilter == nil || $0.identityID == identityFilter } }
-    var filteredMessages: [CachedMessage] {
-        let ids = Set(filteredAccounts.map(\.id)); let query = search.trimmingCharacters(in:.whitespacesAndNewlines)
-        return messages.filter { m in ids.contains(m.accountID) && (mailboxFilter == nil || m.accountID == mailboxFilter) && (m.folder == folder || (m.folder.lowercased() == "inbox" && folder.lowercased() == "inbox")) && (query.isEmpty || [m.subject,m.from,m.to,m.body,m.preview].joined(separator:" ").localizedCaseInsensitiveContains(query)) }.sorted {$0.date > $1.date}
+    var inboxSearchResult: MailInboxSearchResult {
+        MailInboxSearchResult.search(messages, accountIDs: Set(filteredAccounts.map(\.id)), mailbox: mailboxFilter,
+                                     folder: folder, query: search, filter: inboxFilter)
     }
+    var filteredMessages: [CachedMessage] { inboxSearchResult.messages }
     var filteredPlatforms: [PlatformRecord] {
         let ids = Set(filteredAccounts.map(\.id))
         return library.platforms.filter { p in
@@ -123,6 +125,7 @@ import UniformTypeIdentifiers
     /// Navigation only: the floating panel never downloads or marks mail on its own.
     func openCachedInbox(accountID: UUID? = nil, messageID: String? = nil) {
         identityFilter = nil; search = ""; route = "inbox"; folder = "INBOX"
+        inboxFilter = .all
         mailboxFilter = account(accountID)?.id
         selectedMessageID = messageID.flatMap { id in filteredMessages.first(where:{$0.id == id})?.id }
     }

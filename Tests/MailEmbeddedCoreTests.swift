@@ -51,8 +51,60 @@ private final class MailMemoryCredentials {
         try check(hover.update(isInside: true, now: 5) == .wait(until: 5 + delay), "解除闭锁后可按正常规则重新揭开")
     }
 
+    static func checkInboxSearch() throws {
+        let first = UUID(), second = UUID(), removed = UUID()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        func cached(_ id: String, account: UUID, folder: String = "INBOX", at time: Date) -> CachedMessage {
+            CachedMessage(id: id, accountID: account, folder: folder, uid: 1, subject: "本地主题", from: "sender@example.invalid",
+                          to: "inbox@example.invalid", cc: "", date: time, preview: "缓存摘要", body: "", html: nil,
+                          isRead: false, isFlagged: false, messageID: nil, references: nil, attachments: [], loaded: true)
+        }
+        var plain = cached("a", account: first, at: date)
+        plain.from = "Élodie <sender@example.invalid>"
+        plain.body = "本周合成正文关键词"
+        plain.attachments = [.init(filename: "年度审计.PDF", mimeType: "application/pdf", data: Data("unindexed attachment content".utf8))]
+        var headers = cached("b", account: first, folder: "inbox", at: date)
+        headers.subject = "缓存范围说明"
+        headers.loaded = false
+        var html = cached("c", account: second, at: date.addingTimeInterval(1))
+        html.isRead = true
+        html.isFlagged = true
+        html.body = "\n "
+        html.html = "<script>隐藏密语</script><style>.内部样式 { color: red }</style><p>会议&nbsp;概要</p><img src='https://fixture.invalid/远程标记.png'>"
+        let archived = cached("archive", account: first, folder: "Archive", at: date)
+        let orphan = cached("orphan", account: removed, at: date)
+        let messages = [headers, orphan, plain, archived, html]
+        func search(_ text: String = "", filter: MailInboxFilter = .all, mailbox: UUID? = nil,
+                    folder: String = "INBOX", accounts: Set<UUID>? = nil) -> MailInboxSearchResult {
+            MailInboxSearchResult.search(messages, accountIDs: accounts ?? [first, second], mailbox: mailbox,
+                                         folder: folder, query: text, filter: filter)
+        }
+
+        let all = search(" \t\n ")
+        try check(all.messages.map(\.id) == ["c", "a", "b"] && !all.hasQuery, "统一收件箱范围、INBOX 大小写及稳定时序")
+        try check(all.scopedCount == 3 && all.headerOnlyCount == 1, "明示本机范围与正文未完整缓存数")
+        try check(all.count(for: .all) == 3 && all.count(for: .unread) == 2 && all.count(for: .starred) == 1 &&
+                  all.count(for: .attachments) == 1, "同一查询下各快捷筛选计数独立于当前筛选")
+        try check(search(filter: .unread).messages.map(\.id) == ["a", "b"], "仅未读筛选")
+        try check(search(filter: .starred).messages.map(\.id) == ["c"], "仅星标筛选")
+        try check(search(filter: .attachments).messages.map(\.id) == ["a"], "仅显示已知本地附件")
+        let mixed = search("  ELODIE   合成正文  审计.pdf ", filter: .attachments)
+        try check(mixed.hasQuery && mixed.messages.map(\.id) == ["a"] && mixed.count(for: .all) == 1 && mixed.scopedCount == 3,
+                  "忽略空白、大小写和重音，跨头部、正文与附件名匹配全部词")
+        try check(search("会议 概要").messages.map(\.id) == ["c"], "仅 HTML 的本机正文也可命中可见文字")
+        try check(search("隐藏密语").messages.isEmpty && search("内部样式").messages.isEmpty && search("远程标记").messages.isEmpty &&
+                  search("unindexed attachment content").messages.isEmpty, "搜索排除脚本、样式、远程资源属性和附件字节")
+        try check(search("范围说明").messages.map(\.id) == ["b"] && search("会议 范围说明").messages.isEmpty,
+                  "仅头部缓存仍可查，多个词必须属于同一封邮件")
+        try check(search(mailbox: first).messages.map(\.id) == ["a", "b"] && search(mailbox: first, folder: "Archive").messages.map(\.id) == ["archive"],
+                  "指定邮箱与文件夹保持独立的缓存范围")
+        try check(search(mailbox: second, accounts: [first]).scopedCount == 0 && search(accounts: [second]).messages.map(\.id) == ["c"],
+                  "已选邮箱不能越过当前身份许可的账户范围")
+    }
+
     static func run() async throws {
         try checkRailHover()
+        try checkInboxSearch()
         let fm = FileManager.default, parent = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         guard parent.path.contains(".noindex/") else { throw MailAppError.message("测试根必须位于预建.noindex容器。") }
         try fm.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -95,6 +147,19 @@ private final class MailMemoryCredentials {
                 let store = MailStore(root: root, oauth: oauth, startTimer: false, evidenceDefaults: defaults, readGoogleClientSecret: { secretReads += 1; return nil })
                 try check(store.library.accounts[0].id == account.id && store.messages.count == 1 && store.library.drafts.count == 1, "本机账号UUID缓存与草稿原样加载")
                 try check(store.messages[0].attachments[0].data == Data([1,2,3]) && !store.messages[0].isRead, "缓存附件字节及未读状态保留")
+                store.mailboxFilter = account.id
+                store.search = "BODY FIXTURE.BIN"
+                store.inboxFilter = .attachments
+                let cachedID = store.messages[0].id
+                try check(store.inboxSearchResult.messages.map(\.id) == [cachedID], "正常收件箱入口只查询当前账户本机正文与附件")
+                store.selectedMessageID = cachedID
+                store.inboxFilter = .starred
+                store.retainVisibleMessageSelection()
+                try check(store.selectedMessageID == nil && store.filteredMessages.isEmpty, "更换筛选后清除已离开结果的阅读选择")
+                store.openCachedInbox(accountID: account.id, messageID: cachedID)
+                try check(store.selectedMessageID == cachedID && store.inboxFilter == .all && store.search.isEmpty && !store.messages[0].isRead,
+                          "从悬浮窗直达缓存不会被旧查询遮挡，也不更改已读状态")
+                store.openCachedInbox()
                 let rail = MailFloatingRailStatus(accounts: store.library.accounts, messages: store.messages)
                 try check(rail.hasUnread && !rail.needsAttention, "贴边条读取现有本机收件箱未读状态")
                 var readMessage = store.messages[0]; readMessage.isRead = true

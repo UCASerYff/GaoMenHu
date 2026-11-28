@@ -19,7 +19,7 @@ final class PortalMailWindowController: NSWindowController, NSWindowDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.identifier = NSUserInterfaceItemIdentifier("GaoMenHu.Mail.Main")
         window.title = "搞门户 · 邮件"
-        window.minSize = NSSize(width: 1080, height: 720)
+        window.minSize = NSSize(width: 700, height: 560)
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
         super.init(window: window)

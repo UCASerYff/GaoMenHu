@@ -24,8 +24,10 @@ swiftc -swift-version 5 -target arm64-apple-macos14.0 -module-cache-path "$BUILD
   "$PROJECT_DIR/Sources/Mail/MailCredentialVault.swift" "$PROJECT_DIR/Sources/Mail/MailOAuth.swift" \
   "$PROJECT_DIR/Sources/Mail/MailTransport.swift" "$PROJECT_DIR/Sources/Mail/MailStore.swift" \
   "$PROJECT_DIR/Sources/Mail/MailFloatingRailHover.swift" "$PROJECT_DIR/Sources/Mail/MailFloatingSummary.swift" \
+  "$PROJECT_DIR/Sources/Mail/MailInboxSearch.swift" "$PROJECT_DIR/Sources/Mail/MailCodeExtractor.swift" \
   "$PROJECT_DIR/Tests/MailEmbeddedCoreTests.swift" -o "$BUILD_ROOT/core-tests"
 "$BUILD_ROOT/core-tests" "$BUILD_ROOT/Fixtures"
+bash "$PROJECT_DIR/Scripts/test-mail-draft-autosave.sh"
 fi
 if [[ "$MODE" == all || "$MODE" == oauth ]]; then
 swiftc -swift-version 5 -target arm64-apple-macos14.0 -module-cache-path "$BUILD_ROOT/cache" \

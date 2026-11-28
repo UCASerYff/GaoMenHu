@@ -387,21 +387,34 @@ private func editorColor(_ value: String) -> Color {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: MailDraft
     @State private var error: String?
-    @State private var savedAt: Date?
+    @State private var autosave: MailDraftAutosave
     @State private var saveTask: Task<Void, Never>?
     @State private var finished = false
-    @State private var subjectWarning = false
+    @State private var sendConfirmation: MailDraft?
+    @State private var showSendConfirmation = false
+    @State private var startingSend = false
     @State private var discardWarning = false
     @State private var showCopies = false
     @State private var submission: MailSubmissionState?
     @State private var submissionReadError: String?
     @State private var submissionChecked = false
     init(store: MailStore, initial: MailDraft) {
-        self.store = store; _draft = State(initialValue: initial); _showCopies = State(initialValue: !initial.cc.isEmpty || !initial.bcc.isEmpty)
+        self.store = store
+        _draft = State(initialValue: initial)
+        _showCopies = State(initialValue: !initial.cc.isEmpty || !initial.bcc.isEmpty)
+        let saved = store.library.drafts.first { $0.id == initial.id }
+        var state = MailDraftAutosave(saved: saved)
+        if saved != nil { state.markEdited(initial) }
+        _autosave = State(initialValue: state)
     }
     private var account: MailAccount? { store.account(draft.accountID) }
-    private var recipientCount: Int { MailValidation.recipients(draft.to + "," + draft.cc + "," + draft.bcc).count }
+    private func recipientCount(of draft: MailDraft) -> Int {
+        MailValidation.recipients(draft.to + "," + draft.cc + "," + draft.bcc).count
+    }
+    private var recipientCount: Int { recipientCount(of: draft) }
     private var submissionLocked: Bool { !submissionChecked || submissionReadError != nil || submission != nil }
+    private var sending: Bool { startingSend || store.sending }
+    private var editingLocked: Bool { sending || submissionLocked }
     private var senderIsValid: Bool {
         guard let account, account.enabled else { return false }
         return account.allowedAddresses.contains { $0.caseInsensitiveCompare(draft.from) == .orderedSame }
@@ -415,22 +428,30 @@ private func editorColor(_ value: String) -> Color {
                 ScrollView { submissionFeedback }.frame(maxHeight: 160)
             }
             MailEditorFeedback(error: error)
+            MailEditorFeedback(error: draftSaveError)
             Divider()
             composerFooter
-        }.frame(width: 820, height: 750)
-            .onAppear(perform: refreshSubmission)
-            .onChange(of: store.submissionRevision) { _, _ in refreshSubmission() }
-            .onChange(of: draft) { _, updated in
-                if !finished { store.compose = updated }
-                scheduleSave()
+        }.frame(minWidth: 520, idealWidth: 740, maxWidth: 820, minHeight: 520, idealHeight: 690, maxHeight: 750)
+            .onAppear {
+                refreshSubmission()
+                let prefilled = !draft.subject.isEmpty || !draft.to.isEmpty || draft.inReplyTo != nil
+                if autosave.status == .pending || (autosave.status == .untouched && prefilled) {
+                    scheduleSave()
+                }
             }
-            .onChange(of: draft.accountID) { previous, current in switchAccount(from: previous, to: current) }
-            .onDisappear { saveTask?.cancel(); if !finished { persistDraft() } }
-            .interactiveDismissDisabled(store.sending)
-            .alert("发送没有主题的邮件？", isPresented: $subjectWarning) {
-                Button("返回填写", role: .cancel) { }
-                Button("仍然发送") { send() }
-            } message: { Text("发件人：\(draft.from)\n共 \(recipientCount) 个收件地址。") }
+            .onChange(of: store.submissionRevision) { _, _ in refreshSubmission() }
+            .onDisappear {
+                saveTask?.cancel()
+                if !finished && !editingLocked { persistDraft() }
+            }
+            .interactiveDismissDisabled()
+            .alert(sendConfirmationTitle, isPresented: $showSendConfirmation, presenting: sendConfirmation) { snapshot in
+                Button("返回填写", role: .cancel) { sendConfirmation = nil }
+                Button("确认发送") { sendConfirmation = nil; send(snapshot) }
+            } message: { snapshot in
+                let subject = snapshot.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+                Text("主题：\(subject.isEmpty ? "无主题" : subject)\n发件地址：\(snapshot.from)\n收件地址：\(recipientCount(of: snapshot)) 个 · 附件：\(snapshot.attachments.count) 个")
+            }
             .alert("丢弃这封草稿？", isPresented: $discardWarning) {
                 Button("保留草稿", role: .cancel) { }
                 Button("丢弃", role: .destructive) { discard() }
@@ -441,7 +462,7 @@ private func editorColor(_ value: String) -> Color {
             VStack(spacing: 10) {
                 HStack {
                     Text("发件邮箱").foregroundStyle(.secondary).frame(width: 74, alignment: .trailing)
-                    Picker("发件邮箱", selection: $draft.accountID) {
+                    Picker("发件邮箱", selection: Binding(get: { draft.accountID }, set: switchAccount)) {
                         Text("选择邮箱").tag(UUID?.none)
                         ForEach(store.library.accounts) { a in
                             Text("\(a.displayName) · \(store.identityName(for: a))\(a.enabled ? "" : " · 仅登记")").tag(Optional(a.id))
@@ -457,16 +478,16 @@ private func editorColor(_ value: String) -> Color {
                     Label("请使用此邮箱地址或在邮箱资料中登记过的别名。", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 82)
                 }
-                composeField("收件人", text: $draft.to, prompt: "多个地址使用逗号分隔")
+                composeField("收件人", text: draftBinding(\.to), prompt: "多个地址使用逗号分隔")
                 if showCopies {
-                    composeField("抄送", text: $draft.cc, prompt: "可选")
-                    composeField("密送", text: $draft.bcc, prompt: "收件人不会看到此列表")
+                    composeField("抄送", text: draftBinding(\.cc), prompt: "可选")
+                    composeField("密送", text: draftBinding(\.bcc), prompt: "收件人不会看到此列表")
                 }
-                composeField("主题", text: $draft.subject, prompt: "填写邮件主题")
-            }.padding(.horizontal, 22).padding(.vertical, 16).disabled(store.sending || submissionLocked)
+                composeField("主题", text: draftBinding(\.subject), prompt: "填写邮件主题")
+            }.padding(.horizontal, 22).padding(.vertical, 16).disabled(editingLocked)
             Divider()
-            TextEditor(text: $draft.body).font(.system(size: 14)).padding(14).frame(minHeight: 210)
-                .accessibilityLabel("邮件正文").disabled(store.sending || submissionLocked)
+            TextEditor(text: draftBinding(\.body)).font(.system(size: 14)).padding(14).frame(minHeight: 210)
+                .accessibilityLabel("邮件正文").disabled(editingLocked)
             if !draft.attachments.isEmpty { attachmentStrip }
         }
     }
@@ -485,9 +506,11 @@ private func editorColor(_ value: String) -> Color {
     private var addressRow: some View {
         HStack {
             Text("发件地址").foregroundStyle(.secondary).frame(width: 74, alignment: .trailing)
-            TextField("发件地址", text: $draft.from, prompt: Text("已登记邮箱或别名")).labelsHidden()
+            TextField("发件地址", text: draftBinding(\.from), prompt: Text("已登记邮箱或别名")).labelsHidden()
             if let account, account.allowedAddresses.count > 1 {
-                Menu("选择别名") { ForEach(account.allowedAddresses, id: \.self) { address in Button(address) { draft.from = address } } }.frame(width: 100)
+                Menu("选择别名") {
+                    ForEach(account.allowedAddresses, id: \.self) { address in Button(address) { editDraft { $0.from = address } } }
+                }.frame(width: 100)
             }
         }
     }
@@ -504,12 +527,14 @@ private func editorColor(_ value: String) -> Color {
                     HStack(spacing: 7) {
                         Image(systemName: "doc")
                         Text(file.name).lineLimit(1)
-                        Button { draft.attachments.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).help("移除此附件")
+                        Button { editDraft { $0.attachments.removeAll { $0.id == file.id } } } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }.buttonStyle(.plain).help("移除此附件")
                     }.font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
                         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8)).help(file.path)
                 }
             }.padding(.horizontal, 22)
-        }.frame(height: 48).disabled(store.sending || submissionLocked)
+        }.frame(height: 48).disabled(editingLocked)
     }
     @ViewBuilder private var submissionFeedback: some View {
         if !submissionChecked {
@@ -531,7 +556,7 @@ private func editorColor(_ value: String) -> Color {
                     Label("服务商已接收，等待本地保存", systemImage: "checkmark.circle").font(.callout.weight(.semibold))
                     Text("请勿重复发送。下面的操作只重试保存本机已发送副本和清理原草稿，不会再次连接 SMTP 或发送邮件。")
                         .font(.caption)
-                    Button("只重试本地保存", action: retrySubmissionLocalSave).disabled(store.sending)
+                    Button("只重试本地保存", action: retrySubmissionLocalSave).disabled(sending)
                 case .completed:
                     Label("服务商已接收，本地发送记录已保存", systemImage: "checkmark.circle").font(.callout.weight(.semibold))
                     Text("此草稿保留原发送标识，不会再次提交。关闭即可返回邮件列表。")
@@ -544,73 +569,167 @@ private func editorColor(_ value: String) -> Color {
     private var composerFooter: some View {
         VStack(spacing: 12) {
             HStack {
-                Button("添加附件", systemImage: "paperclip") { addAttachments() }.disabled(store.sending || submissionLocked)
-                if let account, !account.signature.isEmpty { Button("插入签名") { draft.body += "\n\n" + account.signature }.disabled(store.sending || submissionLocked) }
+                Button("添加附件", systemImage: "paperclip", action: addAttachments).disabled(editingLocked)
+                if let account, !account.signature.isEmpty {
+                    Button("插入签名") { editDraft { $0.body += "\n\n" + account.signature } }.disabled(editingLocked)
+                }
                 Spacer()
-                if store.sending { ProgressView().controlSize(.small); Text("正在提交邮件…").font(.caption).foregroundStyle(.secondary) }
-                else if let savedAt { Text("草稿已保存 · \(savedAt.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
-                else { Text("正文、收件人与附件引用自动保存").font(.caption).foregroundStyle(.secondary) }
+                if sending {
+                    ProgressView().controlSize(.small)
+                    Text("正在提交邮件…").font(.caption).foregroundStyle(.secondary)
+                } else if !submissionLocked {
+                    draftSaveStatus
+                }
             }
             HStack {
-                Button("丢弃草稿", role: .destructive) { discardWarning = true }.disabled(store.sending || submissionLocked)
+                Button("丢弃草稿", role: .destructive) { discardWarning = true }.disabled(editingLocked)
                 Spacer()
-                Button(submission?.phase == .completed ? "关闭" : "存为草稿并关闭") { saveAndClose() }.keyboardShortcut(.cancelAction).disabled(store.sending)
-                Button("发送\(recipientCount > 0 ? " · \(recipientCount) 人" : "")", systemImage: "paperplane.fill") {
-                    if draft.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { subjectWarning = true } else { send() }
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: [.command])
-                    .disabled(store.sending || submissionLocked || !senderIsValid || recipientCount == 0)
+                Button(submission == nil ? "保存并关闭" : "关闭", action: saveAndClose)
+                    .keyboardShortcut(.cancelAction).disabled(sending)
+                Button("发送\(recipientCount > 0 ? " · \(recipientCount) 人" : "")", systemImage: "paperplane.fill", action: confirmSend)
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: [.command])
+                    .disabled(editingLocked || !senderIsValid || recipientCount == 0)
             }
         }.padding(18)
     }
+
+    private var draftSaveError: String? {
+        guard !editingLocked, case .failed(let detail) = autosave.status else { return nil }
+        return "草稿尚未保存。" + detail
+    }
+
+    @ViewBuilder private var draftSaveStatus: some View {
+        switch autosave.status {
+        case .untouched:
+            Label("编辑后自动存到本机", systemImage: "doc.text").font(.caption).foregroundStyle(.secondary)
+        case .pending:
+            Label("待自动保存", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+        case .saving:
+            ProgressView().controlSize(.small).accessibilityLabel("正在保存草稿")
+        case .saved(let date):
+            Label("已保存到本机 · \(date.formatted(date: .omitted, time: .shortened))", systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+        case .failed:
+            Button("重试保存草稿", systemImage: "arrow.clockwise") {
+                saveTask?.cancel()
+                persistDraft(forceWrite: true)
+            }
+        }
+    }
+
+    private func draftBinding(_ keyPath: WritableKeyPath<MailDraft, String>) -> Binding<String> {
+        Binding(get: { draft[keyPath: keyPath] }, set: { value in editDraft { $0[keyPath: keyPath] = value } })
+    }
+
+    private func editDraft(_ update: (inout MailDraft) -> Void) {
+        guard !editingLocked, !finished else { return }
+        var updated = draft
+        update(&updated)
+        guard updated != draft else { return }
+        draft = updated
+        // Native close and quit read this snapshot synchronously on the main actor.
+        store.compose = updated
+        scheduleSave()
+    }
+
     private func scheduleSave() {
-        guard !finished, !store.sending, !submissionLocked else { return }
         saveTask?.cancel()
+        saveTask = nil
+        guard !finished, !editingLocked, autosave.markEdited(draft) else { return }
+        let snapshot = draft
         saveTask = Task { @MainActor in
             do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
-            guard !Task.isCancelled, !finished, !store.sending, !submissionLocked else { return }
+            guard !Task.isCancelled, !finished, !editingLocked, draft == snapshot else { return }
+            saveTask = nil
             persistDraft()
         }
     }
-    private func persistDraft() {
-        guard !submissionLocked else { return }
-        do { try store.saveDraft(draft); savedAt = Date() } catch { self.error = "草稿尚未保存：" + error.localizedDescription }
+
+    @discardableResult private func persistDraft(forceWrite: Bool = false) -> Bool {
+        guard !finished, !submissionLocked else { return false }
+        let store = store
+        return autosave.flush(draft, forceWrite: forceWrite) { snapshot in
+            try store.saveDraft(snapshot)
+            return store.library.drafts.first(where: { $0.id == snapshot.id })?.updatedAt ?? Date()
+        }
     }
+
     private func saveAndClose() {
+        guard !finished, !sending else { return }
         saveTask?.cancel()
         refreshSubmission()
-        if let submissionReadError { error = submissionReadError; return }
-        if submission?.phase == .completed { finished = true; dismiss(); return }
-        do { try store.saveDraft(draft); finished = true; dismiss() }
-        catch { self.error = "草稿尚未保存：" + error.localizedDescription }
+        if submission?.phase == .completed {
+            finished = true
+            dismiss()
+            return
+        }
+        if submissionLocked {
+            // The store only permits a protected draft to close if the original snapshot is durable.
+            do { try store.saveDraft(draft) }
+            catch { self.error = "草稿尚未保存。" + error.localizedDescription; return }
+        } else if !persistDraft(forceWrite: true) { return }
+        finished = true
+        dismiss()
     }
     private func discard() {
         refreshSubmission()
-        guard !submissionLocked else { return }
+        guard !editingLocked else { return }
         saveTask?.cancel(); store.deleteDraft(draft.id)
         if store.library.drafts.contains(where: { $0.id == draft.id }) { error = "草稿删除失败，请重试。"; return }
         finished = true; dismiss()
     }
-    private func switchAccount(from previous: UUID?, to current: UUID?) {
-        let old = store.account(previous), next = store.account(current)
-        draft.from = next?.email ?? ""
-        let previousSignature = old?.signature ?? ""
-        if draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.body.trimmingCharacters(in: .whitespacesAndNewlines) == previousSignature.trimmingCharacters(in: .whitespacesAndNewlines) {
-            draft.body = next?.signature.isEmpty == false ? "\n\n" + next!.signature : ""
+    private func switchAccount(to current: UUID?) {
+        guard current != draft.accountID else { return }
+        let previousSignature = store.account(draft.accountID)?.signature ?? ""
+        let next = store.account(current)
+        editDraft { value in
+            value.accountID = current
+            value.from = next?.email ?? ""
+            let body = value.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.isEmpty || body == previousSignature.trimmingCharacters(in: .whitespacesAndNewlines) {
+                let signature = next?.signature ?? ""
+                value.body = signature.isEmpty ? "" : "\n\n" + signature
+            }
         }
     }
     private func addAttachments() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.prompt = "添加附件"; panel.message = "附件总大小请控制在 24 MB 以内。"
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls where !draft.attachments.contains(where: { $0.path == url.path }) { draft.attachments.append(DraftAttachment(path: url.path)) }
+        editDraft { value in
+            for url in panel.urls where !value.attachments.contains(where: { $0.path == url.path }) {
+                value.attachments.append(DraftAttachment(path: url.path))
+            }
+        }
     }
-    private func send() {
-        error = nil; saveTask?.cancel()
+
+    private var sendConfirmationTitle: String {
+        let subject = sendConfirmation?.subject.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return subject.isEmpty ? "确认发送无主题邮件？" : "确认发送邮件？"
+    }
+
+    private func confirmSend() {
+        guard !editingLocked, senderIsValid, recipientCount > 0 else { return }
+        sendConfirmation = draft
+        showSendConfirmation = true
+    }
+
+    private func send(_ snapshot: MailDraft) {
+        guard !finished, !sending else { return }
+        guard draft == snapshot else { error = "草稿内容已更改，请复核后重新确认发送。"; return }
+        error = nil
         refreshSubmission()
-        guard !submissionLocked else { return }
+        guard !submissionLocked, senderIsValid else { return }
+        saveTask?.cancel()
+        startingSend = true
         Task { @MainActor in
-            do { try await store.send(draft); finished = true; dismiss() }
-            catch { self.error = error.localizedDescription; refreshSubmission(); persistDraft() }
+            defer { startingSend = false }
+            do { try await store.send(snapshot); finished = true; dismiss() }
+            catch {
+                self.error = error.localizedDescription
+                refreshSubmission()
+                if !submissionLocked { persistDraft() }
+            }
         }
     }
     private func refreshSubmission() {
@@ -624,6 +743,7 @@ private func editorColor(_ value: String) -> Color {
         submissionChecked = true
     }
     private func retrySubmissionLocalSave() {
+        guard !sending else { return }
         error = nil; saveTask?.cancel()
         do {
             try store.retrySubmissionLocalSave(draftID: draft.id)

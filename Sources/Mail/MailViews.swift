@@ -36,7 +36,9 @@ struct PortalMailRootView: View {
     var showFloating: () -> Void = {}
     var openSettings: () -> Void = { NotificationCenter.default.post(name: .mailOpenSettings, object: nil) }
     @AppStorage("gaomenhu.mail.sidebarHidden") private var sidebarHidden = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
+    @State private var compactSidebarVisible = false
     @State private var mainWindowActive = true
     @State private var accountSheet = false
     @State private var platformSheet = false
@@ -53,30 +55,20 @@ struct PortalMailRootView: View {
     @State private var draftSubmissions: [UUID: MailSubmissionState] = [:]
     @State private var draftSubmissionReadError: String?
     @State private var draftSubmissionsChecked = false
-    private let menu: [(String,String,String)] = [("overview","square.grid.2x2","总览"),("inbox","tray","邮件"),("accounts","envelope.badge.person.crop","邮箱管理"),("platforms","link","关联平台"),("drafts","doc.text","草稿")]
+    private let menu: [(String,String,String)] = [("overview","square.grid.2x2","总览"),("inbox","tray","收件箱"),("accounts","envelope.badge.person.crop","邮箱管理"),("platforms","link","关联平台"),("drafts","doc.text","草稿")]
     var body: some View {
-        VStack(spacing:0) {
-            mailContentToolbar
-            Divider()
-            HStack(spacing:0) {
-                if !sidebarHidden {
-                    sidebar
-                    Rectangle().fill(Color.primary.opacity(0.12)).frame(width:1).frame(maxHeight:.infinity)
-                }
-                VStack(spacing:0) {
-                    if sidebarHidden && ["inbox","platforms"].contains(store.route) {
-                        searchField.padding(.horizontal,27).padding(.top,14)
-                    }
-                    page.frame(maxWidth:.infinity,maxHeight:.infinity)
-                    if store.notice != nil {footer}
-                }.background(Color.mailCanvas)
-            }
-        }.tint(PortalTheme.accent)
-        .animation(.easeInOut(duration:0.22),value:sidebarHidden)
-        .onReceive(NotificationCenter.default.publisher(for:.mailToggleSidebar)) {_ in sidebarHidden.toggle()}
+        GeometryReader { geometry in
+            let compact = geometry.size.width < 980
+            windowLayout(compact:compact)
+                .onReceive(NotificationCenter.default.publisher(for:.mailToggleSidebar)) { _ in toggleSidebar(compact:compact) }
+                .onChange(of:compact) { _, _ in compactSidebarVisible = false }
+        }
+        .tint(PortalTheme.accent)
+        .animation(reduceMotion ? nil : .easeInOut(duration:0.18),value:sidebarHidden)
+        .animation(reduceMotion ? nil : .easeInOut(duration:0.18),value:compactSidebarVisible)
         .onReceive(NotificationCenter.default.publisher(for:.mailFocusSearch)) {_ in
             if !["inbox","platforms"].contains(store.route) {store.route = "inbox"}
-            sidebarHidden = false
+            compactSidebarVisible = false
             DispatchQueue.main.async {searchFocused = true}
         }
         .onReceive(NotificationCenter.default.publisher(for:.mailOpenAliasHelper)) {_ in
@@ -124,13 +116,45 @@ struct PortalMailRootView: View {
             Text("将按原邮箱配置读取系统钥匙串凭据并连接对应 IMAP / SMTP 服务，不发送测试邮件。仅本次运行获准连接；首次打开和查看缓存不会自动取得旧授权。")
         }
     }
+
+    private func windowLayout(compact: Bool) -> some View {
+        VStack(spacing:0) {
+            mailContentToolbar(compact:compact)
+            Divider()
+            ZStack(alignment:.topLeading) {
+                HStack(spacing:0) {
+                    if !compact && !sidebarHidden {
+                        sidebar
+                        Divider()
+                    }
+                    VStack(spacing:0) {
+                        if store.route == "platforms" { platformSearchField.padding(.horizontal,24).padding(.top,12) }
+                        page.frame(maxWidth:.infinity,maxHeight:.infinity)
+                        if store.notice != nil { footer }
+                    }.background(Color.mailCanvas)
+                }.accessibilityHidden(compact && compactSidebarVisible)
+                if compact && compactSidebarVisible {
+                    Color.black.opacity(0.24).onTapGesture { compactSidebarVisible = false }.accessibilityHidden(true)
+                    sidebar.shadow(color:.black.opacity(0.18),radius:12,x:3,y:0)
+                }
+            }
+        }
+    }
+
+    private func toggleSidebar(compact: Bool) {
+        if compact { compactSidebarVisible.toggle() }
+        else { sidebarHidden.toggle() }
+    }
+
     /// NSHostingView is embedded in an AppKit window, so these actions are real
     /// content controls instead of depending on a SwiftUI Window scene toolbar.
-    private var mailContentToolbar: some View {
-        HStack(spacing:12) {
-            Button {sidebarHidden.toggle()} label:{MailSidebarToggleIcon()}
-                .buttonStyle(.plain).help(sidebarHidden ? "显示侧边栏" : "隐藏侧边栏")
-                .accessibilityLabel(sidebarHidden ? "显示侧边栏" : "隐藏侧边栏")
+    private func mailContentToolbar(compact: Bool) -> some View {
+        let sidebarShown = compact ? compactSidebarVisible : !sidebarHidden
+        let sidebarTitle = sidebarShown ? "隐藏侧边栏" : "显示侧边栏"
+        return HStack(spacing:12) {
+            Button { toggleSidebar(compact:compact) } label:{MailSidebarToggleIcon()}
+                .buttonStyle(.plain).help(sidebarTitle).accessibilityLabel(sidebarTitle)
+            if compact { Text("邮件中心").font(.callout.weight(.semibold)) }
             Spacer(minLength:8)
             toolbarActions
             Button(action:openSettings) { Label("邮件设置",systemImage:"gearshape") }
@@ -141,24 +165,23 @@ struct PortalMailRootView: View {
     private var sidebar: some View {
         VStack(spacing:0) {
             HStack(spacing:10) {
-                if let path = Bundle.main.path(forResource:"AppIcon",ofType:"png"), let icon = NSImage(contentsOfFile:path) {
+                if let path = Bundle.main.path(forResource:"Mark",ofType:"png"), let icon = NSImage(contentsOfFile:path) {
                     Image(nsImage:icon).resizable().interpolation(.high).frame(width:38,height:38)
                         .clipShape(RoundedRectangle(cornerRadius:9,style:.continuous)).accessibilityHidden(true)
                 }
-                VStack(alignment:.leading,spacing:2) {
-                    Text("搞门户 · 邮件").font(.headline)
-                    Text("邮箱 · 身份 · 平台").font(.caption2).foregroundStyle(.secondary)
-                }
+                Text("搞门户 · 邮件").font(.headline)
                 Spacer(minLength:0)
             }.padding(.horizontal,14).padding(.top,14).padding(.bottom,10)
-            if ["inbox","platforms"].contains(store.route) {searchField.padding(.horizontal,14).padding(.bottom,4)}
             ScrollView {
                 VStack(alignment:.leading,spacing:20) {
                     VStack(alignment:.leading,spacing:4) {
-                        sidebarHeading("邮箱管理")
+                        sidebarHeading("邮件工作区")
                         ForEach(menu,id:\.0) {item in
                             MailSidebarRow(title:item.2,symbol:item.1,count:menuCount(item.0),selected:store.route == item.0) {
-                                store.route = item.0; store.search = ""; store.mailboxFilter = nil; store.folder = "INBOX"; store.selectedMessageID = nil
+                                store.search = ""; store.mailboxFilter = nil; store.folder = "INBOX"; store.selectedMessageID = nil
+                                if item.0 == "inbox" { store.inboxFilter = .all }
+                                store.route = item.0
+                                compactSidebarVisible = false
                             }
                         }
                     }
@@ -207,12 +230,13 @@ struct PortalMailRootView: View {
                        count:store.library.accounts.filter{identity == nil || $0.identityID == identity?.id}.count,
                        selected:store.identityFilter == identity?.id,accent:Color(hex:identity?.color ?? "79818C")) {
             store.identityFilter = identity?.id; store.mailboxFilter = nil; store.selectedMessageID = nil; store.folder = "INBOX"
+            compactSidebarVisible = false
         }
     }
-    private var searchField: some View {
+    private var platformSearchField: some View {
         HStack(spacing:7) {
             Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
-            TextField(store.route == "platforms" ? "搜索平台、账号或邮箱" : "搜索已缓存的邮件",text:$store.search)
+            TextField("搜索平台、账号或邮箱",text:$store.search)
                 .textFieldStyle(.plain).font(.callout).focused($searchFocused)
             if !store.search.isEmpty {
                 Button {store.search = ""} label:{Image(systemName:"xmark.circle.fill").foregroundStyle(.secondary)}
@@ -234,7 +258,7 @@ struct PortalMailRootView: View {
                 Divider()
                 Button("邮箱别名助手…",systemImage:"sparkles.rectangle.stack") {selectedAliasAccountID = store.mailboxFilter; aliasSheet = true}
             } label:{Label("添加",systemImage:"plus")}.help("添加邮箱、平台、身份或生成别名")
-        }.labelStyle(.iconOnly).frame(width:360,alignment:.trailing)
+        }.labelStyle(.iconOnly)
     }
     private var footer: some View {
         HStack(alignment:.top,spacing:10) {
@@ -248,7 +272,7 @@ struct PortalMailRootView: View {
         switch store.route {
         case "accounts": accountsPage
         case "platforms": platformsPage
-        case "inbox": InboxView(store:store,addAccount:{editingAccount = nil; accountSheet = true})
+        case "inbox": InboxView(store:store,addAccount:{editingAccount = nil; accountSheet = true},searchFocused:$searchFocused)
         case "drafts": draftsPage
         default: overview
         }
@@ -418,85 +442,292 @@ struct PortalMailRootView: View {
 struct InboxView: View {
     @ObservedObject var store: MailStore
     var addAccount: () -> Void
+    @FocusState.Binding var searchFocused: Bool
     @State private var showHTML = false
+
     var body: some View {
-        if store.library.accounts.isEmpty {EmptyMailView(icon:"tray",title:"把邮箱带到这里",detail:"支持常见邮箱及自定义 IMAP / SMTP。连接成功后，邮件会出现在这里。",button:"添加邮箱",action:addAccount)}
-        else {
-            VStack(spacing:0) {
-                HStack(spacing:12) {
-                    Picker("邮箱",selection:$store.mailboxFilter) {Text("统一收件箱").tag(nil as UUID?); ForEach(store.filteredAccounts) {Text($0.displayName).tag(Optional($0.id))} }.frame(maxWidth:265)
-                    if let id = store.mailboxFilter {Picker("文件夹",selection:$store.folder) {Text("收件箱").tag("INBOX"); Text("本机发送记录").tag("__local_sent__"); ForEach((store.folders[id] ?? []).filter {$0.selectable && $0.path.uppercased() != "INBOX"}) {Text($0.displayName).tag($0.path)}}.frame(maxWidth:235)}
-                    Spacer(); Text("最近 \(store.filteredMessages.count) 封").font(.system(size:11)).foregroundStyle(.secondary)
-                }.padding(.horizontal,22).padding(.vertical,13)
-                Divider()
-                HSplitView {
-                    VStack(spacing:0) {
-                        if store.filteredMessages.isEmpty {EmptyMailView(icon:"tray",title:store.search.isEmpty ? "暂无缓存邮件" : "未找到邮件",detail:store.search.isEmpty ? "请先连接邮箱并同步。仅登记的邮箱不会收发邮件。" : "搜索范围为已同步到本机的邮件；正文在打开后缓存。")}
-                        else { List(selection:$store.selectedMessageID) { ForEach(store.filteredMessages) {m in
-                            VStack(alignment:.leading,spacing:8) {
-                                HStack(spacing:6) {Circle().fill(m.isRead ? Color.clear : PortalTheme.accent).frame(width:6,height:6); Text(m.from.isEmpty ? "未知发件人" : m.from).font(.system(size:12,weight:m.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if m.isFlagged {Image(systemName:"star.fill").font(.system(size:10)).foregroundStyle(.orange)}; Text(m.date.formatted(date:.numeric,time:.omitted)).font(.system(size:9)).foregroundStyle(.secondary)}
-                                Text(m.subject.isEmpty ? "（无主题）" : m.subject).font(.system(size:13,weight:.medium)).lineLimit(2)
-                                Text(m.preview.isEmpty ? store.account(m.accountID)?.email ?? "" : m.preview).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(2)
-                                HStack {
-                                    IdentityBadge(identity:store.identity(store.account(m.accountID)?.identityID))
-                                    if let code = CodeExtractor.primaryCode(subject: m.subject, body: m.body, html: m.html), code.type != .link {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "key.fill").font(.system(size: 8))
-                                            Text(code.value).font(.system(size: 10, weight: .bold, design: .monospaced))
-                                        }
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .foregroundStyle(PortalTheme.accent)
-                                        .background(PortalTheme.accent.opacity(0.10), in: Capsule())
-                                        .help("提取到验证码 \(code.value)")
-                                    }
-                                }
-                            }.padding(.vertical,10).tag(m.id)
-                        }}.listStyle(.inset).scrollContentBackground(.hidden) }
-                    }.frame(minWidth:260,idealWidth:310,maxWidth:380)
-                    if let m = store.messages.first(where:{$0.id == store.selectedMessageID}) {messageDetail(m).frame(minWidth:370,maxWidth:.infinity,maxHeight:.infinity)}
-                    else {EmptyMailView(icon:"envelope.open",title:"选一封邮件，慢慢读",detail:"邮件正文、附件和回复会显示在这里。") .frame(minWidth:350)}
-                }
+        if store.library.accounts.isEmpty {
+            EmptyMailView(icon:"tray",title:"添加邮箱",detail:"添加邮箱后可统一查看已缓存的邮件。首次同步需要你确认连接。",button:"添加邮箱",action:addAccount)
+        } else {
+            GeometryReader { geometry in
+                let compact = geometry.size.width < 760
+                let result = store.inboxSearchResult
+                VStack(spacing:0) {
+                    inboxHeader(result,compact:compact)
+                    Divider()
+                    inboxContent(result,compact:compact)
+                }.frame(maxWidth:.infinity,maxHeight:.infinity)
             }
-            .onChange(of:store.selectedMessageID) {_,id in showHTML = false; if let id {Task {await store.loadMessage(id)}}}
-            .onChange(of:store.mailboxFilter) {_,id in
-                store.folder = "INBOX"; store.retainVisibleMessageSelection()
+            .onChange(of:store.selectedMessageID) {_,_ in showHTML = false}
+            .onChange(of:store.mailboxFilter) {_,_ in
+                store.folder = "INBOX"
+                store.retainVisibleMessageSelection()
             }
-            .onChange(of:store.folder) {_,folder in
+            .onChange(of:store.folder) {_,_ in
                 store.retainVisibleMessageSelection()
             }
         }
     }
-    private func messageDetail(_ m: CachedMessage) -> some View {
+
+    private var filterSelection: Binding<MailInboxFilter> {
+        Binding(get:{store.inboxFilter},set:{ filter in
+            guard store.inboxFilter != filter else { return }
+            store.inboxFilter = filter
+            store.selectedMessageID = nil
+        })
+    }
+
+    private var searchText: Binding<String> {
+        Binding(get:{store.search},set:{ query in
+            guard store.search != query else { return }
+            store.search = query
+            store.selectedMessageID = nil
+        })
+    }
+
+    private func inboxHeader(_ result: MailInboxSearchResult, compact: Bool) -> some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack(spacing:16) {
+                Text(folderTitle).font(.system(size:24,weight:.semibold)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                Spacer(minLength:12)
+                searchField.frame(maxWidth:350)
+            }
+            HStack(spacing:10) {
+                scopePickers
+                Spacer(minLength:8)
+                Text(result.messages.count,format:.number)
+                    .font(.callout.weight(.semibold)).monospacedDigit()
+                    .accessibilityLabel("\(result.messages.count) 封符合条件的邮件")
+                Text("封").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+            }
+            Picker("筛选邮件",selection:filterSelection) {
+                ForEach(MailInboxFilter.allCases) { filter in
+                    Text("\(filter.title) \(result.count(for:filter))").tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth:compact ? .infinity : 460)
+            .accessibilityIdentifier("mail.inbox.filters")
+            Label(cacheScopeText(result),systemImage:"internaldrive")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal:false,vertical:true)
+                .accessibilityIdentifier("mail.inbox.cacheScope")
+        }
+        .padding(.horizontal,compact ? 18 : 24)
+        .padding(.vertical,14)
+        .background(PortalTheme.panel)
+    }
+
+    private var searchField: some View {
+        HStack(spacing:8) {
+            Image(systemName:"magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField("搜索主题、正文或附件名",text:searchText)
+                .textFieldStyle(.plain).font(.callout).focused($searchFocused)
+                .accessibilityLabel("搜索本机缓存邮件").accessibilityIdentifier("mail.inbox.search")
+            if !store.search.isEmpty {
+                Button("清空搜索",systemImage:"xmark.circle.fill") { searchText.wrappedValue = "" }
+                    .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("清空搜索")
+            }
+        }
+        .padding(.vertical,8).padding(.horizontal,10)
+        .background(Color(nsColor:.textBackgroundColor),in:RoundedRectangle(cornerRadius:9))
+        .overlay(RoundedRectangle(cornerRadius:9).strokeBorder(searchFocused ? PortalTheme.accent : Color.primary.opacity(0.12),lineWidth:searchFocused ? 1.5 : 1))
+    }
+
+    private var scopePickers: some View {
+        HStack(spacing:8) {
+            Picker("邮箱范围",selection:$store.mailboxFilter) {
+                Text("统一收件箱").tag(nil as UUID?)
+                ForEach(store.filteredAccounts) { account in Text(account.displayName).tag(Optional(account.id)) }
+            }.labelsHidden().frame(maxWidth:202)
+            if let id = store.mailboxFilter {
+                Picker("文件夹",selection:$store.folder) {
+                    Text("收件箱").tag("INBOX")
+                    Text("本机发送记录").tag("__local_sent__")
+                    ForEach((store.folders[id] ?? []).filter { $0.selectable && $0.path.uppercased() != "INBOX" }) { folder in
+                        Text(folder.displayName).tag(folder.path)
+                    }
+                }.labelsHidden().frame(maxWidth:195)
+            }
+        }
+    }
+
+    private var folderTitle: String {
+        if store.folder == "__local_sent__" { return "本机发送记录" }
+        if let id = store.mailboxFilter, store.folder.uppercased() != "INBOX" {
+            return store.folders[id]?.first { $0.path == store.folder }?.displayName ?? store.folder
+        }
+        return "收件箱"
+    }
+
+    private func cacheScopeText(_ result: MailInboxSearchResult) -> String {
+        let scope = "仅本机缓存 · 当前范围共 \(result.scopedCount) 封"
+        if result.headerOnlyCount > 0 { return scope + " · \(result.headerOnlyCount) 封尚无完整正文和附件资料" }
+        return scope
+    }
+
+    @ViewBuilder private func inboxContent(_ result: MailInboxSearchResult, compact: Bool) -> some View {
+        let selected = store.messages.first { $0.id == store.selectedMessageID }
+        if compact {
+            if let selected { messageDetail(selected, compact:true) }
+            else { messageList(result) }
+        } else {
+            HSplitView {
+                messageList(result).frame(minWidth:270,idealWidth:325,maxWidth:415,maxHeight:.infinity)
+                Group {
+                    if let selected { messageDetail(selected,compact:false) }
+                    else { EmptyMailView(icon:"envelope.open",title:"选择一封邮件",detail:"打开左侧列表中的邮件，查看已缓存的正文和附件。") }
+                }.frame(minWidth:365,maxWidth:.infinity,maxHeight:.infinity)
+            }
+        }
+    }
+
+    @ViewBuilder private func messageList(_ result: MailInboxSearchResult) -> some View {
+        if result.messages.isEmpty {
+            if result.scopedCount == 0 {
+                EmptyMailView(icon:"tray",title:"当前范围暂无缓存",detail:"同步已获准连接的邮箱，或选择其他邮箱和文件夹。")
+            } else {
+                EmptyMailView(icon:result.hasQuery ? "magnifyingglass" : "line.3.horizontal.decrease.circle",
+                    title:"没有符合条件的邮件",detail:"试试其他关键词或筛选。搜索只使用本机缓存的内容。")
+            }
+        } else {
+            List(selection:$store.selectedMessageID) {
+                ForEach(result.messages) { message in
+                    let account = store.account(message.accountID)
+                    MailInboxRow(message:message,account:account,identity:store.identity(account?.identityID))
+                        .listRowInsets(EdgeInsets(top:0,leading:12,bottom:0,trailing:12))
+                        .tag(message.id)
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden).accessibilityIdentifier("mail.inbox.messages")
+        }
+    }
+
+    private func messageDetail(_ m: CachedMessage, compact: Bool) -> some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:12) {
-                Button {store.reply(m)} label:{Label("回复",systemImage:"arrowshape.turn.up.left")}.disabled(!m.loaded)
-                Menu {Button("回复全部") {store.reply(m,all:true)}; Button("转发正文") {store.reply(m,forward:true)}} label:{Image(systemName:"chevron.down")}.menuStyle(.borderlessButton).frame(width:20).disabled(!m.loaded)
-                Spacer()
-                Button {Task {await store.changeFlag(m,flag:!m.isFlagged)}} label:{Image(systemName:m.isFlagged ? "star.fill" : "star")}.help("切换星标")
-                Button {Task {await store.changeFlag(m,read:!m.isRead)}} label:{Image(systemName:m.isRead ? "envelope.badge" : "envelope.open")}.help(m.isRead ? "标为未读" : "标为已读")
-                if m.folder != "__local_sent__" {Menu {ForEach((store.folders[m.accountID] ?? []).filter {$0.selectable && $0.path != m.folder}) {f in Button("移至 " + f.displayName) {Task {await store.moveMessage(m,destination:f.path)}}}} label:{Image(systemName:"folder")}.menuStyle(.borderlessButton).frame(width:22).help("移至文件夹或垃圾箱")}
-            }.padding(20)
+            detailToolbar(m,compact:compact)
             Divider()
             ScrollView {
-                VStack(alignment:.leading,spacing:15) {
-                    Text(m.subject.isEmpty ? "（无主题）" : m.subject).font(.system(size:23,weight:.semibold)).textSelection(.enabled).padding(.top,4)
-                    HStack(alignment:.top) {VStack(alignment:.leading,spacing:5) {Text("发件人：" + m.from); Text("收件人：" + m.to); if !m.cc.isEmpty {Text("抄送：" + m.cc)}}.font(.system(size:11)).foregroundStyle(.secondary).textSelection(.enabled); Spacer(); IdentityBadge(identity:store.identity(store.account(m.accountID)?.identityID))}
-                    Text(m.date.formatted(date:.long,time:.shortened)).font(.system(size:10)).foregroundStyle(.tertiary)
+                VStack(alignment:.leading,spacing:19) {
+                    detailHeading(m)
                     Divider()
-                    let extracted = CodeExtractor.extract(subject: m.subject, body: m.body, html: m.html)
-                    if let primary = extracted.first {
-                        codeBanner(primary)
-                    }
-                    if store.detailBusy.contains(m.id) {ProgressView("正在读取邮件…").font(.system(size:12)).padding(.vertical,20)}
-                    if m.loaded {
-                        if m.html != nil {Toggle("查看邮件排版（外部图片已阻止）",isOn:$showHTML).font(.system(size:10)).toggleStyle(.checkbox)}
-                        if showHTML, let html = m.html {SafeMailHTML(html:html).frame(minHeight:420)}
-                        else {Text(m.body.isEmpty ? "这封邮件没有纯文本正文，可以切换到排版视图查看。" : m.body).font(.system(size:14)).lineSpacing(6).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)}
-                        if !m.attachments.isEmpty {Divider(); Text("附件 · \(m.attachments.count)").font(.system(size:12,weight:.semibold)); ForEach(m.attachments) {a in Button {saveAttachment(a)} label:{HStack {Image(systemName:"paperclip"); Text(a.filename).lineLimit(1); Spacer(); Text(ByteCountFormatter.string(fromByteCount:Int64(a.data.count),countStyle:.file)).foregroundStyle(.secondary); Image(systemName:"arrow.down.to.line")}.font(.system(size:12)).padding(12).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:8))}.buttonStyle(.plain)}}
-                    } else if !store.detailBusy.contains(m.id) {Button("读取正文") {Task {await store.loadMessage(m.id)}}}
-                }.padding(24)
+                    if let primary = CodeExtractor.extract(subject:m.subject,body:m.body,html:m.html).first { codeBanner(primary) }
+                    detailBody(m)
+                }.frame(maxWidth:820,alignment:.leading).padding(compact ? 20 : 26)
+                    .frame(maxWidth:.infinity,alignment:.center)
             }
-        }.background(Color(nsColor:.textBackgroundColor))
+        }.background(PortalTheme.panel).accessibilityIdentifier("mail.inbox.reader")
+    }
+
+    private func detailToolbar(_ message: CachedMessage, compact: Bool) -> some View {
+        HStack(spacing:9) {
+            if compact {
+                Button("邮件列表",systemImage:"chevron.left") { store.selectedMessageID = nil }
+                    .keyboardShortcut(.cancelAction)
+            }
+            Spacer(minLength:4)
+            Button("回复",systemImage:"arrowshape.turn.up.left") { store.reply(message) }.disabled(!message.loaded)
+            Menu {
+                Button("回复全部") { store.reply(message,all:true) }
+                Button("转发正文") { store.reply(message,forward:true) }
+            } label:{ Label("更多回复选项",systemImage:"ellipsis") }
+                .labelStyle(.iconOnly).menuStyle(.borderlessButton).fixedSize().disabled(!message.loaded)
+            Button(message.isFlagged ? "取消星标" : "加星",systemImage:message.isFlagged ? "star.fill" : "star") {
+                Task { await store.changeFlag(message,flag:!message.isFlagged) }
+            }.labelStyle(.iconOnly).help(message.isFlagged ? "取消星标" : "加星")
+            Button(message.isRead ? "标为未读" : "标为已读",systemImage:message.isRead ? "envelope.badge" : "envelope.open") {
+                Task { await store.changeFlag(message,read:!message.isRead) }
+            }.labelStyle(.iconOnly).help(message.isRead ? "标为未读" : "标为已读")
+            if message.folder != "__local_sent__" { folderMenu(message) }
+        }.padding(.horizontal,16).padding(.vertical,9).background(Color.primary.opacity(0.025))
+    }
+
+    private func folderMenu(_ message: CachedMessage) -> some View {
+        let targets = (store.folders[message.accountID] ?? []).filter { $0.selectable && $0.path != message.folder }
+        return Menu {
+            ForEach(targets) { folder in
+                Button("移至 " + folder.displayName) { Task { await store.moveMessage(message,destination:folder.path) } }
+            }
+        } label:{ Label("移至文件夹",systemImage:"folder") }
+            .labelStyle(.iconOnly).menuStyle(.borderlessButton).fixedSize().disabled(targets.isEmpty)
+            .help("移至文件夹")
+    }
+
+    private func detailHeading(_ message: CachedMessage) -> some View {
+        VStack(alignment:.leading,spacing:10) {
+            Text(message.subject.isEmpty ? "（无主题）" : message.subject)
+                .font(.system(size:24,weight:.semibold)).textSelection(.enabled).accessibilityAddTraits(.isHeader)
+            VStack(alignment:.leading,spacing:5) {
+                detailAddress("发件人",message.from)
+                detailAddress("收件人",message.to)
+                if !message.cc.isEmpty { detailAddress("抄送",message.cc) }
+            }.textSelection(.enabled)
+            HStack(spacing:10) {
+                if let identity = store.identity(store.account(message.accountID)?.identityID) { IdentityBadge(identity:identity) }
+                Text(message.date.formatted(date:.abbreviated,time:.shortened)).font(.caption).foregroundStyle(.secondary)
+                if !message.isRead { Text("未读").font(.caption.weight(.medium)).foregroundStyle(PortalTheme.accent) }
+            }
+        }
+    }
+
+    private func detailAddress(_ label: String, _ value: String) -> some View {
+        HStack(alignment:.firstTextBaseline,spacing:10) {
+            Text(label).fontWeight(.medium).foregroundStyle(.secondary).frame(width:44,alignment:.leading)
+            Text(value.isEmpty ? "—" : value).fixedSize(horizontal:false,vertical:true)
+        }.font(.callout)
+    }
+
+    @ViewBuilder private func detailBody(_ message: CachedMessage) -> some View {
+        if message.loaded {
+            if message.html != nil {
+                Toggle("显示原邮件排版 · 外部图片已阻止",isOn:$showHTML).font(.caption).toggleStyle(.checkbox)
+            }
+            if showHTML, let html = message.html {
+                SafeMailHTML(html:html).frame(minHeight:420)
+            } else {
+                let fallback = message.html == nil ? "没有可显示的正文。" : "这封邮件只有排版正文。"
+                Text(message.body.allSatisfy(\.isWhitespace) ? fallback : message.body)
+                    .font(.system(size:14)).lineSpacing(6).textSelection(.enabled)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+            }
+            if !message.attachments.isEmpty { attachmentList(message.attachments) }
+        } else if store.detailBusy.contains(message.id) {
+            ProgressView("正在读取正文…").controlSize(.small)
+        } else {
+            let connected = store.account(message.accountID)?.enabled == true && store.isHostConnectionAuthorized(accountID:message.accountID)
+            let synchronizing = store.busy.contains(message.accountID)
+            let detail: String = if !connected { "完整正文和附件尚未缓存。请先在邮箱管理允许连接。" }
+                else if synchronizing { "正在同步此邮箱，完成后可读取正文。" }
+                else { "完整正文和附件尚未缓存。读取正文将访问邮箱。" }
+            VStack(alignment:.leading,spacing:10) {
+                if !message.preview.isEmpty {
+                    Text(message.preview).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Text(detail)
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                Button("读取正文",systemImage:"arrow.down.circle") { Task { await store.loadMessage(message.id) } }
+                    .buttonStyle(.bordered).disabled(!connected || synchronizing).accessibilityIdentifier("mail.inbox.fetchBody")
+            }
+        }
+    }
+
+    private func attachmentList(_ attachments: [CachedAttachment]) -> some View {
+        VStack(alignment:.leading,spacing:7) {
+            Divider()
+            Label("附件 · \(attachments.count)",systemImage:"paperclip").font(.callout.weight(.semibold))
+            ForEach(attachments) { attachment in
+                Button { saveAttachment(attachment) } label:{
+                    HStack(spacing:8) {
+                        Text(attachment.filename).lineLimit(1)
+                        Spacer(minLength:8)
+                        Text(ByteCountFormatter.string(fromByteCount:Int64(attachment.data.count),countStyle:.file)).foregroundStyle(.secondary)
+                        Image(systemName:"arrow.down.to.line").accessibilityHidden(true)
+                    }.font(.callout)
+                        .padding(.horizontal,11).padding(.vertical,9)
+                        .background(Color.primary.opacity(0.055),in:RoundedRectangle(cornerRadius:8))
+                }.buttonStyle(.plain).help("保存附件 \(attachment.filename)")
+            }
+        }
     }
     private func codeBanner(_ item: ExtractedCode) -> some View {
         HStack(alignment: .center, spacing: 14) {
@@ -544,6 +775,65 @@ struct InboxView: View {
     }
 }
 
+private struct MailInboxRow: View {
+    let message: CachedMessage
+    let account: MailAccount?
+    let identity: MailIdentity?
+
+    var body: some View {
+        HStack(alignment:.top,spacing:9) {
+            if message.isRead {
+                Color.clear.frame(width:7,height:7).accessibilityHidden(true)
+            } else {
+                Circle().fill(PortalTheme.accent).frame(width:7,height:7).accessibilityLabel("未读")
+            }
+            VStack(alignment:.leading,spacing:6) {
+                HStack(alignment:.firstTextBaseline,spacing:8) {
+                    Text(message.subject.isEmpty ? "（无主题）" : message.subject)
+                        .font(.callout.weight(message.isRead ? .medium : .semibold)).lineLimit(1)
+                    Spacer(minLength:4)
+                    Text(message.date.formatted(date:.abbreviated,time:.omitted))
+                        .font(.caption2).monospacedDigit().foregroundStyle(.secondary).fixedSize()
+                }
+                HStack(spacing:6) {
+                    Text(message.from.isEmpty ? "未知发件人" : message.from).font(.caption).lineLimit(1)
+                    Spacer(minLength:4)
+                    if !message.attachments.isEmpty {
+                        Image(systemName:"paperclip").font(.caption).accessibilityLabel("有缓存附件")
+                    }
+                    if message.isFlagged {
+                        Image(systemName:"star.fill").font(.caption).foregroundStyle(.orange).accessibilityLabel("已加星")
+                    }
+                }.foregroundStyle(.secondary)
+                if !message.preview.isEmpty {
+                    Text(message.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                rowMetadata
+            }
+        }
+        .padding(.vertical,10)
+        .contentShape(Rectangle())
+        .accessibilityElement(children:.combine)
+    }
+
+    private var rowMetadata: some View {
+        HStack(spacing:6) {
+            if let account {
+                Label(account.displayName,systemImage:"envelope")
+                    .font(.caption2).lineLimit(1).foregroundStyle(.secondary)
+            }
+            if let identity { IdentityBadge(identity:identity).lineLimit(1) }
+            if let code = CodeExtractor.primaryCode(subject:message.subject,body:message.body,html:message.html), code.type != .link {
+                Label(code.value,systemImage:"key.fill").font(.system(.caption2,design:.monospaced,weight:.semibold))
+                    .padding(.horizontal,6).padding(.vertical,3)
+                    .foregroundStyle(PortalTheme.accent)
+                    .background(PortalTheme.accent.opacity(0.10),in:Capsule())
+                    .help("验证码 \(code.value)")
+            }
+        }
+    }
+}
+
 struct SafeMailHTML: NSViewRepresentable {
     var html: String
     func makeCoordinator() -> Coordinator {Coordinator()}
@@ -554,7 +844,7 @@ struct SafeMailHTML: NSViewRepresentable {
     func updateNSView(_ view:WKWebView,context:Context) {
         guard context.coordinator.loaded != html else {return}; context.coordinator.loaded = html
         let csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; script-src 'none'"
-        view.loadHTMLString("<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"" + csp + "\"><meta name=\"viewport\" content=\"width=device-width\"><style>body{font-family:-apple-system;font-size:14px;line-height:1.7;overflow-wrap:anywhere;}img{max-width:100%;height:auto;}table{max-width:100%;}pre{white-space:pre-wrap;}</style></head><body>" + html + "</body></html>",baseURL:nil)
+        view.loadHTMLString("<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"" + csp + "\"><meta name=\"viewport\" content=\"width=device-width\"><style>:root{color-scheme:light dark;}body{background:Canvas;color:CanvasText;font-family:-apple-system;font-size:14px;line-height:1.7;overflow-wrap:anywhere;}img{max-width:100%;height:auto;}table{max-width:100%;}pre{white-space:pre-wrap;}</style></head><body>" + html + "</body></html>",baseURL:nil)
     }
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loaded = ""
