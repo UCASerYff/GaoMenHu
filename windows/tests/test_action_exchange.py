@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from gaomenhu import APP_ID
+from gaomenhu import APP_ID, MARKETING_VERSION
 from gaomenhu.action_exchange import action_route, write_empty_package
 from gaomenhu.action_transport import ActionTransport, descriptor_path
 from gaomenhu.actions import make_request, read_package
@@ -145,7 +145,7 @@ def test_registered_provider_delivers_request_pending_and_verified_file(tmp_path
 
     sender.action_exchange.transport = transport_to(receiver, "request")
     receiver.action_exchange.transport = transport_to(sender, "result")
-    assert sender.action_exchange.transport.targets("downloads.prepare") == [{"bundleID": APP_ID, "version": "1.19"}]
+    assert sender.action_exchange.transport.targets("downloads.prepare") == [{"bundleID": APP_ID, "version": MARKETING_VERSION}]
     blob = b"verified handoff fixture\n"
     class LocalFile(BaseHTTPRequestHandler):
         def log_message(self, *_):

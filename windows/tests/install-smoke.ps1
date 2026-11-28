@@ -9,6 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $setupFile = Get-Item -LiteralPath $Setup
+$expectedVersion = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../../VERSION')).Trim()
+$expectedExtension = (($expectedVersion.Split('.') | ForEach-Object { [int]$_ }) -join '.') + '.0'
 $smokeRoot = Join-Path $PSScriptRoot ("..\build\install-smoke-" + [guid]::NewGuid().ToString("N"))
 $smokeRoot = (New-Item -Path $smokeRoot -ItemType Directory -Force).FullName
 $installDir = Join-Path $smokeRoot "安装"
@@ -193,15 +195,15 @@ try {
         $bytes = [IO.File]::ReadAllBytes($file)
         if ([BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 60) + 4) -ne 0x8664) { throw "Expected AMD64 PE: $file" }
         $fileVersion = (Get-Item -LiteralPath $file).VersionInfo
-        if ($fileVersion.ProductVersion.Trim() -ne '1.19' -or $fileVersion.FileVersion.Trim() -ne $setupFile.VersionInfo.FileVersion.Trim()) {
+        if ($fileVersion.ProductVersion.Trim() -ne $expectedVersion -or $fileVersion.FileVersion.Trim() -ne $setupFile.VersionInfo.FileVersion.Trim()) {
             throw "Unexpected release or build version: $file"
         }
     }
     $hostInfo = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
     $extension = Get-Content -LiteralPath (Join-Path $installDir 'BrowserExtension\manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($hostInfo.name -ne 'cn.mendao.bridge' -or $hostInfo.path -ne 'GaoMenHu-bridge.exe' -or $extension.version -ne '1.19.0') { throw "Unexpected helper bundle" }
+    if ($hostInfo.name -ne 'cn.mendao.bridge' -or $hostInfo.path -ne 'GaoMenHu-bridge.exe' -or $extension.version -ne $expectedExtension) { throw "Unexpected helper bundle" }
     $capabilities = (& $console --capabilities | Out-String | ConvertFrom-Json)
-    if ($LASTEXITCODE -or $capabilities.bundleID -ne 'cn.mendao.launcher' -or $capabilities.appVersion -ne '1.19' -or -not $capabilities.actions) { throw "Installed CLI did not describe the portal capabilities" }
+    if ($LASTEXITCODE -or $capabilities.bundleID -ne 'cn.mendao.launcher' -or $capabilities.appVersion -ne $expectedVersion -or -not $capabilities.actions) { throw "Installed CLI did not describe the portal capabilities" }
     if ($Register) {
         foreach ($key in @($chromeKey, $edgeKey)) {
             if ((Get-Item -LiteralPath $key).GetValue('') -ne $manifest) { throw "Host was not registered at $key" }

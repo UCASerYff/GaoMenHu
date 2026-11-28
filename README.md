@@ -1,4 +1,4 @@
-# 搞门户 V1.19
+# 搞门户 V1.20
 
 macOS 网站启动器，内置文件下载与原生邮件。把常用网站像 App 一样放进启动台，拖动排序、组合文件夹，并为每个网站指定浏览器和登录账号。
 
@@ -6,7 +6,7 @@ macOS 网站启动器，内置文件下载与原生邮件。把常用网站像 A
 
 ## 下载与安装
 
-从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.19.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
+从 [Releases](https://github.com/UCASerYff/GaoMenHu/releases/latest) 下载 `GaoMenHu-1.20.dmg` 和同名 `.sha256` 文件。仓库保存源码，安装包作为 Release 附件单独发布。
 
 1. 支持 macOS 14 或更高版本、Apple Silicon；当前未提供 Intel 版本。
 2. 打开 DMG，把 `搞门户.app` 拖入“应用程序”文件夹，然后启动。
@@ -16,7 +16,7 @@ macOS 网站启动器，内置文件下载与原生邮件。把常用网站像 A
 校验下载文件：
 
 ```sh
-shasum -a 256 -c GaoMenHu-1.19.dmg.sha256
+shasum -a 256 -c GaoMenHu-1.20.dmg.sha256
 ```
 
 ## 功能
@@ -107,7 +107,7 @@ bash Scripts/test-embedded-mail-core.sh
 
 ## 版本
 
-发行版本以 `VERSION` 为准。macOS 构建号独立保存在 `BUILD`，用于 App 的 `CFBundleVersion` 和安装核验。递增发行版本时运行一次 `python3 Scripts/bump_version.py`，只更新 macOS 构建时递增 `BUILD` 即可。重复编译沿用同一构建号。当前源码版本为 V1.19，macOS 构建 120。
+发行版本以 `VERSION` 为准。macOS 构建号独立保存在 `BUILD`，用于 App 的 `CFBundleVersion` 和安装核验。递增发行版本时运行一次 `python3 Scripts/bump_version.py`，只更新 macOS 构建时递增 `BUILD` 即可。重复编译沿用同一构建号。当前源码版本为 V1.20，macOS 构建 121。
 
 macOS 构建 120 增加 Chrome / Edge 资料连接诊断与修复入口，在菜单栏显示实际下载活动，并减少主窗隐藏和邮件贴边条收起时的刷新。
 

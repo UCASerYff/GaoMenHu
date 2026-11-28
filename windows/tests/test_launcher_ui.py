@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from gaomenhu import MARKETING_VERSION
 from gaomenhu.backup import read_zip
 from gaomenhu.server import PortalServer
 from gaomenhu.service import PortalService
@@ -206,7 +207,7 @@ def launcher_page(tmp_path, monkeypatch):
 def test_launcher_normal_entry_workflows(launcher_page, tmp_path):
     page, service, launched, url = launcher_page
     page.until("document.querySelectorAll('#grid .tile').length > 0")
-    assert page.js("document.querySelector('#version').textContent") == "V1.19"
+    assert page.js("document.querySelector('#version').textContent") == f"V{MARKETING_VERSION}"
     assert page.js("document.querySelector('#siteCount').textContent") == "30"
     assert page.js("document.querySelector('.brand img').naturalWidth") > 0
     page.call("Emulation.setDeviceMetricsOverride", width=1160, height=760, deviceScaleFactor=1, mobile=False)
@@ -354,7 +355,7 @@ def test_mail_and_download_centers_at_desktop_and_high_dpi(launcher_page, tmp_pa
     page, service, _, url = launcher_page
     page.call("Emulation.setDeviceMetricsOverride", width=1250, height=780, deviceScaleFactor=1, mobile=False)
     page.call("Emulation.setEmulatedMedia", features=[dict(name="prefers-color-scheme", value="light")])
-    page.call("Page.navigate", url=url + "/mail")
+    page.call("Page.navigate", url=url + "/mail#overview")
     page.until("Boolean(document.querySelector('.mail-overview-welcome'))")
     assert page.js("Array.from(document.querySelectorAll('.mail-overview-metrics .metric-caption'), e => e.textContent)") == [
         "邮箱", "关联平台", "缓存未读",
@@ -379,7 +380,7 @@ def test_mail_and_download_centers_at_desktop_and_high_dpi(launcher_page, tmp_pa
              **{"from": "会议协作组 <calendar@example.invalid>"}, date=now - 43200, isRead=True, loaded=True,
              body="本周例会安排在周五上午。"),
     ]
-    page.call("Page.navigate", url=url + "/mail?registered")
+    page.call("Page.navigate", url=url + "/mail?registered#overview")
     page.until("document.querySelectorAll('.mail-overview .mail-account-card').length === 2")
     assert page.js("document.querySelector('.mail-overview-welcome') === null")
     page.capture(tmp_path / "mail-populated-light.png")
@@ -506,7 +507,7 @@ def test_mail_and_download_centers_at_desktop_and_high_dpi(launcher_page, tmp_pa
             assert picture.size == (1080, 870)
 
     page.call("Emulation.setDeviceMetricsOverride", width=520, height=480, deviceScaleFactor=1.5, mobile=False)
-    page.call("Page.navigate", url=url + "/mail")
+    page.call("Page.navigate", url=url + "/mail#overview")
     page.until("Boolean(document.querySelector('.mail-overview-metrics'))")
     assert page.js("document.querySelector('.mail-window aside').getBoundingClientRect().width") == 520
     assert page.js("document.documentElement.scrollWidth === 520 && document.documentElement.scrollHeight === 480")
