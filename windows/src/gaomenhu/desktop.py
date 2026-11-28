@@ -59,6 +59,8 @@ class Desktop:
         self.main_hidden = False
         self.exit_lock = threading.Lock()
         self.exit_pending = False
+        self.mail_close_pending = set()
+        self.mail_close_approved = set()
         self.webview = None
 
     def run(self):
@@ -139,6 +141,8 @@ class Desktop:
             window.events.loaded += self._publish_main_visibility
         else:
             window.events.closed += lambda: self.windows.pop(key, None)
+            if key == "/mail":
+                window.events.closing += lambda: self._close_mail(window)
         return window
 
     def _after_start(self):
@@ -353,6 +357,46 @@ class Desktop:
         else:
             self.request_quit()
         return False
+
+    def _close_mail(self, window):
+        with self.exit_lock:
+            if self.stop.is_set() or window in self.mail_close_approved or not window.events.loaded.is_set():
+                return True
+            if self.exit_pending or window in self.mail_close_pending:
+                return False
+            self.mail_close_pending.add(window)
+        threading.Thread(target=self._finish_mail_close, args=(window,), daemon=True, name="Portal mail close").start()
+        return False
+
+    def _finish_mail_close(self, window):
+        try:
+            state = self._evaluate_for_exit(window, "window.gaoCloseState?.() || {}")
+            if state.get("busy") or self.service.mail_blocks_exit():
+                self._exit_prompt("邮件操作仍在进行。请等待操作完成后再关闭窗口。")
+                return
+            if state.get("editing"):
+                self._exit_prompt("请先完成或关闭正在编辑的邮件表单。")
+                return
+            if state.get("draft"):
+                result = self._evaluate_for_exit(window, "window.gaoSaveDraftBeforeClose()", promise=True)
+                if result.get("ok") is not True:
+                    self._exit_prompt("邮件草稿未能保存，窗口已保留。请保存后重试。")
+                    return
+            current = self._evaluate_for_exit(window, "window.gaoCloseState?.() || {}")
+            if any(current.get(key) for key in ("busy", "editing", "draft")):
+                self._exit_prompt("有新的编辑或尚未完成的操作，请核对后再关闭邮件窗口。")
+                return
+            with self.exit_lock:
+                self.mail_close_approved.add(window)
+            if not window.events.closed.is_set():
+                window.destroy()
+        except Exception:
+            LOG.exception("Could not safely close the mail window")
+            self._exit_prompt("无法确认邮件草稿状态。请保存后再关闭。")
+        finally:
+            with self.exit_lock:
+                self.mail_close_pending.discard(window)
+                self.mail_close_approved.discard(window)
 
     def _tray_status(self, is_registered, handle):
         # The shell can temporarily lose the icon during an Explorer restart.

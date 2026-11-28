@@ -105,7 +105,7 @@ function button(text, callback, {symbol, primary, disabled, toolbar, danger, cla
 }
 
 async function api(action, body = {}) {
-  const awaited = action !== "state" && action !== "oauth-status";
+  const awaited = !["state", "oauth-status", "search"].includes(action);
   if (awaited) pendingCenterActions++;
   try {
     const result = await fetch("/api/" + center + "/" + action, {

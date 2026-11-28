@@ -1,9 +1,10 @@
 "use strict";
 
 const mail = {
-  route: "overview", mailbox: "", folder: "INBOX", identity: "", query: "", detail: null, formatting: false,
+  route: "inbox", mailbox: "", folder: "INBOX", identity: "", query: "", filter: "all", detail: null, formatting: false,
   state: {accounts:[], identities:[], platforms:[], drafts:[], messages:[], submissions:[], authorized:[], preferences:{}},
   busy: false, sidebarHidden: false, detailRequest: 0,
+  search: {key:"", matches:null, error:""}, searchRequest: 0, searchTimer: 0, visibleRows: 100,
 };
 const mailPages = [
   ["overview","总览","home"], ["inbox","邮件","tray"], ["accounts","邮箱管理","mail"],
@@ -42,10 +43,12 @@ if (center === "mail") window.gaoSaveDraftBeforeClose = async () => {
 function accountById(id) { return mail.state.accounts.find(account => account.id === id); }
 function identityById(id) { return mail.state.identities.find(identity => identity.id === id); }
 function accountLabel(account) { return account.displayName || account.email; }
+const shortMailDate = new Intl.DateTimeFormat("zh-CN", {dateStyle:"short"});
+const fullMailDate = new Intl.DateTimeFormat("zh-CN", {dateStyle:"short",timeStyle:"short"});
 function displayDate(value, full = false) {
   if (!value) return "";
   const date = new Date(Number(value) * 1000);
-  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", {dateStyle: "short", ...(full ? {timeStyle: "short"} : {})}).format(date) : "";
+  return Number.isFinite(date.getTime()) ? (full ? fullMailDate : shortMailDate).format(date) : "";
 }
 function filteredAccounts() {
   return mail.state.accounts.filter(account => !mail.identity || account.identityID === mail.identity);
@@ -53,12 +56,31 @@ function filteredAccounts() {
 function accountChoices(include, accounts = filteredAccounts()) {
   return [["",include], ...accounts.map(account => [account.id, accountLabel(account)])];
 }
-function filteredMessages() {
-  const accounts = new Set(filteredAccounts().map(account => account.id));
-  const query = mail.query.toLocaleLowerCase();
-  return mail.state.messages.filter(message => accounts.has(message.accountID) && (!mail.mailbox || mail.mailbox === message.accountID) &&
-    (message.folder || "INBOX") === mail.folder && (!query || [message.from,message.subject,message.preview,message.code]
-      .some(value => String(value || "").toLocaleLowerCase().includes(query)))).sort((a,b) => (b.date || 0) - (a.date || 0));
+const mailFilters = [
+  ["all","全部",null,()=>true], ["unread","未读","mail",message=>!message.isRead],
+  ["starred","星标","star",message=>message.isFlagged], ["attachments","附件","attachment",message=>message.hasAttachments],
+];
+function mailSearchKey() {
+  return mail.query.trim() ? JSON.stringify([mail.query.trim(), mail.mailbox, mail.folder, mail.identity]) : "";
+}
+function searchMailCache(delay = 0) {
+  clearTimeout(mail.searchTimer);
+  const sequence = ++mail.searchRequest;
+  const key = mailSearchKey();
+  if (mail.search.key !== key) mail.search = {key,matches:null,error:""};
+  if (!key || mail.route !== "inbox") return;
+  const [query, accountID, folder, identityID] = JSON.parse(key);
+  mail.searchTimer = setTimeout(async () => {
+    try {
+      const result = await api("search", {query, accountID, folder, identityID});
+      if (sequence !== mail.searchRequest) return;
+      mail.search = {key, matches:new Map(result.matches.map(item=>[item.id,item.excerpt])), error:""};
+    } catch (error) {
+      if (sequence !== mail.searchRequest) return;
+      mail.search = {key, matches:null, error:error.message};
+    }
+    if (mail.route === "inbox" && location.hash !== "#floating") renderInbox();
+  }, delay);
 }
 function unread() {
   return mail.state.messages.filter(message => (message.folder || "INBOX") === "INBOX" && !message.isRead);
@@ -67,6 +89,7 @@ function unread() {
 async function refreshMail() {
   mail.state = await api("state");
   setAppearance(mail.state.preferences.appearance);
+  if (mail.route === "inbox" && location.hash !== "#floating") searchMailCache();
   renderMail();
 }
 async function mutateMail(action, values = {}) {
@@ -82,6 +105,9 @@ function setMailPage(route, mailbox = "") {
   mail.folder = "INBOX";
   mail.detail = null;
   mail.query = "";
+  mail.filter = "all";
+  mail.visibleRows = 100;
+  searchMailCache();
   renderMail();
   mailBody.scrollTop = 0;
 }
@@ -109,6 +135,7 @@ function startMail() {
         openMailLink().catch(error => flash(error.message, true));
       }, {once:true});
     }
+    if (location.hash === "#overview") setMailPage("overview");
     if (location.hash === "#accounts") setMailPage("accounts");
     if (location.hash === "#add-account") { setMailPage("accounts"); addMailAccount(); }
     if (location.hash === "#inbox") setMailPage("inbox");
@@ -155,10 +182,19 @@ function startMail() {
 }
 
 function mailSearch() {
-  const search = el("input", {type:"search",placeholder:"搜索邮件或平台","aria-label":"搜索邮件或平台",value:mail.query});
+  const label = mail.route === "platforms" ? "搜索平台" : "搜索缓存邮件";
+  const search = el("input", {type:"search",placeholder:label,"aria-label":label,value:mail.query,maxlength:200});
   search.addEventListener("input", () => {
     mail.query = search.value;
-    if (mail.route === "inbox") renderInbox();
+    if (mail.route === "inbox") {
+      if (mail.detail && matchMedia("(max-width: 870px)").matches) {
+        mail.detail = null;
+        mail.detailRequest++;
+      }
+      mail.visibleRows = 100;
+      searchMailCache(180);
+      renderInbox();
+    }
     if (mail.route === "platforms") renderPlatforms();
   });
   return search;
@@ -188,7 +224,8 @@ function renderMail() {
       button(mail.state.preferences.floatingVisible ? "隐藏悬浮窗" : "显示悬浮窗", toggleMailFloating, {symbol:"window",toolbar:true,className:"compact-action"}),
       button("更多操作", showMailActions, {symbol:"plus",toolbar:true,className:"compact-action"}),
       button("邮件设置", showMailSettings, {symbol:"gear",toolbar:true,className:"compact-action"}))));
-  const counts = {inbox:unread().length, accounts:mail.state.accounts.length, platforms:mail.state.platforms.length,
+  const accountIDs = new Set(filteredAccounts().map(account=>account.id));
+  const counts = {inbox:unread().filter(message=>accountIDs.has(message.accountID)).length, accounts:mail.state.accounts.length, platforms:mail.state.platforms.length,
     drafts:mail.state.drafts.filter(draft => !mail.state.submissions.some(record => record.draftID === draft.id && record.phase === "completed")).length};
   const scope = select([["","全部身份"],...mail.state.identities.map(identity => [identity.id,identity.name])],mail.identity);
   scope.setAttribute("aria-label", "筛选身份");
@@ -490,53 +527,124 @@ function aliasHelper(accountId = "") {
   ]);
 }
 function renderInbox() {
-  const messages = filteredMessages();
+  const scope = new Map(filteredAccounts().map(account=>[account.id,account]));
+  const searching = Boolean(mail.search.key);
+  const matches = mail.search.matches;
+  const matchesFilter = mailFilters.find(([key])=>key===mail.filter)[3];
+  const messages = mail.state.messages.filter(message => scope.has(message.accountID) &&
+    (!mail.mailbox || mail.mailbox === message.accountID) && (message.folder || "INBOX") === mail.folder &&
+    (!searching || matches?.has(message.id)) && matchesFilter(message)).sort((a,b)=>(b.date||0)-(a.date||0));
   const account = accountById(mail.mailbox);
   const mailbox = select(accountChoices("统一收件箱"),mail.mailbox);
+  mailbox.name = "mailbox";
   mailbox.addEventListener("change",()=>{
-    mail.mailbox=mailbox.value;mail.folder="INBOX";mail.detail=null;mail.detailRequest++;renderInbox();
-    mailBody.querySelector(".inbox-filters select")?.focus();
+    mail.mailbox=mailbox.value;
+    switchMailFolder("INBOX");
   });
   const folders=[["INBOX","收件箱"],["__local_sent__","本机发送记录"],
     ...(account?.folders||[]).filter(folder=>folder.selectable && folder.path.toUpperCase()!=="INBOX").map(folder=>[folder.path,folder.displayName])];
   const folder=select(folders,mail.folder);
+  folder.name = "folder";
   folder.addEventListener("change",async()=>{
-    mail.folder=folder.value;mail.detail=null;mail.detailRequest++;renderInbox();
-    mailBody.querySelector(".inbox-filters select[name=folder]")?.focus();
+    switchMailFolder(folder.value);
     if (folder.value!=="__local_sent__" && mail.state.authorized.includes(mail.mailbox)) {
       try { await syncMail(mail.mailbox); } catch(error) { flash(error.message,true); }
     }
   });
-  folder.name = "folder";
   const previousList = mailBody.querySelector(".mail-message-list");
-  const previousReader = mailBody.querySelector(".mail-reader");
+  const inbox = mailBody.querySelector(".mail-inbox");
+  const previousReader = inbox?.lastElementChild;
   const oldScroll = previousList?.scrollTop || 0;
   const readScroll = previousReader?.dataset.openMessage === mail.detail?.id ? previousReader?.scrollTop || 0 : 0;
   const focus = document.activeElement;
   const focusedMessage = focus?.dataset.mailMessage;
   const focusedAction = focus?.closest(".mail-reader") && focus.getAttribute("aria-label");
-  const filter=el("div",{class:"inbox-filters"},field("邮箱",mailbox),account&&field("文件夹",folder));
-  const list=el("div",{class:"list mail-message-list", "aria-label":"邮件列表"},messages.slice(0,500).map(message=>el("button",{
-    type:"button",class:"tile mail-message", "aria-pressed":mail.detail?.id===message.id,
+  const focusedFilter = focus?.dataset.mailFilter;
+  const focusedScope = focus?.closest(".inbox-filters") && focus.name;
+  const rows = messages.slice(0,mail.visibleRows);
+  const previousTabStop = previousList?.querySelector('[tabindex="0"]')?.dataset.mailMessage;
+  const tabStop = rows.find(message=>message.id===(focusedMessage || previousTabStop || mail.detail?.id)) || rows[0];
+  const list=el("div",{class:"list mail-message-list",role:"group","aria-label":"邮件列表"},rows.map(message=>mailMessageRow(
+    message, scope.get(message.accountID), matches?.get(message.id), message===tabStop)));
+  listKeyboard(list, "[data-mail-message]");
+  list.addEventListener("focusin", event=>{
+    if (!event.target.matches("[data-mail-message]")) return;
+    const previous = list.querySelector('[tabindex="0"]');
+    if (previous) previous.tabIndex = -1;
+    event.target.tabIndex = 0;
+  });
+  if (!messages.length) list.append(mailInboxEmpty(searching, matches));
+  if (rows.length < messages.length) list.append(button("加载更多",()=>{
+    const next = messages[rows.length];
+    mail.visibleRows += 100;
+    renderInbox();
+    mailBody.querySelector(`[data-mail-message="${CSS.escape(next.id)}"]`)?.focus();
+  },{className:"mail-more"}));
+  const rail=el("section",{class:"mail-message-rail"},el("header",{class:"message-rail-header"},
+    el("div",{class:"row between message-rail-title"},el("h1",{},searching?"搜索结果":account ?
+      folders.find(([key])=>key===mail.folder)?.[1] || "收件箱" : "统一收件箱"),
+      el("small",{role:"status"},searching&&!matches?"本机缓存":`${messages.length} 封`)),
+    el("div",{class:"inbox-filters"},field("邮箱",mailbox),account&&field("文件夹",folder)),
+    el("div",{class:"mail-filter-tabs",role:"group","aria-label":"筛选邮件"},mailFilters.map(([key,label,symbol])=>el("button",{
+      type:"button","aria-pressed":mail.filter===key,"data-mail-filter":key,
+      title:key==="attachments"?"有已缓存附件的邮件":undefined,
+      onclick:()=>{mail.filter=key;mail.visibleRows=100;renderInbox();},
+    },symbol&&icon(symbol),label)))),list);
+  const readerState = JSON.stringify([mail.formatting,mail.state.authorized.includes(mail.detail?.accountID),accountById(mail.detail?.accountID)?.folders]);
+  const keepReader = previousReader && previousReader.mailDetail === mail.detail && previousReader.dataset.viewState === readerState;
+  const reader = keepReader ? previousReader : el("section",{class:"detail mail-reader","aria-label":"邮件详情",
+    "data-open-message":mail.detail?.id,"data-view-state":readerState},mail.detail ? messageDetail(mail.detail) :
+      empty("mail-open","选择一封邮件"));
+  reader.mailDetail = mail.detail;
+  if (inbox) {
+    inbox.classList.toggle("reading",Boolean(mail.detail));
+    inbox.firstElementChild.replaceWith(rail);
+    if (!keepReader) previousReader.replaceWith(reader);
+  } else mailBody.replaceChildren(el("div",{class:"split mail-inbox"+(mail.detail?" reading":"")},rail,reader));
+  list.scrollTop=oldScroll;
+  if (!keepReader) reader.scrollTop=readScroll;
+  if (focusedMessage) (list.querySelector(`[data-mail-message="${CSS.escape(focusedMessage)}"]`) || list.querySelector('[tabindex="0"]'))?.focus({preventScroll:true});
+  if (focusedFilter) rail.querySelector(`[data-mail-filter="${CSS.escape(focusedFilter)}"]`)?.focus({preventScroll:true});
+  if (focusedScope) rail.querySelector(`select[name="${CSS.escape(focusedScope)}"]`)?.focus({preventScroll:true});
+  if (focusedAction && !keepReader) reader.querySelector(`[aria-label="${CSS.escape(focusedAction)}"]`)?.focus({preventScroll:true});
+}
+
+function switchMailFolder(folder) {
+  mail.folder=folder;
+  mail.detail=null;
+  mail.detailRequest++;
+  mail.visibleRows=100;
+  searchMailCache();
+  renderInbox();
+  mailBody.querySelector(".mail-message-list").scrollTop=0;
+}
+
+function mailInboxEmpty(searching, matches) {
+  if (mail.search.error) return empty("warning","无法搜索本机缓存",mail.search.error,
+    button("重试",()=>{ mail.search.error="";searchMailCache();renderInbox(); }));
+  if (searching) return matches ? empty("search","没有匹配的邮件","搜索范围为当前邮箱和文件夹中的主题、发件人和已缓存正文。") :
+    loadingView("正在搜索本机缓存");
+  if (mail.filter === "attachments") return empty("attachment","没有已缓存附件的邮件","打开邮件并读取正文后，此处会显示其中的附件。");
+  if (mail.filter !== "all") return empty(mail.filter==="starred"?"star":"mail",mail.filter==="starred"?"没有星标邮件":"没有未读邮件");
+  if (!mail.state.accounts.length) return empty("mail","还没有邮箱",null,button("添加邮箱",addMailAccount,{symbol:"plus",primary:true}));
+  return empty("mail","没有缓存邮件",mail.state.authorized.length?"同步后查看最近的邮件。":"连接邮箱并同步后，邮件会显示在这里。");
+}
+
+function mailMessageRow(message, account, excerpt, tabStop) {
+  const sender = message.from || "未知发件人";
+  const subject = message.subject || "（无主题）";
+  return el("button",{type:"button",class:"tile mail-message",tabindex:tabStop?0:-1,"aria-pressed":mail.detail?.id===message.id,
     "data-mail-message":message.id,"data-unread":String(!message.isRead),
     onclick:()=>selectMessage(message.id).catch(error=>flash(error.message,true))},
-    el("div",{class:"row nowrap mail-message-from"},!message.isRead&&el("span",{class:"unread","aria-label":"未读"}),
-      el("strong",{class:"truncate space",title:message.from},message.from||"未知发件人"),message.isFlagged&&icon("star"),el("small",{},displayDate(message.date))),
-    el("span",{class:"mail-subject truncate",title:message.subject},message.subject||"（无主题）"),
-    el("div",{class:"row nowrap"},el("small",{class:"truncate space"},message.preview||accountById(message.accountID)?.email||""),
-      message.code&&el("span",{class:"badge mono"},icon("key"),message.code)))));
-  listKeyboard(list, "[data-mail-message]");
-  if (!messages.length) list.append(empty(mail.query ? "search" : "mail",mail.query?"没有匹配的邮件":"没有缓存邮件",
-    mail.query ? "尝试发件人、主题或验证码。" : "连接邮箱并同步后，邮件会显示在这里。"));
-  const rail=el("section",{class:"mail-message-rail"},el("header",{class:"message-rail-header"},
-    el("div",{class:"title-line"},el("h1",{},mail.query?"搜索邮件":"邮件"),el("small",{},`${messages.length} 封`)),filter),list);
-  const reader=el("div",{class:"detail mail-reader","aria-label":"邮件详情","data-open-message":mail.detail?.id},
-    mail.detail ? messageDetail(mail.detail) : empty("mail-open","选择一封邮件"));
-  mailBody.replaceChildren(el("div",{class:"split mail-inbox"+(mail.detail?" reading":"")},rail,reader));
-  list.scrollTop=oldScroll;
-  reader.scrollTop=readScroll;
-  if (focusedMessage) list.querySelector(`[data-mail-message="${CSS.escape(focusedMessage)}"]`)?.focus({preventScroll:true});
-  if (focusedAction) reader.querySelector(`[aria-label="${CSS.escape(focusedAction)}"]`)?.focus({preventScroll:true});
+  el("span",{class:"mail-message-marker"},!message.isRead&&el("span",{class:"unread",role:"img","aria-label":"未读"})),
+  el("span",{class:"mail-message-copy"},
+    el("span",{class:"mail-message-from"},el("strong",{class:"truncate",title:sender},sender),el("small",{},displayDate(message.date))),
+    el("span",{class:"mail-subject truncate",title:subject},subject),
+    (excerpt||message.preview)&&el("small",{class:"mail-preview",title:excerpt||message.preview},excerpt||message.preview),
+    el("span",{class:"mail-message-meta"},el("small",{class:"truncate",title:account.email},mail.mailbox ? "" : accountLabel(account)),
+      message.isFlagged&&el("span",{class:"mail-message-star",role:"img","aria-label":"已加星",title:"已加星"},icon("star")),
+      message.hasAttachments&&el("span",{role:"img","aria-label":"有附件",title:"有附件"},icon("attachment")),
+      message.code&&el("span",{class:"badge mono"},icon("key"),message.code))));
 }
 
 async function selectMessage(id, load = false) {
@@ -544,9 +652,10 @@ async function selectMessage(id, load = false) {
   const moveFocus = mail.detail?.id !== id && matchMedia("(max-width: 870px)").matches;
   const result=await api("message",{id,load});
   if (mail.route !== "inbox" || sequence !== mail.detailRequest) return;
-  mail.detail=result.message;
-  if (load) mail.state.messages= (await api("state")).messages;
+  if (load) await refreshMail();
   if (mail.route === "inbox" && sequence === mail.detailRequest) {
+    if (mail.detail?.id !== id) mail.formatting = false;
+    mail.detail=result.message;
     renderInbox();
     if (moveFocus) mailBody.querySelector(".mail-reader-close")?.focus();
   }
@@ -610,8 +719,8 @@ function messageDetail(message) {
   }
   return el("article",{class:"message-article"},el("header",{class:"message-header"},
     el("div",{class:"detail-title"},el("h1",{},message.subject||"（无主题）"),
-      button("关闭详情",closeMailReader,{symbol:"close",toolbar:true,className:"compact-action mail-reader-close"})),
-    el("dl",{class:"message-addresses"},[["发件人",message.from||"未知发件人"],["收件人",message.to],["抄送",message.cc],["时间",displayDate(message.date,true)]]
+      button("返回列表",closeMailReader,{symbol:"close",toolbar:true,className:"mail-reader-close"})),
+    el("dl",{class:"message-addresses"},[["发件人",message.from||"未知发件人"],["收件人",message.to],["抄送",message.cc],["时间",displayDate(message.date,true)],["邮箱",account&&accountLabel(account)]]
       .filter(([,value])=>value).map(([label,value])=>el("div",{class:"pair"},el("dt",{},label),el("dd",{},value))))),
     actions,codeSection,content);
 }
@@ -644,6 +753,7 @@ function quoteMessage(message) {
 async function mailComposer(draftId, reply, kind) {
   if (!mail.state.accounts.length) { addMailAccount(); return; }
   let draft=draftId?(await api("draft-read",{id:draftId})).draft:{};
+  const draftIdentity=draft.id||crypto.randomUUID();
   const account=accountById(draft.accountID||reply?.accountID||mail.mailbox)||mail.state.accounts[0];
   const accountSelect=select(mail.state.accounts.map(item=>[item.id,accountLabel(item)]),account.id);
   const from=select([],draft.from);
@@ -663,14 +773,19 @@ async function mailComposer(draftId, reply, kind) {
   const body=el("textarea",{rows:9},draft.body??((account.signature?"\n\n"+account.signature:"")+(reply?quoteMessage(reply):"")));
   const chooser=el("input",{type:"file",multiple:""});
   const attachments=(draft.attachments||[]).slice();
+  const status=el("span",{class:"mail-compose-status",role:"status"},draft.id?"草稿已保存到本机":"自动保存到本机");
   const names=el("div",{class:"stack"});
   const renderAttachments=()=>names.replaceChildren(...attachments.map((item,index)=>el("div",{class:"row between"},
-    el("small",{},item.filename+" · "+bytes(item.byteCount)),button("移除",()=>{attachments.splice(index,1);renderAttachments();}))));
+    el("small",{},item.filename+" · "+bytes(item.byteCount)),button("移除",()=>{
+      if (sending || locked) return;
+      attachments.splice(index,1);renderAttachments();editDraft();
+    },{disabled:locked}))));
   chooser.addEventListener("change",async()=>{
     const files=[...chooser.files];
     if (files.length+attachments.length>24||files.reduce((total,file)=>total+file.size,0)+attachments.reduce((total,item)=>total+(item.byteCount||0),0)>25*1024*1024) {
       chooser.value="";flash("附件最多 24 个，总计 25 MB。",true);return;
     }
+    const previousCount = attachments.length;
     chooser.disabled=true;
     try {
       for (const file of files) {
@@ -680,29 +795,61 @@ async function mailComposer(draftId, reply, kind) {
         });
         attachments.push({id:crypto.randomUUID(),filename:file.name,type:file.type||"application/octet-stream",byteCount:file.size,base64:data});
       }
-      renderAttachments();
     } catch(error) { flash(error.message,true); }
-    finally { chooser.value="";chooser.disabled=false; }
+    finally {
+      chooser.value="";
+      chooser.disabled=false;
+      if (attachments.length !== previousCount) {renderAttachments();editDraft();}
+      else scheduleDraftSave();
+    }
   });
-  renderAttachments();
-  const collect=()=>({id:draft.id,accountID:accountSelect.value,from:from.value,to:to.value.trim(),cc:cc.value.trim(),bcc:bcc.value.trim(),
+  const collect=()=>({id:draftIdentity,accountID:accountSelect.value,from:from.value,to:to.value.trim(),cc:cc.value.trim(),bcc:bcc.value.trim(),
     subject:subject.value,body:body.value,inReplyTo:draft.inReplyTo||((kind==="reply"||kind==="all")?reply?.messageID:""),attachments:[...attachments]});
-  let signature=JSON.stringify(collect());
+  let revision=0;
+  let savedRevision=0;
+  let autosaveTimer=0;
   let sending=false;
   let saving=false;
   let closing=false;
-  const dirty=()=>signature!==JSON.stringify(collect());
+  let confirming=false;
+  let locked=false;
+  const editors=[accountSelect,from,to,cc,bcc,subject,body];
+  const dirty=()=>revision!==savedRevision;
+  const saveStatus=(value,text)=>{status.dataset.state=value;status.textContent=text;};
+  renderAttachments();
+  function scheduleDraftSave() {
+    clearTimeout(autosaveTimer);
+    if (!dirty() || sending || saving || closing || confirming || chooser.disabled || locked) return;
+    autosaveTimer=setTimeout(()=>{save().catch(()=>{});},1200);
+  }
+  function editDraft() {
+    if (sending || locked) return;
+    revision++;
+    if (!saving) saveStatus("pending","有待保存的更改");
+    scheduleDraftSave();
+  }
+  for (const editor of editors) editor.addEventListener(editor.matches("select")?"change":"input",editDraft);
   async function save() {
     if (saving) throw new Error("请等草稿保存完成。");
     if (chooser.disabled) throw new Error("请等附件读取完成。");
+    clearTimeout(autosaveTimer);
     const snapshot=collect();
+    const snapshotRevision=revision;
     saving=true;
+    if (!sending) saveStatus("saving","正在保存草稿…");
     try {
       const result=await api("draft",{draft:snapshot});
       draft=result.draft;
-      signature=JSON.stringify({...snapshot,id:draft.id});
+      savedRevision=snapshotRevision;
+      if (!sending) saveStatus(dirty()?"pending":"saved",dirty()?"有待保存的更改":"草稿已保存到本机");
       return draft;
-    } finally {saving=false;}
+    } catch (error) {
+      saveStatus("error","草稿保存失败 · 可重试");
+      throw error;
+    } finally {
+      saving=false;
+      if (snapshotRevision !== revision) scheduleDraftSave();
+    }
   }
   async function closeComposer(done) {
     if (sending||saving||closing) return;
@@ -714,43 +861,70 @@ async function mailComposer(draftId, reply, kind) {
         flash("草稿已保存。");
       }
       done();await refreshMail();
-    } finally {closing=false;}
+    } finally {
+      closing=false;
+      if (status.dataset.state !== "error" && dialog.open) scheduleDraftSave();
+    }
   }
   const close=sheet(draftId?"继续写邮件":"新邮件",null,[
     el("div",{class:"form-grid"},field("发件邮箱",accountSelect),field("发件人",from)),
     field("收件人",to),el("div",{class:"form-grid"},field("抄送",cc),field("密送",bcc)),field("主题",subject),field("正文",body),
     field("选择附件",chooser),names,
   ],done=>[
+    status,
     button("关闭",()=>closeComposer(done)),
     button("存为草稿",async()=>{
-      if (sending||saving||closing) return;
+      if (sending||saving||closing||locked) return;
       await save();
       if (dirty()) throw new Error("草稿仍有未保存的更改，请再试一次。");
       flash("草稿已保存。");done();await refreshMail();
     }),
     button("发送…",async()=>{
-      if (sending) return;
+      if (sending||confirming||locked) return;
+      if (saving || chooser.disabled) throw new Error("请等草稿保存和附件读取完成。");
       if (!to.value.trim()) throw new Error("请填写收件人。");
       if (!mail.state.authorized.includes(accountSelect.value)) throw new Error("请先在邮箱管理连接发件邮箱。");
-      confirmSheet("发送这封邮件？","收件人 "+to.value,"确认发送",async()=>{
+      confirming=true;
+      clearTimeout(autosaveTimer);
+      confirmSheet("发送这封邮件？",`从 ${from.value} 发送给 ${to.value}`,"确认发送",async()=>{
+        if (locked) throw new Error("请到邮箱服务商核对发送状态。");
         if (sending) return;
         sending=true;
+        saveStatus("sending","正在提交发送…");
         try {
           const ready=await save();
-          await api("send",{draftID:ready.id});done();await refreshMail();flash("邮件已发送。");
-        } catch(error) { await refreshMail();throw error; }
-        finally { sending=false; }
+          await api("send",{draftID:ready.id});
+        } catch(error) {
+          try { await refreshMail(); } catch { /* Keep the original send or save error. */ }
+          locked=mail.state.submissions.some(record=>record.draftID===draftIdentity&&["accepted","uncertain","completed"].includes(record.phase));
+          if (locked) {
+            for (const editor of [...editors,chooser]) editor.disabled=true;
+            renderAttachments();
+            dialog.querySelector('[aria-label="发送…"]').disabled=true;
+            dialog.querySelector('[aria-label="存为草稿"]').disabled=true;
+            saveStatus("error","发送状态待核对");
+          } else if (status.dataset.state !== "error") saveStatus("saved","草稿已保存到本机");
+          throw error;
+        } finally { sending=false; }
+        done();
+        flash("邮件已发送。");
+        refreshMail().catch(error=>flash(error.message,true));
       });
+      sheets.lastElementChild.addEventListener("close",()=>{
+        confirming=false;
+        if (dialog.open) scheduleDraftSave();
+      },{once:true});
     },{primary:true}),
   ], "mail-compose-dialog");
   const dialog=sheets.lastElementChild;
-  mailComposers.set(dialog,{dirty,save,busy:()=>sending||saving||closing||chooser.disabled});
-  dialog.addEventListener("close",()=>mailComposers.delete(dialog),{once:true});
+  mailComposers.set(dialog,{dirty,save,busy:()=>sending||saving||closing||(!locked&&chooser.disabled)});
+  dialog.addEventListener("close",()=>{clearTimeout(autosaveTimer);mailComposers.delete(dialog);},{once:true});
   dialog.addEventListener("cancel",async event=>{
     event.preventDefault();
     try {await closeComposer(close);}
     catch(error){flash(error.message,true);}
   });
+  if (!draftId && reply) editDraft();
 }
 
 function renderFloatingMail() {

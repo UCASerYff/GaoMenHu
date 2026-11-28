@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -20,7 +21,7 @@ from . import APP_ID
 from .actions import MAX_MANIFEST_BYTES, MAX_PAYLOAD_BYTES, filesystem_entry, package_manifest, read_package, validate_manifest, verify_payload
 from .downloads import TERMINAL, file_digest, safe_download_name
 from .errors import AppError
-from .mail import extract_codes, generate_aliases, make_service_alias, primary_code, sanitize_mail_html
+from .mail import extract_codes, generate_aliases, mail_html_text, make_service_alias, primary_code, sanitize_mail_html
 from .mail_oauth import CLIENT_SECRET, access_token
 from .transport import fetch_mailbox, load_message, move_mail, prepare_outgoing, send_mail, set_mail_flag
 
@@ -382,7 +383,7 @@ def mail_state(store):
         "messages": [
             {key: message[key] for key in (
                 "id", "accountID", "folder", "subject", "from", "date", "preview", "isRead", "isFlagged", "loaded"
-            ) if key in message} | {"code": _message_code(message)}
+            ) if key in message} | {"code": _message_code(message), "hasAttachments": bool(message.get("attachments"))}
             for message in store.messages
         ],
         "submissions": copy.deepcopy(store.submissions),
@@ -393,6 +394,50 @@ def mail_state(store):
 def _message_code(message):
     code = primary_code(message.get("subject", ""), (message.get("body") or "")[:16384], (message.get("html") or "")[:16384])
     return code["value"] if code and code["type"] != "link" and code["confidence"] >= .5 else None
+
+
+def _search_mail_cache(store, body):
+    query = body.get("query")
+    if not isinstance(query, str) or len(query) > 200:
+        raise AppError("搜索词最多 200 个字符。")
+    terms = query.casefold().split()
+    if not terms:
+        return []
+    mailbox = body.get("accountID")
+    identity = body.get("identityID")
+    folder = body.get("folder") or "INBOX"
+    accounts = {account["id"]: account for account in store.library["accounts"]
+                if (not mailbox or mailbox == account["id"]) and (not identity or identity == account.get("identityID"))}
+    matches = []
+    for message in store.messages:
+        account = accounts.get(message.get("accountID"))
+        if account is None or (message.get("folder") or "INBOX") != folder:
+            continue
+        fields = [message.get(key) for key in ("from", "to", "cc", "replyTo", "subject", "preview")]
+        fields += [account.get("displayName"), account.get("email")]
+        fields += [part.get("filename") for part in (message.get("attachments") or [])]
+        metadata = " ".join(str(value).casefold() for value in fields if value)
+        remaining = [term for term in terms if term not in metadata]
+        excerpt = ""
+        if remaining:
+            plain = message.get("body") or ""
+            formatted = ""
+            plain_folded = plain.casefold()
+            missing = [term for term in remaining if term not in plain_folded]
+            if missing:
+                formatted = mail_html_text(message.get("html"))
+                formatted_folded = formatted.casefold()
+                if any(term not in formatted_folded for term in missing):
+                    continue
+            source = formatted if missing else plain
+            snippet_term = (missing or remaining)[0]
+            location = re.search(re.escape(snippet_term), source, re.IGNORECASE)
+            start = max(0, (location.start() if location else 0) - 28)
+            excerpt = ("…" if start else "") + " ".join(source[start:start + 145].split())
+            if start + 145 < len(source):
+                excerpt += "…"
+        matches.append({"id": message["id"], "excerpt": excerpt})
+    return matches
 
 
 def _credential(service, account):
@@ -635,6 +680,8 @@ def mail_route(service, action, body):
         item_id = body.get("id")
         if action == "state":
             return {"ok": True, **mail_state(store)}
+        if action == "search":
+            return {"ok": True, "matches": _search_mail_cache(store, body)}
         if action == "account":
             raw = body.get("account") or {}
             password = body.get("password")

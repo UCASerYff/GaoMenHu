@@ -37,9 +37,11 @@ def strip_html(html):
 class _StaticMailHTML(HTMLParser):
     allowed = set("p div span br hr h1 h2 h3 h4 h5 h6 em strong i b u s small big sup sub pre code blockquote dl dt dd ul ol li table caption tbody thead tfoot tr td th".split())
     hidden = {"title", "script", "style", "noscript", "template", "iframe", "svg", "object"}
+    blocks = set("p div br hr h1 h2 h3 h4 h5 h6 pre blockquote dl dt dd ul ol li table caption tbody thead tfoot tr td th".split())
 
-    def __init__(self):
+    def __init__(self, text_only=False):
         super().__init__(convert_charrefs=True)
+        self.text_only = text_only
         self.result = []
         self.suppressed = []
 
@@ -47,17 +49,23 @@ class _StaticMailHTML(HTMLParser):
         if tag in self.hidden:
             self.suppressed.append(tag)
         elif not self.suppressed and tag in self.allowed:
-            self.result.append(f"<{tag}>")
+            self._append_tag(tag, f"<{tag}>")
 
     def handle_endtag(self, tag):
         if self.suppressed and self.suppressed[-1] == tag:
             self.suppressed.pop()
         elif not self.suppressed and tag in self.allowed and tag not in {"br", "hr"}:
-            self.result.append(f"</{tag}>")
+            self._append_tag(tag, f"</{tag}>")
+
+    def _append_tag(self, tag, markup):
+        if not self.text_only:
+            self.result.append(markup)
+        elif tag in self.blocks:
+            self.result.append(" ")
 
     def handle_data(self, data):
         if not self.suppressed:
-            self.result.append(escape(data, quote=False))
+            self.result.append(data if self.text_only else escape(data, quote=False))
 
 
 def sanitize_mail_html(html):
@@ -65,6 +73,15 @@ def sanitize_mail_html(html):
     parser.feed(html or "")
     parser.close()
     return "".join(parser.result)
+
+
+def mail_html_text(html):
+    if not html:
+        return ""
+    parser = _StaticMailHTML(text_only=True)
+    parser.feed(html)
+    parser.close()
+    return " ".join("".join(parser.result).split())
 
 
 def decode_entities(value):

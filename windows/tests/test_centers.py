@@ -154,6 +154,37 @@ def test_legacy_download_directory_is_reauthorized_without_discarding_queue(tmp_
         reinstated.resume(item["id"])
 
 
+def test_mail_search_uses_persisted_cache_without_authorization(service, monkeypatch):
+    store = service.mail_store()
+    identity = store.save_record("identities", {"name": "工作"})
+    account = store.save_account({"email": "owner@example.invalid", "identityID": identity["id"]})
+    other = store.save_account({"email": "other@example.invalid"})
+    store.messages = [
+        dict(id="one", accountID=account["id"], subject="归档", preview="首页", body="前文 " * 300 + "校准步骤",
+             loaded=True, attachments=[dict(filename="结果.csv")]),
+        dict(id="two", accountID=other["id"], subject="回执", html="<style>.校准步骤 {color: red}</style><p>签收</p>"),
+        dict(id="three", accountID=account["id"], folder="Archive", subject="校准步骤"),
+    ]
+    store._write_cache()
+    store.load()
+
+    def fail(*_):
+        raise AssertionError("Local mail search must not touch credentials or network")
+
+    monkeypatch.setattr(centers, "_credential", fail)
+    monkeypatch.setattr(centers, "load_message", fail)
+    assert "校准步骤" in centers.mail_route(service, "search", {"query": "OWNER 校准步骤"})["matches"][0]["excerpt"]
+    assert centers.mail_route(service, "search", {"query": "结果.csv", "identityID": identity["id"]})["matches"] == [
+        {"id": "one", "excerpt": ""},
+    ]
+    assert centers.mail_route(service, "search", {"query": "校准步骤", "accountID": other["id"]})["matches"] == []
+    assert centers.mail_route(service, "search", {"query": "校准步骤", "folder": "Archive"})["matches"] == [
+        {"id": "three", "excerpt": ""},
+    ]
+    assert centers.mail_route(service, "state", {})["messages"][0]["hasAttachments"] is True
+    assert not store.authorized
+
+
 def test_mail_center_password_gate_detail_and_uncertain_submission(service, monkeypatch):
     seen = []
     message_id = str(uuid.uuid4())

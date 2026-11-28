@@ -67,7 +67,7 @@ def test_exit_mail_draft_is_saved_without_closing_or_sending(launcher_page, monk
     store = service.mail_store()
     store.save_account({"email": "tray-test@example.invalid", "enabled": False})
     page.call("Page.navigate", url=origin + "/mail")
-    page.until("Boolean(document.querySelector('.mail-account-card'))")
+    page.until("Boolean(document.querySelector('.mail-message-rail'))")
     page.click("button[title='写信']")
     page.until("Boolean(document.querySelector('dialog[open].mail-compose-dialog'))")
     assert page.js("gaoCloseState()") == IDLE

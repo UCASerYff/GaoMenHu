@@ -354,7 +354,14 @@ def verify_mail_tray_exit(app, shell, handle, evidence, exit_task):
     mail.evaluate_js("""(() => {
         const field = document.querySelector('dialog[open] textarea');
         field.value = '只用于测试退出草稿';
-        field.dispatchEvent(new Event('input', {bubbles:true}));
+        // Keep this fixture dirty while the native exit confirmation is exercised.
+        const schedule = window.setTimeout;
+        try {
+            window.setTimeout = (callback, delay) => schedule(callback, Math.max(delay, 60000));
+            field.dispatchEvent(new Event('input', {bubbles:true}));
+        } finally {
+            window.setTimeout = schedule;
+        }
     })()""")
     assert mail.evaluate_js("window.gaoCloseState().draft")
     print("The native mail window holds a dirty draft.")

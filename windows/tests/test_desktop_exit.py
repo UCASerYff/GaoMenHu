@@ -147,6 +147,19 @@ def test_exit_rechecks_other_windows_after_the_confirmation(desktop, monkeypatch
     assert not desktop.stop.is_set() and mail.visible and mail.saves == 0
 
 
+def test_close_only_mail_window_preserves_dirty_draft_on_failure(desktop, monkeypatch):
+    mail = desktop.windows["/mail"] = Window(draft=True)
+    prompts = []
+    monkeypatch.setattr(desktop, "_exit_prompt", lambda message: prompts.append(message))
+    mail.save_succeeds = False
+    desktop._finish_mail_close(mail)
+    assert "未能保存" in prompts[-1] and mail.visible and mail.saves == 1
+    mail.save_succeeds = True
+    desktop._finish_mail_close(mail)
+    assert not mail.visible and mail.saves == 2 and desktop.windows["/"].visible
+    assert not desktop.stop.is_set() and not desktop.service.stopping.is_set()
+
+
 def test_http_exit_uses_the_existing_desktop_owner(desktop):
     server = PortalServer(desktop.service)
     called = []
