@@ -1,7 +1,7 @@
 """搞门户 Windows 版。"""
 
 MARKETING_VERSION = "1.20"
-WINDOWS_BUILD = "8"
+WINDOWS_BUILD = "9"
 VERSION_LABEL = f"{MARKETING_VERSION}+{WINDOWS_BUILD}"
 APP_ID = "cn.mendao.launcher"
 NATIVE_HOST_NAME = "cn.mendao.bridge"

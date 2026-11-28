@@ -27,7 +27,9 @@ def test_release_icon_has_exact_windows_sizes_and_preserves_rounded_artwork(tmp_
             assert alpha.getpixel((size // 2, size // 2)) >= 240
             assert any(min(red, green, blue) >= 128 and opacity >= 240 for red, green, blue, opacity in frame.getdata())
 
-        alpha = icon.ico.getimage((256, 256)).getchannel("A")
-        left, top, right, bottom = alpha.point(lambda value: 255 if value >= 128 else 0).getbbox()
-        assert 240 <= right - left <= 250
-        assert 240 <= bottom - top <= 250
+        for size in (24, 48, 72, 256):
+            alpha = icon.ico.getimage((size, size)).getchannel("A")
+            occupied = alpha.point(lambda value: 255 if value >= 128 else 0)
+            assert occupied.getbbox() == (0, 0, size, size)
+            if size == 48:
+                assert 0.95 <= occupied.histogram()[255] / (size * size) <= 0.98

@@ -6,7 +6,7 @@ import struct
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 WINDOWS = Path(__file__).resolve().parent
 sys.path.insert(0, str(WINDOWS / "src"))
@@ -21,8 +21,8 @@ ICON_SIZES = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 60, 64, 72, 80, 84, 96
 def write_windows_icon(source: Path, destination: Path):
     with Image.open(source) as master:
         artwork = master.convert("RGBA")
-    # Keep the original rounded silhouette and glyph proportions. The 50%
-    # alpha bounds ignore faint stray pixels in the transparent outer margin.
+    # Locate the original plate without including faint outer pixels, and keep
+    # the same scale for the calligraphy when extending its black background.
     bounds = artwork.getchannel("A").point(lambda alpha: 255 if alpha >= 128 else 0).getbbox()
     if bounds is None:
         raise ValueError("The app icon master has no visible artwork")
@@ -32,7 +32,12 @@ def write_windows_icon(source: Path, destination: Path):
         raise ValueError("The app icon master is too small for the Windows icon sizes")
     x = (left + right - side) // 2
     y = (top + bottom - side) // 2
-    artwork.crop((x, y, x + side, y + side)).save(destination, sizes=[(size, size) for size in ICON_SIZES])
+    tile = Image.new("RGBA", (side, side), (0, 0, 0, 255))
+    tile.alpha_composite(artwork.crop((x, y, x + side, y + side)))
+    mask = Image.new("L", tile.size)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, side - 1, side - 1), radius=round(side * 0.20), fill=255)
+    tile.putalpha(mask)
+    tile.save(destination, sizes=[(size, size) for size in ICON_SIZES])
 
 
 def main():
