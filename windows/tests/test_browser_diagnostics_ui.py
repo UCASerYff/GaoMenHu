@@ -41,7 +41,7 @@ def test_browser_diagnostics_from_settings_and_explicit_actions(launcher_page, m
     monkeypatch.setattr(server, "open_extension_setup", open_extensions)
     page.call("Emulation.setDeviceMetricsOverride", width=1050, height=750, deviceScaleFactor=1, mobile=False)
     page.call("Page.navigate", url=origin + "/settings")
-    page.until("document.activeElement.id === 'settings-tab-modules'")
+    page.until("document.activeElement?.id === 'settings-tab-modules'")
     assert reads == [] and opens == []
     page.click("#browserDiagnosticsLink")
     page.until("document.querySelector('[data-browser=chrome] .diagnostic-state')?.textContent === '已连接'")
@@ -88,7 +88,7 @@ def test_browser_diagnostics_narrow_dark_failure_and_retry(launcher_page, monkey
     page.call("Emulation.setDeviceMetricsOverride", width=424, height=480, deviceScaleFactor=1.5, mobile=False)
     page.call("Emulation.setEmulatedMedia", features=[dict(name="prefers-color-scheme", value="dark")])
     page.call("Page.navigate", url=origin + "/settings")
-    page.until("document.activeElement.id === 'settings-tab-modules'")
+    page.until("document.activeElement?.id === 'settings-tab-modules'")
     page.key("ArrowRight", "ArrowRight", 39)
     page.until("document.querySelector('#diagnosticStatus')?.dataset.kind === 'error'")
     assert page.js("document.activeElement.id") == "settings-tab-browsers"

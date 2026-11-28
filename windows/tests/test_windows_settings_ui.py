@@ -9,7 +9,7 @@ def test_settings_navigation_and_editor_focus_at_high_dpi(launcher_page, tmp_pat
     page.call("Emulation.setDeviceMetricsOverride", width=492, height=510, deviceScaleFactor=1.5, mobile=False)
     page.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "reduce"}])
     page.call("Page.navigate", url=origin + "/settings")
-    page.until("document.activeElement.id === 'settings-tab-modules'")
+    page.until("document.activeElement?.id === 'settings-tab-modules'")
     assert page.js("document.querySelector('#launcherSettingsTabs').getAttribute('aria-orientation')") == "horizontal"
     assert page.js("devicePixelRatio === 1.5 && document.documentElement.scrollWidth === innerWidth")
 
