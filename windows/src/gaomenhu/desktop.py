@@ -72,13 +72,11 @@ class Desktop:
         webview.settings["ALLOW_DOWNLOADS"] = True
         webview.settings["ALLOW_FILE_URLS"] = False
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
-        icon = asset_root() / "GaoMenHu.ico"
         main = self._create("/", hidden=bool(self.smoke_file))
         main.events.closing += self._close_main
         try:
             webview.start(self._after_start, gui="edgechromium", private_mode=False,
-                          storage_path=str(self.service.data_dir.with_name(self.service.data_dir.name + ".webview")),
-                          icon=str(icon) if icon.is_file() else None)
+                          storage_path=str(self.service.data_dir.with_name(self.service.data_dir.name + ".webview")))
         finally:
             self.stop.set()
             self.dock_open_requests.put(None)
@@ -136,6 +134,14 @@ class Desktop:
             return True
 
         window.expose(open_window, toggle_fullscreen, close_window, choose_folder, save_file)
+        icon = asset_root() / "GaoMenHu.ico"
+        if icon.is_file():
+            def apply_icons():
+                from .floating_win32 import bind_form_icons
+
+                bind_form_icons(window.native, icon)
+
+            window.events.before_show += apply_icons
         window.events.loaded += lambda: self._set_title_bar(key, window)
         if key == "/":
             window.events.loaded += self._publish_main_visibility

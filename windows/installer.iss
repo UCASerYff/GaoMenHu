@@ -54,7 +54,7 @@ Name: "startmenu"; Description: "在开始菜单创建搞门户快捷方式"
 Name: "browserhost"; Description: "注册 Chrome 和 Edge 的搞门户助手"
 
 [Icons]
-Name: "{autoprograms}\搞门户"; Filename: "{app}\GaoMenHu.exe"; Tasks: startmenu; Check: not IsPortable
+Name: "{autoprograms}\搞门户"; Filename: "{app}\GaoMenHu.exe"; IconFilename: "{app}\GaoMenHu.exe"; IconIndex: 0; Tasks: startmenu; Check: not IsPortable
 
 [Registry]
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\cn.mendao.bridge"; ValueType: string; ValueData: "{app}\cn.mendao.bridge.json"; Tasks: browserhost; Check: not IsPortable

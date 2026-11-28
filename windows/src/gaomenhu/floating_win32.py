@@ -14,11 +14,13 @@ shcore = C.WinDLL("shcore", use_last_error=True)
 imm32 = C.WinDLL("imm32", use_last_error=True)
 wtsapi32 = C.WinDLL("wtsapi32", use_last_error=True)
 kernel32 = C.WinDLL("kernel32", use_last_error=True)
+comctl32 = C.WinDLL("comctl32", use_last_error=True)
 
 LRESULT = C.c_ssize_t
 WNDPROC = C.WINFUNCTYPE(LRESULT, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
 MONITORPROC = C.WINFUNCTYPE(W.BOOL, W.HANDLE, W.HDC, C.POINTER(W.RECT), W.LPARAM)
 HOOKPROC = C.WINFUNCTYPE(LRESULT, C.c_int, W.WPARAM, W.LPARAM)
+SUBCLASSPROC = C.WINFUNCTYPE(LRESULT, W.HWND, W.UINT, W.WPARAM, W.LPARAM, C.c_size_t, C.c_size_t)
 
 
 class MonitorInfo(C.Structure):
@@ -49,6 +51,10 @@ monitor_scale = bind(shcore, "GetScaleFactorForMonitor", W.LONG, W.HANDLE, C.POI
 get_cursor_pos = bind(user32, "GetCursorPos", W.BOOL, C.POINTER(W.POINT))
 get_async_key_state = bind(user32, "GetAsyncKeyState", W.SHORT, C.c_int)
 get_system_metrics = bind(user32, "GetSystemMetrics", C.c_int, C.c_int)
+get_metrics_for_dpi = bind(user32, "GetSystemMetricsForDpi", C.c_int, C.c_int, W.UINT)
+get_window_dpi = bind(user32, "GetDpiForWindow", W.UINT, W.HWND)
+get_system_dpi = bind(user32, "GetDpiForSystem", W.UINT)
+find_window = bind(user32, "FindWindowW", W.HWND, W.LPCWSTR, W.LPCWSTR)
 get_ancestor = bind(user32, "GetAncestor", W.HWND, W.HWND, W.UINT)
 get_window_long = bind(user32, "GetWindowLongPtrW", LRESULT, W.HWND, C.c_int)
 get_window_rect = bind(user32, "GetWindowRect", W.BOOL, W.HWND, C.POINTER(W.RECT))
@@ -61,6 +67,7 @@ get_foreground = bind(user32, "GetForegroundWindow", W.HWND)
 get_focus = bind(user32, "GetFocus", W.HWND)
 window_from_point = bind(user32, "WindowFromPoint", W.HWND, W.POINT)
 post_message = bind(user32, "PostMessageW", W.BOOL, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
+send_message = bind(user32, "SendMessageW", LRESULT, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
 register_message = bind(user32, "RegisterWindowMessageW", W.UINT, W.LPCWSTR)
 create_menu = bind(user32, "CreatePopupMenu", W.HMENU)
 append_menu = bind(user32, "AppendMenuW", W.BOOL, W.HMENU, W.UINT, C.c_size_t, W.LPCWSTR)
@@ -70,6 +77,9 @@ load_image = bind(user32, "LoadImageW", W.HANDLE, W.HINSTANCE, W.LPCWSTR, W.UINT
 load_icon = bind(user32, "LoadIconW", W.HICON, W.HINSTANCE, C.c_void_p)
 destroy_icon = bind(user32, "DestroyIcon", W.BOOL, W.HICON)
 notify_icon = bind(shell32, "Shell_NotifyIconW", W.BOOL, W.DWORD, C.POINTER(NotifyIcon))
+set_window_subclass = bind(comctl32, "SetWindowSubclass", W.BOOL, W.HWND, SUBCLASSPROC, C.c_size_t, C.c_size_t)
+remove_window_subclass = bind(comctl32, "RemoveWindowSubclass", W.BOOL, W.HWND, SUBCLASSPROC, C.c_size_t)
+def_subclass = bind(comctl32, "DefSubclassProc", LRESULT, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
 ime_context = bind(imm32, "ImmGetContext", W.HANDLE, W.HWND)
 ime_release = bind(imm32, "ImmReleaseContext", W.BOOL, W.HWND, W.HANDLE)
 ime_string = bind(imm32, "ImmGetCompositionStringW", W.LONG, W.HANDLE, W.DWORD, W.LPVOID, W.DWORD)
@@ -91,6 +101,10 @@ NIM_MODIFY = 1
 NIM_DELETE = 2
 NIF_TIP = 4
 TRAY_RETRY_MILLISECONDS = 1000
+WM_NCDESTROY = 0x0082
+WM_SETICON = 0x0080
+WM_DPICHANGED = 0x02E0
+ICON_SMALL, ICON_BIG = 0, 1
 
 
 def enable_per_monitor_dpi():
@@ -191,6 +205,83 @@ def is_composing(window):
         ime_release(focused, context)
 
 
+def icon_size(dpi, *, small):
+    x_metric, y_metric = (49, 50) if small else (11, 12)  # SM_CX[SM]ICON / SM_CY[SM]ICON
+    return get_metrics_for_dpi(x_metric, dpi), get_metrics_for_dpi(y_metric, dpi)
+
+
+def load_icon_file(path, size):
+    # LR_LOADFROMFILE. By specifying both dimensions, LoadImage can pick the
+    # matching ICO frame. The returned private HICON belongs to this process.
+    return load_image(None, str(path), 1, *size, 0x0010)
+
+
+def tray_icon_size():
+    # Explorer owns the notification area on the primary taskbar. Its DPI can
+    # differ from that of our floating launcher, which can move between screens.
+    taskbar = find_window("Shell_TrayWnd", None)
+    dpi = get_window_dpi(taskbar) if taskbar else 0
+    return icon_size(dpi or get_system_dpi() or 96, small=True)
+
+
+class WindowIcons:
+    """Own the small and large caption/task-switch icons of one WinForms HWND."""
+
+    def __init__(self, path):
+        self.path = path
+        self.window = None
+        self.handles = {}
+        self.callback = SUBCLASSPROC(self._dispatch)
+
+    def attach(self, window):
+        if not window or window == self.window:
+            return
+        if not set_window_subclass(window, self.callback, 1, 0):
+            LOG.warning("Could not track native window icon DPI")
+            return
+        self.window = window
+        self._refresh(window, get_window_dpi(window) or get_system_dpi() or 96)
+
+    def _refresh(self, window, dpi):
+        for kind in (ICON_SMALL, ICON_BIG):
+            size = icon_size(dpi, small=kind == ICON_SMALL)
+            previous_size, previous_icon = self.handles.get(kind, (None, None))
+            if size == previous_size:
+                send_message(window, WM_SETICON, kind, previous_icon)
+                continue
+            if icon := load_icon_file(self.path, size):
+                send_message(window, WM_SETICON, kind, icon)
+                self.handles[kind] = (size, icon)
+                if previous_icon:
+                    destroy_icon(previous_icon)
+
+    def _dispatch(self, window, message, wparam, lparam, subclass, reference):
+        if message == WM_NCDESTROY:
+            remove_window_subclass(window, self.callback, subclass)
+            handles, self.handles = self.handles, {}
+            self.window = None
+            result = def_subclass(window, message, wparam, lparam)
+            for _, icon in handles.values():
+                destroy_icon(icon)
+            return result
+        result = def_subclass(window, message, wparam, lparam)
+        if message == WM_DPICHANGED and self.window == window:
+            # WinForms handles the resize and can reset WM_SETICON first.
+            # Replace its scaled copy once WinForms has handled the message.
+            self._refresh(window, wparam & 0xFFFF)
+        return result
+
+
+def bind_form_icons(form, path):
+    icons = WindowIcons(path)
+
+    def attach(sender, _):
+        icons.attach(sender.Handle.ToInt64())
+
+    form.HandleCreated += attach
+    attach(form, None)
+
+
 class DesktopWindow:
     def __init__(self, root, event, allows_activation, icon_path=None, *, tray=True):
         self.root = root
@@ -198,6 +289,10 @@ class DesktopWindow:
         self.event = event
         self.allows_activation = allows_activation
         self.taskbar_message = register_message("TaskbarCreated") if tray else 0
+        self.icon_path = icon_path if tray else None
+        self.tray_size = None
+        self.custom_icon = None
+        self.icon = None
         self.tray_available = False
         self.tray_retry = None
         self.tray_refresh_requested = False
@@ -207,9 +302,8 @@ class DesktopWindow:
         self.original = set_window_long(self.window, -4, C.cast(self.procedure, C.c_void_p).value)
         if not self.original:
             raise OSError(C.get_last_error(), "Unable to subclass the floating window")
-        self.custom_icon = load_image(None, str(icon_path), 1, 0, 0, 0x0010 | 0x0040) if tray and icon_path else None
         self.icon = NotifyIcon(size=C.sizeof(NotifyIcon), window=self.window, id=1, flags=7,
-                               message=TRAY_MESSAGE, icon=self.custom_icon or load_icon(None, 32512), tip="搞门户") if tray else None
+                               message=TRAY_MESSAGE, icon=load_icon(None, 32512), tip="搞门户") if tray else None
         self.session_registered = bool(register_session(self.window, 0))
         if self.icon is not None:
             self._refresh_tray(announce=False)
@@ -224,10 +318,23 @@ class DesktopWindow:
         self.tray_retry = None
         if self.closed:
             return
+        previous = self.icon.icon
+        size = tray_icon_size() if self.icon_path else None
+        replacement = load_icon_file(self.icon_path, size) if size and size != self.tray_size else None
+        if replacement:
+            self.icon.icon = replacement
         data = C.byref(self.icon)
         # Windows also sends TaskbarCreated after a DPI change. Update this
         # HWND and icon ID if Explorer has already kept the original icon.
         available = bool(notify_icon(NIM_ADD, data) or notify_icon(NIM_MODIFY, data))
+        if replacement:
+            if available or self.custom_icon is None:
+                if self.custom_icon:
+                    destroy_icon(self.custom_icon)
+                self.custom_icon, self.tray_size = replacement, size
+            else:
+                self.icon.icon = previous
+                destroy_icon(replacement)
         changed = available != self.tray_available
         self.tray_available = available
         if not available:
@@ -276,8 +383,10 @@ class DesktopWindow:
                 return 0
             if message == 0x02B1 and wparam == 7:  # WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK
                 self.events.append("session-lock")
-            if message in (0x007E, 0x001A, 0x02E0):  # display, settings or DPI change
+            if message in (0x007E, 0x001A, WM_DPICHANGED):  # display, settings or DPI change
                 self.events.append("display")
+                if self.icon is not None:
+                    self.tray_refresh_requested = True
         except Exception:
             LOG.exception("Floating window message failed")
         return call_window(self.original, window, message, wparam, lparam)

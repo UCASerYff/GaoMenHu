@@ -13,6 +13,27 @@ sys.path.insert(0, str(WINDOWS / "src"))
 from gaomenhu import MARKETING_VERSION, NATIVE_HOST_NAME, WINDOWS_BUILD
 from gaomenhu.native import native_manifest
 
+# Notification area, taskbar, window and Explorer sizes at 100%–200% scale,
+# plus larger Start/Explorer targets.
+ICON_SIZES = (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 56, 60, 64, 72, 80, 84, 96, 128, 256)
+
+
+def write_windows_icon(source: Path, destination: Path):
+    with Image.open(source) as master:
+        artwork = master.convert("RGBA")
+    # Keep the original rounded silhouette and glyph proportions. The 50%
+    # alpha bounds ignore faint stray pixels in the transparent outer margin.
+    bounds = artwork.getchannel("A").point(lambda alpha: 255 if alpha >= 128 else 0).getbbox()
+    if bounds is None:
+        raise ValueError("The app icon master has no visible artwork")
+    left, top, right, bottom = bounds
+    side = round(max(right - left, bottom - top) / 0.96)
+    if side < max(ICON_SIZES):
+        raise ValueError("The app icon master is too small for the Windows icon sizes")
+    x = (left + right - side) // 2
+    y = (top + bottom - side) // 2
+    artwork.crop((x, y, x + side, y + side)).save(destination, sizes=[(size, size) for size in ICON_SIZES])
+
 
 def main():
     if sys.platform != "win32" or struct.calcsize("P") != 8:
@@ -25,8 +46,7 @@ def main():
     release_assets = WINDOWS / "build" / "release-assets"
     source_icon = WINDOWS.parent / "Assets" / "AppIcon.png"
     shutil.copyfile(source_icon, release_assets / "Mark.png")
-    with Image.open(source_icon) as image:
-        image.save(release_assets / "GaoMenHu.ico", sizes=[(size, size) for size in (16, 24, 32, 48, 64, 128, 256)])
+    write_windows_icon(source_icon, release_assets / "GaoMenHu.ico")
     manifest = native_manifest("GaoMenHu-bridge.exe")
     manifest["path"] = "GaoMenHu-bridge.exe"
     (release_assets / (NATIVE_HOST_NAME + ".json")).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

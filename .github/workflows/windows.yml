@@ -33,6 +33,11 @@ jobs:
           PYTHONUTF8: '1'
           GAOMENHU_UI_TEST: '1'
         run: .\build.ps1 -InnoSetup .\build\InnoSetup\ISCC.exe
+      - name: Verify icon sizes embedded in the launcher and installer
+        run: |
+          $version = (Get-Content -Raw -LiteralPath '..\VERSION').Trim()
+          $build = (Get-Content -Raw .\build\release-assets\version.txt).Trim().Split('.')[-1]
+          python .\tests\check_packaged_icons.py .\build\release-assets\GaoMenHu.ico .\build\release-bin\GaoMenHu\GaoMenHu.exe ".\dist\GaoMenHu-Windows-$version-build$build-x64-Setup.exe"
       - name: Smoke-test installation, registry, WebView2, and uninstall
         run: |
           $version = (Get-Content -Raw -LiteralPath '..\VERSION').Trim()
