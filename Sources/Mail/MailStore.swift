@@ -19,7 +19,7 @@ import UniformTypeIdentifiers
     @Published var notice: String?
     @Published var problem: String?
     @Published var compose: MailDraft?
-    @Published var route = "overview"
+    @Published var route = "inbox"
     @Published var identityFilter: UUID?
     @Published var mailboxFilter: UUID?
     @Published var folder = "INBOX"

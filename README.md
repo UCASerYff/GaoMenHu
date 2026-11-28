@@ -109,6 +109,8 @@ bash Scripts/test-embedded-mail-core.sh
 
 发行版本以 `VERSION` 为准。macOS 构建号独立保存在 `BUILD`，用于 App 的 `CFBundleVersion` 和安装核验。递增发行版本时运行一次 `python3 Scripts/bump_version.py`，只更新 macOS 构建时递增 `BUILD` 即可。重复编译沿用同一构建号。当前源码版本为 V1.20，macOS 构建 121。
 
+V1.20 的邮件中心默认打开缓存收件箱，提供全部、未读、星标和有附件筛选。搜索可以匹配已缓存的正文与附件名称。列表与阅读区会随窗口宽度调整，写信时显示本地草稿保存状态，并保留发送确认与防重复提交。参考了 MailX 的缓存优先和收件箱处理流程。 [MailX](https://github.com/GuqierMcl/MailX)
+
 macOS 构建 120 增加 Chrome / Edge 资料连接诊断与修复入口，在菜单栏显示实际下载活动，并减少主窗隐藏和邮件贴边条收起时的刷新。
 
 V1.19：补齐“窗口 → 关闭窗口”（Cmd+W），关闭当前下载、邮件或设置窗口；沿用已有下载后台队列和邮件草稿保存、发送保护。
