@@ -20,12 +20,6 @@ if capabilities_file.exists():
     caps = json.loads(capabilities_file.read_text())
     caps["appVersion"] = new
     capabilities_file.write_text(json.dumps(caps, ensure_ascii=False, indent=2) + "\n")
-manual = root / "使用说明.txt"
-text = manual.read_text()
-text = text.replace("搞门户 V" + old, "搞门户 V" + new)
-text = text.replace("GaoMenHu-" + old + ".dmg", "GaoMenHu-" + new + ".dmg")
-text = text.replace("当前版本 V" + old, "当前版本 V" + new)
-manual.write_text(text)
 readme = root / "README.md"
 text = readme.read_text().replace("# 搞门户 V" + old, "# 搞门户 V" + new)
 text = text.replace("GaoMenHu-" + old + ".dmg", "GaoMenHu-" + new + ".dmg")

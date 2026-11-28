@@ -29,6 +29,7 @@ try {
     New-Item -ItemType Directory -Path $releaseAssets, $releaseBin -Force | Out-Null
     $env:PYINSTALLER_CONFIG_DIR = Join-Path $PSScriptRoot "build\pyinstaller-cache"
     Invoke-Checked $Python @("prepare_release.py")
+    Invoke-Checked $Python @("..\Scripts\export-help.py", $releaseAssets, "Mail/OAuthSetup.txt")
     $version = (Get-Content -Raw -LiteralPath "..\VERSION").Trim()
     $fileVersion = (Get-Content -Raw -LiteralPath "$releaseAssets\version.txt").Trim()
     $windowsBuild = $fileVersion.Split('.')[-1]

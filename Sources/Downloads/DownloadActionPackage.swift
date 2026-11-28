@@ -1,5 +1,5 @@
 // Adapted from the workspace GaoAction V1 codec, retained in this app without a source-project dependency.
-// Uses only system frameworks; see Docs/Downloads/GaoActionV1.md for provenance and limits.
+// Uses only system frameworks. See the README for the contract and Docs/Downloads/Source-NOTICE.md for provenance.
 import Foundation
 import CryptoKit
 import Security

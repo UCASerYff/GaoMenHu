@@ -46,7 +46,7 @@ Source: "build\release-assets\cn.mendao.bridge.json"; DestDir: "{app}"; Flags: i
 Source: "GaoCapabilities.Windows.json"; DestDir: "{app}"; DestName: "GaoCapabilities.json"; Flags: ignoreversion
 Source: "..\BrowserExtension\*"; DestDir: "{app}\BrowserExtension"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; DestName: "使用说明.md"; Flags: ignoreversion
-Source: "..\Docs\Mail\OAuthSetup.txt"; DestDir: "{app}"; DestName: "邮件授权配置.txt"; Flags: ignoreversion
+Source: "build\release-assets\Mail\OAuthSetup.txt"; DestDir: "{app}"; DestName: "邮件授权配置.txt"; Flags: ignoreversion
 Source: "build\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy noencryption
 
 [Tasks]

@@ -100,10 +100,9 @@ python3 "$PROJECT_DIR/Scripts/make_icns.py" "$STAGING/AppIcon.iconset" "$STAGING
 cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/Mark.png"
 cp "$STAGING/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$PROJECT_DIR/Resources/"* "$APP/Contents/Resources/"
-mkdir -p "$APP/Contents/Resources/Docs/Downloads"
-cp -R "$PROJECT_DIR/Docs/Downloads/"* "$APP/Contents/Resources/Docs/Downloads/"
-mkdir -p "$APP/Contents/Resources/Docs/Mail"
-cp -R "$PROJECT_DIR/Docs/Mail/"* "$APP/Contents/Resources/Docs/Mail/"
+python3 "$PROJECT_DIR/Scripts/export-help.py" "$APP/Contents/Resources/Docs" Downloads/Recovery.md Downloads/DataFormat.md Downloads/Validation.md Mail/OAuthSetup.txt
+cp "$PROJECT_DIR/Docs/Downloads/Source-LICENSE" "$PROJECT_DIR/Docs/Downloads/Source-NOTICE.md" "$APP/Contents/Resources/Docs/Downloads/"
+cp "$PROJECT_DIR/Docs/Mail/Source-THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Docs/Mail/"
 cp -R "$PROJECT_DIR/BrowserExtension" "$APP/Contents/Resources/BrowserExtension"
 cp "$PROJECT_DIR/BrowserExtension/extension-id.txt" "$APP/Contents/Resources/extension-id.txt"
 if (( $# > 0 )) && [[ "$1" == "--app-only" ]]; then cp "$PROJECT_DIR/Tests/UI.js" "$APP/Contents/Resources/UI.js"; fi
@@ -158,7 +157,7 @@ mkdir -p "$PROJECT_DIR/Release" "$STAGING/disk"
 : > "$STAGING/disk/.metadata_never_index"
 ditto "$APP" "$STAGING/disk/搞门户.app"
 ln -s /Applications "$STAGING/disk/Applications"
-cp "$PROJECT_DIR/使用说明.txt" "$STAGING/disk/使用说明.txt"
+cp "$PROJECT_DIR/README.md" "$STAGING/disk/使用说明.txt"
 xattr -cr "$STAGING/disk"
 hdiutil create -quiet -volname "搞门户 V$VERSION" -srcfolder "$STAGING/disk" -format UDZO "$STAGING/GaoMenHu-$VERSION.dmg"
 # Publish only the current package; never create an upgrade or rollback backup.
