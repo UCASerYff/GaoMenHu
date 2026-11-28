@@ -1,0 +1,100 @@
+name: macOS hosted native UI self-test
+
+on:
+  push:
+    branches: ['verify/macos-gui-1.20-121']
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+jobs:
+  ui-self-test:
+    name: Hosted AppKit and WebKit self-test
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check hosted environment
+        run: |
+          test "$(uname -m)" = arm64
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+          echo 'Hosted console session:'
+          /usr/bin/stat -f '%Su' /dev/console
+          git log -2 --format='%h %s'
+      - name: Run the isolated DEBUG_TESTING self-test
+        run: |
+          set -euo pipefail
+          umask 077
+          qa_root="$(mktemp -d /private/tmp/mendao-hosted-ui.XXXXXX)"
+          qa_script="$PWD/Scripts/.hosted-ui-build.zsh"
+          test ! -e "$qa_script"
+          trap 'rm -f "$qa_script"; rm -rf "$qa_root"' EXIT
+          mkdir "$qa_root/QA.noindex"
+          qa_app="$qa_root/QA.noindex/GaoMenHuSelfTest.app"
+          python3 - "$qa_script" <<'PY'
+          from pathlib import Path
+          import sys
+
+          original = Path("Scripts/build.sh").read_text(encoding="utf-8")
+          marker = "# Keep local extended metadata out of distributable files."
+          assert original.count(marker) == 1
+          preamble, _ = original.split(marker, 1)
+          assert "TEST_FLAGS=(-D DEBUG_TESTING)" in preamble
+          assert '"$PROJECT_DIR/Tests/UI.js"' in preamble
+          assert "codesign " not in preamble
+          copy = '\n[[ "$#" == 2 && "$1" == "--app-only" ]] || exit 2\n'
+          copy += 'ditto "$APP" "$DEST"\n'
+          Path(sys.argv[1]).write_text(preamble + copy, encoding="utf-8")
+          PY
+          /bin/zsh "$qa_script" --app-only "$qa_app"
+          test -s "$qa_app/Contents/Resources/UI.js"
+          test ! -e /private/tmp/mendao-test-report.json
+          python3 - "$qa_app/Contents/MacOS/MenDao" <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+          import sys
+
+          command = [sys.argv[1], "--ui-test", "--self-test"]
+          try:
+              app = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8",
+                                   errors="replace", timeout=180, check=False)
+          except subprocess.TimeoutExpired as error:
+              output = error.output or b""
+              print(output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output)
+              raise SystemExit("Native app timed out during hosted self-test.")
+          if app.stdout:
+              print(app.stdout)
+          report_path = Path("/private/tmp/mendao-test-report.json")
+          if not report_path.is_file():
+              raise SystemExit(f"Hosted self-test exited with {app.returncode} and no native test report.")
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          suites = ("authorization", "nativeFeatures", "nativeSettings", "nativeFloating", "ui")
+          failures = []
+          for suite in suites:
+              checks = report.get(suite)
+              if not isinstance(checks, dict) or not checks:
+                  failures.append(f"{suite}: missing or empty suite")
+                  continue
+              failed = [name for name, passed in checks.items() if passed is not True]
+              failures.extend(f"{suite}.{name}" for name in failed)
+              print(f"{suite}: {len(checks) - len(failed)}/{len(checks)} passed")
+          if report.get("uiError"):
+              print("WKWebView error:", report["uiError"])
+              failures.append("WKWebView reported an error")
+          screenshots = ("mendao-ui-test.png", "mendao-floating-test.png", "mendao-hidden-test.png")
+          print("Snapshots:", {name: (report_path.parent / name).is_file() for name in screenshots})
+          for failure in failures:
+              print("FAIL", failure)
+          if failures or app.returncode:
+              raise SystemExit(1)
+          PY

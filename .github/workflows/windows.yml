@@ -2,6 +2,7 @@ name: Windows
 
 on:
   push:
+    branches-ignore: ['verify/macos-gui-1.20-121']
   pull_request:
 
 jobs:
